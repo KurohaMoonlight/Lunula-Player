@@ -117,7 +117,7 @@ impl LunulaApp {
                 let treble_samples = &self.current_track.waveform_treble;
                 let total_samples = samples.len() as f32;
                 let duration = self.current_track.duration;
-                let half_visible_sec = (wave_width / 2.0) / self.zoom_level;
+                let _half_visible_sec = (wave_width / 2.0) / self.zoom_level;
                 let max_wave_height = wave_height - 24.0;
 
                 if duration > 0.0 && !samples.is_empty() {
@@ -258,19 +258,24 @@ impl LunulaApp {
                     mini_painter.rect_filled(mini_rect, 3.0, Color32::from_rgb(241, 245, 249));
 
                     let progress_ratio = (self.current_time / duration).clamp(0.0, 1.0);
-                    let played_rect = Rect::from_min_size(
-                        mini_rect.min,
-                        Vec2::new(mini_rect.width() * progress_ratio, mini_rect.height()),
-                    );
-                    mini_painter.rect_filled(played_rect, 3.0, Color32::from_rgb(14, 165, 233));
+                    let played_width = (mini_rect.width() * progress_ratio).max(0.0);
+                    if played_width > 0.0 {
+                        let played_rect = Rect::from_min_size(
+                            mini_rect.min,
+                            Vec2::new(played_width, mini_rect.height()),
+                        );
+                        mini_painter.rect_filled(played_rect, 3.0, Color32::from_rgb(14, 165, 233));
+                    }
 
-                    let view_start_ratio = ((self.current_time - half_visible_sec) / duration).clamp(0.0, 1.0);
-                    let view_end_ratio = ((self.current_time + half_visible_sec) / duration).clamp(0.0, 1.0);
-                    let view_box_rect = Rect::from_min_max(
-                        Pos2::new(mini_rect.min.x + mini_rect.width() * view_start_ratio, mini_rect.min.y - 1.0),
-                        Pos2::new(mini_rect.min.x + mini_rect.width() * view_end_ratio, mini_rect.max.y + 1.0),
-                    );
-                    mini_painter.rect_stroke(view_box_rect, 2.0, Stroke::new(1.2, Color32::from_rgb(15, 23, 42)), egui::StrokeKind::Outside);
+                    // Sleek thumb indicator on hover/drag
+                    let thumb_x = mini_rect.min.x + played_width;
+                    let thumb_center = Pos2::new(thumb_x, mini_rect.center().y);
+                    if mini_res.hovered() || mini_res.dragged() {
+                        mini_painter.circle_filled(thumb_center, 5.0, Color32::from_rgb(14, 165, 233));
+                        mini_painter.circle_stroke(thumb_center, 5.0, Stroke::new(1.8, Color32::WHITE));
+                    } else if played_width > 0.0 && played_width < mini_rect.width() {
+                        mini_painter.circle_filled(thumb_center, 3.0, Color32::from_rgb(14, 165, 233));
+                    }
                 } else {
                     let mini_painter = ui.painter_at(mini_rect);
                     mini_painter.rect_filled(mini_rect, 3.0, Color32::from_rgb(241, 245, 249));

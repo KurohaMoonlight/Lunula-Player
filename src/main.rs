@@ -1,4 +1,5 @@
 mod app;
+pub mod audio;
 mod models;
 mod scanner;
 mod storage;
