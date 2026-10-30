@@ -181,3 +181,34 @@ impl LunulaApp {
     }
 }
 
+// Extract album artwork from ID3v2, FLAC, M4A, or OGG tags
+pub fn extract_album_art<P: AsRef<Path>>(path: P) -> Option<Vec<u8>> {
+    let tagged_file = lofty::read_from_path(path).ok()?;
+    if let Some(tag) = tagged_file.primary_tag() {
+        if let Some(pic) = tag.pictures().first() {
+            return Some(pic.data().to_vec());
+        }
+    }
+    if let Some(tag) = tagged_file.first_tag() {
+        if let Some(pic) = tag.pictures().first() {
+            return Some(pic.data().to_vec());
+        }
+    }
+    None
+}
+
+// Convert raw image bytes (JPEG / PNG) into an egui TextureHandle
+pub fn load_image_to_texture(
+    ctx: &eframe::egui::Context,
+    name: &str,
+    image_bytes: &[u8],
+) -> Option<eframe::egui::TextureHandle> {
+    let img = image::load_from_memory(image_bytes).ok()?;
+    let img = img.to_rgba8();
+    let size = [img.width() as usize, img.height() as usize];
+    let pixels = img.into_raw();
+    let color_image = eframe::egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+    Some(ctx.load_texture(name, color_image, eframe::egui::TextureOptions::LINEAR))
+}
+
+

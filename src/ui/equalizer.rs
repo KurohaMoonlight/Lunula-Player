@@ -27,21 +27,37 @@ impl LunulaApp {
                 let total_spacing = (bars - 1) as f32 * spacing;
                 let bar_width = (rect.width() - 24.0 - total_spacing) / (bars as f32);
 
-                let phase = self.visualizer_anim_phase;
+                // Synchronize spectrum analyzer directly with live Volume & Mute
+                let vol_scale = if self.is_muted {
+                    0.0
+                } else {
+                    self.volume.clamp(0.0, 1.2)
+                };
 
                 for i in 0..bars {
                     let t = i as f32 / bars as f32;
-                    let sine1 = ((phase * 4.0 + t * 9.0).sin() + 1.0) * 0.35;
-                    let sine2 = ((phase * 7.5 - t * 14.0).cos() + 1.0) * 0.25;
-                    let sine3 = ((phase * 2.0 + t * 4.0).sin() + 1.0) * 0.15;
 
-                    let mut height_factor = sine1 + sine2 + sine3;
-                    if !self.is_playing {
-                        height_factor *= 0.05;
-                    }
+                    // Authentic Real-Time Hardware FFT Energy from actual playing audio
+                    let fft_energy = self.spectrum_bars[i];
 
-                    let bass_bias = 1.25 - (t * 0.55);
-                    let bar_height = (height_factor * bass_bias * 82.0).clamp(4.0, 98.0);
+                    // Include 10-band EQ influence if not bypassed
+                    let eq_factor = if !self.eq_bypass {
+                        let eq_idx = ((t * 9.99).floor() as usize).min(9);
+                        let gain_db = self.eq_bands[eq_idx];
+                        10.0_f32.powf(gain_db / 28.0)
+                    } else {
+                        1.0
+                    };
+
+                    let has_energy = fft_energy > 0.005;
+
+                    // Scaled strictly by live FFT energy (authentic, not sine-wave simulation!)
+                    let bar_height = if vol_scale > 0.001 && has_energy {
+                        let combined = fft_energy * eq_factor;
+                        (combined * 88.0).clamp(3.0, 96.0)
+                    } else {
+                        3.0 // Rest at bottom baseline when paused, stopped, or muted
+                    };
 
                     let x = rect.min.x + 12.0 + (i as f32) * (bar_width + spacing);
                     let y_bottom = rect.max.y - 10.0;
@@ -52,10 +68,16 @@ impl LunulaApp {
                     let r = (15.0 + t * 0.0) as u8;
                     let g = (23.0 + t * 140.0) as u8;
                     let b = (42.0 + t * 190.0) as u8;
-                    let col = Color32::from_rgb(r, g, b);
+                    let col = if vol_scale > 0.001 && has_energy {
+                        Color32::from_rgb(r, g, b)
+                    } else {
+                        Color32::from_rgb(226, 232, 240) // Flat neutral line when muted/idle
+                    };
 
                     painter.rect_filled(bar_rect, 2.5, col);
-                    painter.circle_filled(Pos2::new(x + bar_width / 2.0, y_top - 2.5), 1.5, Color32::from_rgb(14, 165, 233));
+                    if bar_height > 6.0 && vol_scale > 0.001 && has_energy {
+                        painter.circle_filled(Pos2::new(x + bar_width / 2.0, y_top - 2.5), 1.5, Color32::from_rgb(14, 165, 233));
+                    }
                 }
             });
         });
@@ -67,7 +89,12 @@ impl LunulaApp {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("🎛️ 10-BAND PRECISION EQUALIZER").strong().size(14.5).color(Color32::from_rgb(15, 23, 42)));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.checkbox(&mut self.eq_bypass, egui::RichText::new("Bypass EQ (Pure Direct)").strong());
+                        let cb_res = ui.checkbox(&mut self.eq_bypass, egui::RichText::new("Bypass EQ (Pure Direct)").strong());
+                        if cb_res.changed() {
+                            if let Some(ref engine) = self.audio_engine {
+                                engine.set_eq_bypass(self.eq_bypass);
+                            }
+                        }
                     });
                 });
 
@@ -78,15 +105,19 @@ impl LunulaApp {
                     ui.label(egui::RichText::new("Presets:").strong().size(12.5).color(Color32::from_rgb(100, 116, 139)));
                     if ui.button(egui::RichText::new("Flat").strong()).clicked() {
                         self.eq_bands = [0.0; 10];
+                        self.sync_eq_to_engine();
                     }
                     if ui.button(egui::RichText::new("Bass Boost").strong()).clicked() {
                         self.eq_bands = [6.0, 5.0, 3.5, 1.5, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0];
+                        self.sync_eq_to_engine();
                     }
                     if ui.button(egui::RichText::new("Vocal Clarity").strong()).clicked() {
                         self.eq_bands = [-2.0, -1.0, 0.0, 2.0, 4.0, 4.5, 3.0, 1.0, 0.5, 0.0];
+                        self.sync_eq_to_engine();
                     }
                     if ui.button(egui::RichText::new("Audiophile Treble").strong()).clicked() {
                         self.eq_bands = [0.0, 0.0, 0.0, 0.5, 1.0, 2.0, 3.5, 5.0, 6.0, 6.5];
+                        self.sync_eq_to_engine();
                     }
                 });
 
@@ -97,11 +128,16 @@ impl LunulaApp {
                     for i in 0..10 {
                         ui.vertical_centered(|ui| {
                             ui.label(egui::RichText::new(format!("{:+0.1}", self.eq_bands[i])).strong().size(11.0).color(Color32::from_rgb(100, 116, 139)));
-                            ui.add(
+                            let s_res = ui.add(
                                 egui::Slider::new(&mut self.eq_bands[i], -12.0..=12.0)
                                     .vertical()
                                     .show_value(false),
                             );
+                            if s_res.changed() {
+                                if let Some(ref engine) = self.audio_engine {
+                                    engine.set_eq_band(i, self.eq_bands[i]);
+                                }
+                            }
                             ui.label(egui::RichText::new(freqs[i]).strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
                         });
                         ui.add_space(20.0);
@@ -111,4 +147,3 @@ impl LunulaApp {
         });
     }
 }
-

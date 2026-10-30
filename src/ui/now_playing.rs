@@ -8,8 +8,33 @@ impl LunulaApp {
     pub fn render_ambient_waveform_station(&mut self, ui: &mut egui::Ui) {
         render_card_frame(ui, |ui| {
             ui.vertical(|ui| {
-                // Top Header: Track Title & Live Info
+                // Top Header: Real Embedded Album Cover Art & Live Info
                 ui.horizontal(|ui| {
+                    // Album Cover Art Box (56x56 px)
+                    let art_size = Vec2::splat(56.0);
+                    let (art_rect, _) = ui.allocate_exact_size(art_size, egui::Sense::hover());
+                    let art_painter = ui.painter_at(art_rect);
+
+                    if let Some(ref texture) = self.current_cover_texture {
+                        art_painter.rect_filled(art_rect, 8.0, Color32::from_rgb(15, 23, 42));
+                        art_painter.image(
+                            texture.id(),
+                            art_rect,
+                            Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+                            Color32::WHITE,
+                        );
+                        art_painter.rect_stroke(art_rect, 8.0, Stroke::new(1.0, Color32::from_rgba_unmultiplied(226, 232, 240, 180)), egui::StrokeKind::Outside);
+                    } else {
+                        crate::ui::components::draw_album_art(
+                            &art_painter,
+                            art_rect,
+                            &self.current_track.title,
+                            self.current_track.bit_depth > 16,
+                        );
+                    }
+
+                    ui.add_space(10.0);
+
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
                             let fav_icon = if self.current_track.is_favorite { "❤️" } else { "🤍" };
@@ -54,12 +79,18 @@ impl LunulaApp {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let zoom_factor = self.zoom_level / 16.0;
+                        if ui.button(egui::RichText::new("➕").size(10.5)).on_hover_text("Zoom In Waveform").clicked() {
+                            self.zoom_level = (self.zoom_level * 1.25).clamp(4.0, 140.0);
+                        }
                         ui.label(
-                            egui::RichText::new(format!("Ctrl + Scroll to Zoom ({:.1}x)", zoom_factor))
+                            egui::RichText::new(format!("🔍 {:.1}x (Ctrl + Scroll)", zoom_factor))
                                 .strong()
-                                .size(12.0)
-                                .color(Color32::from_rgb(148, 163, 184)),
+                                .size(11.5)
+                                .color(Color32::from_rgb(100, 116, 139)),
                         );
+                        if ui.button(egui::RichText::new("➖").size(10.5)).on_hover_text("Zoom Out Waveform").clicked() {
+                            self.zoom_level = (self.zoom_level * 0.80).clamp(4.0, 140.0);
+                        }
                     });
                 });
 
@@ -75,11 +106,21 @@ impl LunulaApp {
 
                 // Ctrl + Mouse Wheel Zoom
                 if wave_res.hovered() {
-                    let is_ctrl = ui.input(|i| i.modifiers.ctrl);
-                    let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
-                    if scroll_delta != 0.0 && is_ctrl {
-                        let factor = if scroll_delta > 0.0 { 1.20 } else { 0.83 };
-                        self.zoom_level = (self.zoom_level * factor).clamp(6.0, 160.0);
+                    let (is_ctrl, scroll_y) = ui.input(|i| {
+                        let mut delta = i.smooth_scroll_delta.y;
+                        if delta.abs() < 0.01 {
+                            for event in &i.raw.events {
+                                if let egui::Event::MouseWheel { delta: d, .. } = event {
+                                    delta += d.y;
+                                }
+                            }
+                        }
+                        (i.modifiers.ctrl, delta)
+                    });
+                    if is_ctrl && scroll_y.abs() > 0.1 {
+                        let factor = if scroll_y > 0.0 { 1.18 } else { 0.85 };
+                        self.zoom_level = (self.zoom_level * factor).clamp(4.0, 140.0);
+                        ui.ctx().request_repaint();
                     }
                 }
 
@@ -88,12 +129,18 @@ impl LunulaApp {
                     let delta_x = ui.input(|i| i.pointer.delta().x);
                     let time_delta = -delta_x / self.zoom_level;
                     self.current_time = (self.current_time + time_delta).clamp(0.0, self.current_track.duration);
+                    if let Some(ref engine) = self.audio_engine {
+                        engine.seek(self.current_time);
+                    }
                 } else if wave_res.clicked() {
                     if let Some(pos) = wave_res.interact_pointer_pos() {
                         let center_x = wave_rect.center().x;
                         let offset_x = pos.x - center_x;
                         let target_time = self.current_time + (offset_x / self.zoom_level);
                         self.current_time = target_time.clamp(0.0, self.current_track.duration);
+                        if let Some(ref engine) = self.audio_engine {
+                            engine.seek(self.current_time);
+                        }
                     }
                 }
 
@@ -120,6 +167,26 @@ impl LunulaApp {
                 let _half_visible_sec = (wave_width / 2.0) / self.zoom_level;
                 let max_wave_height = wave_height - 24.0;
 
+                // Synchronize wave oscilloscope amplitude directly with live Volume & Mute (steady, clean, no endut-endut)
+                let vol_scale = if self.is_muted {
+                    0.0
+                } else {
+                    self.volume.clamp(0.0, 1.2)
+                };
+                let effective_scale = vol_scale;
+
+                // Extract live physical frequency energy from real-time FFT spectrum
+                // Bass (20Hz - 250Hz, bands 0..10)
+                let live_bass = self.spectrum_bars[0..10].iter().cloned().fold(0.0f32, f32::max);
+                // Mid (250Hz - 4kHz, bands 10..28)
+                let live_mid = self.spectrum_bars[10..28].iter().cloned().fold(0.0f32, f32::max);
+                // Treble (4kHz - 20kHz, bands 28..48)
+                let live_treble = self.spectrum_bars[28..48].iter().cloned().fold(0.0f32, f32::max);
+
+                let bass_boost = if self.is_playing { (1.0 + live_bass * 1.6).min(2.8) } else { 1.0 };
+                let mid_boost = if self.is_playing { (1.0 + live_mid * 1.5).min(2.5) } else { 1.0 };
+                let treble_boost = if self.is_playing { (1.0 + live_treble * 1.8).min(2.8) } else { 1.0 };
+
                 if duration > 0.0 && !samples.is_empty() {
                     let px_step = 2.0;
                     let count = (wave_width / px_step) as usize;
@@ -137,28 +204,39 @@ impl LunulaApp {
 
                             let is_played = time_at_x <= self.current_time;
 
+                            if effective_scale <= 0.001 {
+                                // Muted / zero volume: flat oscilloscope trace
+                                let flat_col = if is_played {
+                                    Color32::from_rgb(14, 165, 233)
+                                } else {
+                                    Color32::from_rgb(203, 213, 225)
+                                };
+                                painter.line_segment([Pos2::new(screen_x, base_y), Pos2::new(screen_x, base_y + 1.2)], Stroke::new(px_step, flat_col));
+                                continue;
+                            }
+
                             match self.waveform_mode {
                                 WaveformMode::StackedMultiBand => {
-                                    // 3 Layer Bertumpuk (Bass -> Mid -> Treble)
+                                    // 3 Layer Bertumpuk (Bass -> Mid -> Treble) scaled to live Volume and real dynamic multi-band energy
                                     // Bass (Foundation / Lows <250Hz in Magenta #D946EF)
-                                    let h_bass = (b_amp * max_wave_height * 0.96).max(1.0);
+                                    let h_bass = (b_amp * max_wave_height * 1.35 * bass_boost * effective_scale).clamp(1.0, max_wave_height * 0.98);
                                     let bass_top = base_y - h_bass;
                                     let (bass_fill, bass_stroke) = if is_played {
                                         (
-                                            Color32::from_rgba_unmultiplied(217, 70, 239, 45),
+                                            Color32::from_rgba_unmultiplied(217, 70, 239, 55),
                                             Color32::from_rgb(217, 70, 239),
                                         )
                                     } else {
                                         (
-                                            Color32::from_rgba_unmultiplied(217, 70, 239, 14),
-                                            Color32::from_rgba_unmultiplied(217, 70, 239, 90),
+                                            Color32::from_rgba_unmultiplied(217, 70, 239, 18),
+                                            Color32::from_rgba_unmultiplied(217, 70, 239, 100),
                                         )
                                     };
                                     painter.line_segment([Pos2::new(screen_x, bass_top), Pos2::new(screen_x, base_y)], Stroke::new(px_step, bass_fill));
                                     painter.line_segment([Pos2::new(screen_x, bass_top), Pos2::new(screen_x, bass_top + 1.8)], Stroke::new(px_step, bass_stroke));
 
-                                    // Mid (Vocals / Harmonics 250Hz-4kHz in Cyan #0EA5E9)
-                                    let h_mid = (m_amp * max_wave_height * 0.72).max(1.0);
+                                    // Mid (Vocals / Harmonics 250Hz-4kHz in Cyan #0EA5E9) modulated with live Mid energy
+                                    let h_mid = (m_amp * max_wave_height * 0.85 * mid_boost * effective_scale).clamp(1.0, max_wave_height * 0.92);
                                     let mid_top = base_y - h_mid;
                                     let (mid_fill, mid_stroke) = if is_played {
                                         (
@@ -174,8 +252,8 @@ impl LunulaApp {
                                     painter.line_segment([Pos2::new(screen_x, mid_top), Pos2::new(screen_x, base_y)], Stroke::new(px_step, mid_fill));
                                     painter.line_segment([Pos2::new(screen_x, mid_top), Pos2::new(screen_x, mid_top + 1.8)], Stroke::new(px_step, mid_stroke));
 
-                                    // Treble (Hi-hats / Air >4kHz in Amber #F59E0B)
-                                    let h_treble = (tr_amp * max_wave_height * 0.48).max(1.0);
+                                    // Treble (Hi-hats / Air >4kHz in Amber #F59E0B) modulated with live Treble energy
+                                    let h_treble = (tr_amp * max_wave_height * 0.60 * treble_boost * effective_scale).clamp(1.0, max_wave_height * 0.88);
                                     let treble_top = base_y - h_treble;
                                     let (treble_fill, treble_stroke) = if is_played {
                                         (
@@ -192,17 +270,21 @@ impl LunulaApp {
                                     painter.line_segment([Pos2::new(screen_x, treble_top), Pos2::new(screen_x, treble_top + 1.8)], Stroke::new(px_step, treble_stroke));
                                 }
                                 WaveformMode::SpectralBlend => {
-                                    // Spectral Color Blending (Serato/Rekordbox Style)
-                                    let sum = (b_amp + m_amp + tr_amp).max(0.001);
-                                    let w_b = b_amp / sum;
-                                    let w_m = m_amp / sum;
-                                    let w_tr = tr_amp / sum;
+                                    // Spectral Color Blending dynamically weighted by live Bass, Mid, and Treble
+                                    let eff_b = b_amp * bass_boost;
+                                    let eff_m = m_amp * mid_boost;
+                                    let eff_tr = tr_amp * treble_boost;
+                                    let sum = (eff_b + eff_m + eff_tr).max(0.001);
+                                    let w_b = eff_b / sum;
+                                    let w_m = eff_m / sum;
+                                    let w_tr = eff_tr / sum;
 
                                     let r = ((w_b * 217.0 + w_m * 14.0 + w_tr * 245.0).clamp(0.0, 255.0)) as u8;
                                     let g = ((w_b * 70.0 + w_m * 165.0 + w_tr * 158.0).clamp(0.0, 255.0)) as u8;
                                     let b = ((w_b * 239.0 + w_m * 233.0 + w_tr * 11.0).clamp(0.0, 255.0)) as u8;
 
-                                    let h = (amp * max_wave_height).max(1.0);
+                                    let blend_height_scale = (0.85 + live_bass * 0.35 + live_mid * 0.25 + live_treble * 0.20).min(2.6);
+                                    let h = (amp * max_wave_height * blend_height_scale * effective_scale).clamp(1.0, max_wave_height * 0.98);
                                     let top_y = base_y - h;
 
                                     let (fill_col, top_stroke_col) = if is_played {
@@ -251,6 +333,9 @@ impl LunulaApp {
                         if let Some(pos) = mini_res.interact_pointer_pos() {
                             let ratio = ((pos.x - mini_rect.min.x) / mini_rect.width()).clamp(0.0, 1.0);
                             self.current_time = ratio * duration;
+                            if let Some(ref engine) = self.audio_engine {
+                                engine.seek(self.current_time);
+                            }
                         }
                     }
 
@@ -377,30 +462,56 @@ impl LunulaApp {
     // Perfectly Centered 3-Column Transport Deck with Smooth Animated Hover
     pub fn render_balanced_transport_deck(&mut self, ui: &mut egui::Ui) {
         let full_width = ui.available_width();
-        let left_width = 180.0;
+        let left_width = 240.0;
         let right_width = 280.0;
         let center_width = (full_width - left_width - right_width).max(200.0);
 
         ui.horizontal(|ui| {
-            // LEFT COLUMN (180px): Confident Time Typography
+            // LEFT COLUMN (240px): Cover Thumbnail & Confident Time Typography
             ui.allocate_ui_with_layout(
                 Vec2::new(left_width, 44.0),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
-                    ui.label(
-                        egui::RichText::new(format_time(self.current_time))
-                            .strong()
-                            .size(17.0)
-                            .color(Color32::from_rgb(15, 23, 42)),
-                    );
+                    let thumb_size = Vec2::splat(38.0);
+                    let (thumb_rect, _) = ui.allocate_exact_size(thumb_size, egui::Sense::hover());
+                    let thumb_painter = ui.painter_at(thumb_rect);
 
-                    let remaining = (self.current_track.duration - self.current_time).max(0.0);
-                    ui.label(
-                        egui::RichText::new(format!(" / -{}", format_time(remaining)))
-                            .strong()
-                            .size(13.5)
-                            .color(Color32::from_rgb(148, 163, 184)),
-                    );
+                    if let Some(ref texture) = self.current_cover_texture {
+                        thumb_painter.rect_filled(thumb_rect, 6.0, Color32::from_rgb(15, 23, 42));
+                        thumb_painter.image(
+                            texture.id(),
+                            thumb_rect,
+                            Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+                            Color32::WHITE,
+                        );
+                        thumb_painter.rect_stroke(thumb_rect, 6.0, Stroke::new(1.0, Color32::from_rgba_unmultiplied(226, 232, 240, 150)), egui::StrokeKind::Outside);
+                    } else {
+                        crate::ui::components::draw_album_art(
+                            &thumb_painter,
+                            thumb_rect,
+                            &self.current_track.title,
+                            self.current_track.bit_depth > 16,
+                        );
+                    }
+
+                    ui.add_space(8.0);
+
+                    ui.vertical(|ui| {
+                        ui.label(
+                            egui::RichText::new(format_time(self.current_time))
+                                .strong()
+                                .size(16.0)
+                                .color(Color32::from_rgb(15, 23, 42)),
+                        );
+
+                        let remaining = (self.current_track.duration - self.current_time).max(0.0);
+                        ui.label(
+                            egui::RichText::new(format!("-{}", format_time(remaining)))
+                                .strong()
+                                .size(11.5)
+                                .color(Color32::from_rgb(148, 163, 184)),
+                        );
+                    });
                 },
             );
 
@@ -418,13 +529,18 @@ impl LunulaApp {
                         });
                         ui.add_space(12.0);
 
-                        // Floating Play/Pause Button
+                        // Floating Play/Pause Button with Morphing Live Oscilloscope Beam
                         let play_size = Vec2::splat(44.0);
                         let (play_rect, play_res) = ui.allocate_exact_size(play_size, egui::Sense::click());
                         let play_hover = ui.ctx().animate_bool(ui.scope_id().with("play_pause_hover"), play_res.hovered());
+                        let play_morph = ui.ctx().animate_bool(ui.scope_id().with("play_morph_anim"), self.is_playing);
+
+                        if play_morph > 0.001 && play_morph < 0.999 {
+                            ui.ctx().request_repaint();
+                        }
 
                         if play_res.clicked() {
-                            self.is_playing = !self.is_playing;
+                            self.toggle_playback();
                         }
 
                         let painter = ui.painter_at(play_rect);
@@ -439,30 +555,87 @@ impl LunulaApp {
                         let circle_col = lerp_color(base_col, hover_col, play_hover);
                         painter.circle_filled(center, 21.0, circle_col);
 
-                        if self.is_playing {
-                            let bar_w = 3.5;
-                            let bar_h = 13.0;
-                            let gap = 3.0;
-                            painter.rect_filled(
-                                Rect::from_center_size(center - Vec2::new(gap + bar_w * 0.5, 0.0), Vec2::new(bar_w, bar_h)),
-                                1.5,
-                                Color32::WHITE,
-                            );
-                            painter.rect_filled(
-                                Rect::from_center_size(center + Vec2::new(gap + bar_w * 0.5, 0.0), Vec2::new(bar_w, bar_h)),
-                                1.5,
-                                Color32::WHITE,
-                            );
-                        } else {
-                            let r = 8.0;
-                            let p1 = center + Vec2::new(-r * 0.6, -r);
-                            let p2 = center + Vec2::new(-r * 0.6, r);
+                        let mut raw_samples = [0.0f32; 1024];
+                        if let Some(ref engine) = self.audio_engine {
+                            engine.get_visualizer_samples(&mut raw_samples);
+                        }
+                        let vol_scale = if self.is_muted { 0.0 } else { self.volume.clamp(0.0, 1.2) };
+
+                        // Morphing transition:
+                        // play_morph = 0.0 -> Stopped/Paused (Play Triangle)
+                        // 0.0 < play_morph <= 0.35 -> Triangle collapses vertically into flat horizontal line ("garis datar")
+                        // 0.35 < play_morph <= 1.0 -> Flat line begins vibrating and dances as live oscilloscope beam
+                        if play_morph < 0.35 {
+                            let t = (play_morph / 0.35).clamp(0.0, 1.0);
+                            let r = 8.5;
+                            // Morphing triangle: p1 and p2 collapse towards y=center.y
+                            let p1 = center + Vec2::new(-r * 0.6, -r * (1.0 - t));
+                            let p2 = center + Vec2::new(-r * 0.6, r * (1.0 - t));
                             let p3 = center + Vec2::new(r * 0.9, 0.0);
-                            painter.add(egui::epaint::PathShape::convex_polygon(
-                                vec![p1, p2, p3],
-                                Color32::WHITE,
-                                Stroke::NONE,
-                            ));
+                            let alpha = ((1.0 - t) * 255.0) as u8;
+                            if alpha > 5 {
+                                painter.add(egui::epaint::PathShape::convex_polygon(
+                                    vec![p1, p2, p3],
+                                    Color32::from_rgba_unmultiplied(255, 255, 255, alpha),
+                                    Stroke::NONE,
+                                ));
+                            }
+                            // As t reaches 1.0, draw the emerging flat horizontal line
+                            if t > 0.05 {
+                                let line_alpha = (t * 255.0) as u8;
+                                painter.line_segment(
+                                    [Pos2::new(center.x - 12.0, center.y), Pos2::new(center.x + 12.0, center.y)],
+                                    Stroke::new(2.0, Color32::from_rgba_unmultiplied(255, 255, 255, line_alpha)),
+                                );
+                            }
+                        } else {
+                            // Live Mini Oscilloscope Beam inside the button
+                            let wave_intensity = ((play_morph - 0.35) / 0.65).clamp(0.0, 1.0);
+                            let beam_w = 26.0;
+                            let n_pts = 26;
+                            let mut pts = Vec::with_capacity(n_pts);
+
+                            for p in 0..n_pts {
+                                let frac = p as f32 / (n_pts - 1) as f32;
+                                let px = (center.x - beam_w * 0.5) + frac * beam_w;
+                                let window = (std::f32::consts::PI * frac).sin(); // 0 at edges, 1 at center
+                                let idx = (p * (1024 / n_pts)).min(1023);
+                                let sample = raw_samples[idx] * vol_scale;
+                                // If stopping/paused (wave_intensity -> 0), py becomes center.y (flat horizontal line)
+                                let py = center.y - (sample * 11.0 * window * wave_intensity);
+                                pts.push(Pos2::new(px, py));
+                            }
+
+                            if pts.len() >= 2 {
+                                // Outer neon glow
+                                let glow_alpha = (140.0 * play_morph) as u8;
+                                for seg in pts.windows(2) {
+                                    painter.line_segment([seg[0], seg[1]], Stroke::new(3.8, Color32::from_rgba_unmultiplied(14, 165, 233, glow_alpha)));
+                                }
+                                // Crisp electric beam core
+                                let core_alpha = (255.0 * play_morph) as u8;
+                                for seg in pts.windows(2) {
+                                    painter.line_segment([seg[0], seg[1]], Stroke::new(1.8, Color32::from_rgba_unmultiplied(240, 249, 255, core_alpha)));
+                                }
+                            }
+
+                            // When hovered while playing, show subtle translucent pause icon overlay
+                            if play_hover > 0.05 {
+                                let pause_alpha = (play_hover * 210.0) as u8;
+                                let bar_w = 3.0;
+                                let bar_h = 11.0;
+                                let gap = 2.5;
+                                painter.rect_filled(
+                                    Rect::from_center_size(center - Vec2::new(gap + bar_w * 0.5, 0.0), Vec2::new(bar_w, bar_h)),
+                                    1.5,
+                                    Color32::from_rgba_unmultiplied(255, 255, 255, pause_alpha),
+                                );
+                                painter.rect_filled(
+                                    Rect::from_center_size(center + Vec2::new(gap + bar_w * 0.5, 0.0), Vec2::new(bar_w, bar_h)),
+                                    1.5,
+                                    Color32::from_rgba_unmultiplied(255, 255, 255, pause_alpha),
+                                );
+                            }
                         }
 
                         ui.add_space(12.0);
@@ -534,6 +707,9 @@ impl LunulaApp {
                             let ratio = ((pos.x - vol_rect.min.x) / vol_rect.width()).clamp(0.0, 1.0);
                             self.volume = ratio;
                             self.is_muted = false;
+                            if let Some(ref engine) = self.audio_engine {
+                                engine.set_volume(self.volume);
+                            }
                         }
                     }
 
@@ -575,6 +751,9 @@ impl LunulaApp {
 
                     if speaker_btn.clicked() {
                         self.is_muted = !self.is_muted;
+                        if let Some(ref engine) = self.audio_engine {
+                            engine.set_volume(if self.is_muted { 0.0 } else { self.volume });
+                        }
                     }
                 },
             );

@@ -68,6 +68,12 @@ pub struct LunulaApp {
 
     pub visualizer_anim_phase: f32,
     pub waveform_mode: WaveformMode,
+    pub audio_engine: Option<crate::audio::AudioEngineController>,
+    pub fft_analyzer: crate::audio::FftAnalyzer,
+    pub spectrum_bars: [f32; 48],
+    pub current_cover_bytes: Option<Vec<u8>>,
+    pub current_cover_texture: Option<eframe::egui::TextureHandle>,
+    pub album_cover_cache: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Option<eframe::egui::TextureHandle>>>>,
 }
 
 
@@ -210,6 +216,12 @@ impl LunulaApp {
             scan_status: String::new(),
             visualizer_anim_phase: 0.0,
             waveform_mode: WaveformMode::StackedMultiBand,
+            audio_engine: crate::audio::AudioEngineController::new().ok(),
+            fft_analyzer: crate::audio::FftAnalyzer::new(48000.0),
+            spectrum_bars: [0.0; 48],
+            current_cover_bytes: None,
+            current_cover_texture: None,
+            album_cover_cache: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         };
 
         if let Some(state) = Self::load_library_state() {
@@ -241,26 +253,87 @@ impl LunulaApp {
             app.eq_bands[9] = 2.0;
         }
 
+        // Preload artwork for initial track
+        if let Some(ref path_str) = app.current_track.file_path {
+            app.current_cover_bytes = crate::scanner::extract_album_art(path_str);
+        }
+
+        if let Some(ref engine) = app.audio_engine {
+            engine.set_volume(if app.is_muted { 0.0 } else { app.volume });
+            engine.set_eq_bypass(app.eq_bypass);
+            for (idx, &gain) in app.eq_bands.iter().enumerate() {
+                engine.set_eq_band(idx, gain);
+            }
+        }
+
         app
+    }
+
+    pub fn sync_eq_to_engine(&self) {
+        if let Some(ref engine) = self.audio_engine {
+            engine.set_eq_bypass(self.eq_bypass);
+            for (idx, &gain) in self.eq_bands.iter().enumerate() {
+                engine.set_eq_band(idx, gain);
+            }
+        }
+    }
+
+    pub fn play_track(&mut self, track: Track) {
+        self.current_track = track;
+        self.current_time = 0.0;
+        self.is_playing = true;
+        self.current_cover_bytes = self.current_track.file_path.as_ref().and_then(|p| {
+            crate::scanner::extract_album_art(p)
+        });
+        self.current_cover_texture = None; // Reset so next frame builds the new texture
+
+        if let Some(ref path_str) = self.current_track.file_path {
+            if let Some(ref engine) = self.audio_engine {
+                engine.play(std::path::PathBuf::from(path_str));
+                engine.set_volume(if self.is_muted { 0.0 } else { self.volume });
+                engine.set_eq_bypass(self.eq_bypass);
+                for (idx, &gain) in self.eq_bands.iter().enumerate() {
+                    engine.set_eq_band(idx, gain);
+                }
+            }
+        }
+        self.save_library_state();
+    }
+
+    pub fn toggle_playback(&mut self) {
+        if self.is_playing {
+            self.is_playing = false;
+            if let Some(ref engine) = self.audio_engine {
+                engine.pause();
+            }
+        } else {
+            self.is_playing = true;
+            if let Some(ref engine) = self.audio_engine {
+                if engine.playback_state() == crate::audio::PlaybackState::Paused {
+                    engine.resume();
+                } else if let Some(ref path_str) = self.current_track.file_path {
+                    engine.play(std::path::PathBuf::from(path_str));
+                    engine.set_volume(if self.is_muted { 0.0 } else { self.volume });
+                }
+            }
+        }
     }
 
     pub fn play_next_track(&mut self) {
         if !self.play_queue.is_empty() {
-            self.current_track = self.play_queue.remove(0);
-            self.current_time = 0.0;
-            self.is_playing = true;
-            self.save_library_state();
+            let next = self.play_queue.remove(0);
+            self.play_track(next);
         } else if !self.playlist.is_empty() {
             let cur_idx = self.playlist.iter().position(|t| {
                 t.title == self.current_track.title && t.artist == self.current_track.artist
             });
             if let Some(idx) = cur_idx {
                 let next_idx = (idx + 1) % self.playlist.len();
-                self.current_track = self.playlist[next_idx].clone();
-                self.current_time = 0.0;
+                let next = self.playlist[next_idx].clone();
+                self.play_track(next);
             } else if let Some(first) = self.playlist.first() {
-                self.current_track = first.clone();
-                self.current_time = 0.0;
+                let first = first.clone();
+                self.play_track(first);
             }
         } else {
             self.current_time = 0.0;
@@ -270,6 +343,9 @@ impl LunulaApp {
     pub fn play_prev_track(&mut self) {
         if self.current_time > 3.0 {
             self.current_time = 0.0;
+            if let Some(ref engine) = self.audio_engine {
+                engine.seek(0.0);
+            }
             return;
         }
         if !self.playlist.is_empty() {
@@ -278,14 +354,69 @@ impl LunulaApp {
             });
             if let Some(idx) = cur_idx {
                 let prev_idx = if idx == 0 { self.playlist.len() - 1 } else { idx - 1 };
-                self.current_track = self.playlist[prev_idx].clone();
-                self.current_time = 0.0;
+                let prev = self.playlist[prev_idx].clone();
+                self.play_track(prev);
             }
         } else {
             self.current_time = 0.0;
         }
     }
 
+    pub fn seek_relative(&mut self, delta_seconds: f32) {
+        if self.current_track.duration > 0.0 {
+            let target = (self.current_time + delta_seconds).clamp(0.0, self.current_track.duration);
+            self.current_time = target;
+            if let Some(ref engine) = self.audio_engine {
+                engine.seek(target);
+            }
+        }
+    }
+
+    pub fn set_app_volume(&mut self, vol: f32) {
+        self.volume = vol.clamp(0.0, 1.2);
+        self.is_muted = false;
+        if let Some(ref engine) = self.audio_engine {
+            engine.set_volume(self.volume);
+        }
+        self.save_library_state();
+    }
+
+    pub fn toggle_mute(&mut self) {
+        self.is_muted = !self.is_muted;
+        if let Some(ref engine) = self.audio_engine {
+            engine.set_volume(if self.is_muted { 0.0 } else { self.volume });
+        }
+    }
+
+    pub fn toggle_eq_bypass(&mut self) {
+        self.eq_bypass = !self.eq_bypass;
+        if let Some(ref engine) = self.audio_engine {
+            engine.set_eq_bypass(self.eq_bypass);
+        }
+        self.save_library_state();
+    }
+
+    pub fn get_album_cover_texture(
+        &self,
+        ctx: &eframe::egui::Context,
+        key: &str,
+        file_path: Option<&str>,
+    ) -> Option<eframe::egui::TextureHandle> {
+        if let Ok(mut cache) = self.album_cover_cache.lock() {
+            if let Some(cached) = cache.get(key) {
+                return cached.clone();
+            }
+            let tex = file_path.and_then(|p| {
+                crate::scanner::extract_album_art(p).and_then(|bytes| {
+                    crate::scanner::load_image_to_texture(ctx, &format!("art_{}", key), &bytes)
+                })
+            });
+            cache.insert(key.to_string(), tex.clone());
+            tex
+        } else {
+            None
+        }
+    }
 }
 
 impl eframe::App for LunulaApp {
@@ -340,13 +471,114 @@ impl eframe::App for LunulaApp {
             ctx.request_repaint();
         }
 
-        if self.is_playing {
+        // Synchronize with real Audio Engine
+        let mut track_ended = false;
+        let mut new_duration = None;
+
+        if let Some(ref engine) = self.audio_engine {
+            while let Some(event) = engine.try_recv_event() {
+                match event {
+                    crate::audio::AudioEvent::TrackEnded => {
+                        track_ended = true;
+                    }
+                    crate::audio::AudioEvent::TrackStarted { duration, .. } => {
+                        if duration > 0.0 {
+                            new_duration = Some(duration);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if let Some(d) = new_duration {
+            self.current_track.duration = d;
+        }
+
+        if track_ended {
+            self.play_next_track();
+        }
+
+        // Live Real-Time 48-Band FFT Analysis from speaker audio stream
+        let is_audio_active = self.is_playing && !self.is_muted && self.volume > 0.001;
+        if is_audio_active {
+            if let Some(ref engine) = self.audio_engine {
+                let mut raw_samples = [0.0f32; 1024];
+                engine.get_visualizer_samples(&mut raw_samples);
+                self.fft_analyzer.compute_bands(&raw_samples, &mut self.spectrum_bars);
+            }
+        } else {
+            // Smoothly decay to baseline when paused, stopped, or muted
+            for b in self.spectrum_bars.iter_mut() {
+                *b = (*b * 0.80).max(0.0);
+            }
+        }
+
+        if self.is_playing || self.spectrum_bars.iter().any(|&v| v > 0.005) {
             ctx.request_repaint();
             self.visualizer_anim_phase += 0.025;
-            self.current_time += 1.0 / 60.0;
-            if self.current_track.duration > 0.0 && self.current_time >= self.current_track.duration {
-                self.play_next_track();
+
+            let engine_pos = self.audio_engine.as_ref().and_then(|e| {
+                if e.playback_state() == crate::audio::PlaybackState::Playing {
+                    Some(e.current_position())
+                } else {
+                    None
+                }
+            });
+
+            if let Some(pos) = engine_pos {
+                self.current_time = pos;
+            } else if self.current_track.duration > 0.0 {
+                self.current_time += 1.0 / 60.0;
+                if self.current_time >= self.current_track.duration {
+                    self.play_next_track();
+                }
             }
+        }
+
+        // Load artwork texture if bytes are available and texture not yet created
+        if self.current_cover_texture.is_none() {
+            let key = if !self.current_track.album.trim().is_empty() {
+                self.current_track.album.clone()
+            } else {
+                self.current_track.file_path.clone().unwrap_or_else(|| self.current_track.title.clone())
+            };
+            self.current_cover_texture = self.get_album_cover_texture(&ctx, &key, self.current_track.file_path.as_deref());
+        }
+
+        // Global Keyboard Shortcuts (active when no text field has focus)
+        if !ctx.egui_wants_keyboard_input() {
+            ctx.input(|i| {
+                if i.key_pressed(egui::Key::Space) {
+                    self.toggle_playback();
+                }
+                if i.key_pressed(egui::Key::ArrowLeft) {
+                    if i.modifiers.ctrl {
+                        self.play_prev_track();
+                    } else {
+                        self.seek_relative(-5.0);
+                    }
+                }
+                if i.key_pressed(egui::Key::ArrowRight) {
+                    if i.modifiers.ctrl {
+                        self.play_next_track();
+                    } else {
+                        self.seek_relative(5.0);
+                    }
+                }
+                if i.key_pressed(egui::Key::ArrowUp) {
+                    self.set_app_volume(self.volume + 0.05);
+                }
+                if i.key_pressed(egui::Key::ArrowDown) {
+                    self.set_app_volume(self.volume - 0.05);
+                }
+                if i.key_pressed(egui::Key::M) {
+                    self.toggle_mute();
+                }
+                if i.key_pressed(egui::Key::B) {
+                    self.toggle_eq_bypass();
+                }
+            });
         }
 
         // Clean Minimalist Top Header

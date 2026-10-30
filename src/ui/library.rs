@@ -1,5 +1,5 @@
 use eframe::egui;
-use egui::{Color32, Stroke, Vec2};
+use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 use crate::models::{CustomPlaylist, LibraryCategory, Track};
 use crate::app::LunulaApp;
 use crate::ui::components::{draw_album_art, draw_artist_avatar, format_time, open_file_in_explorer, render_card_frame, render_stat_box};
@@ -270,10 +270,27 @@ impl LunulaApp {
                                                     ui.set_width(card_w - 28.0);
                                                     ui.set_min_height(245.0);
                                                     ui.vertical(|ui| {
-                                                        // Vinyl Art Box
+                                                        // Vinyl Art Box or Embedded Cover Art
                                                         let (art_rect, _) = ui.allocate_exact_size(Vec2::new(card_w - 28.0, 110.0), egui::Sense::hover());
                                                         let painter = ui.painter_at(art_rect);
-                                                        draw_album_art(&painter, art_rect, alb_name, is_hires);
+                                                        let cover_tex = self.get_album_cover_texture(ui.ctx(), alb_name, tracks[0].file_path.as_deref());
+                                                        if let Some(ref tex) = cover_tex {
+                                                            painter.rect_filled(art_rect, 8.0, Color32::from_rgb(15, 23, 42));
+                                                            painter.image(
+                                                                tex.id(),
+                                                                art_rect,
+                                                                Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+                                                                Color32::WHITE,
+                                                            );
+                                                            painter.rect_stroke(art_rect, 8.0, Stroke::new(1.0, Color32::from_rgb(226, 232, 240)), egui::StrokeKind::Outside);
+                                                            if is_hires {
+                                                                let badge_rect = Rect::from_min_size(art_rect.min + Vec2::new(6.0, 6.0), Vec2::new(48.0, 18.0));
+                                                                painter.rect_filled(badge_rect, 4.0, Color32::from_rgba_unmultiplied(16, 185, 129, 230));
+                                                                painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER, "HI-RES", egui::FontId::proportional(9.0), Color32::WHITE);
+                                                            }
+                                                        } else {
+                                                            draw_album_art(&painter, art_rect, alb_name, is_hires);
+                                                        }
 
                                                         ui.add_space(8.0);
                                                         ui.add(egui::Label::new(egui::RichText::new(alb_name).strong().size(13.5).color(Color32::from_rgb(15, 23, 42))).truncate());
@@ -526,6 +543,32 @@ impl LunulaApp {
                                                     }
                                                     ui.add_space(4.0);
                                                     ui.label(egui::RichText::new(format!("{:02}", idx + 1)).strong().size(12.0).color(Color32::from_rgb(100, 116, 139)));
+                                                    ui.add_space(6.0);
+
+                                                    // Cover Art Thumbnail
+                                                    let cover_key = if !song.album.trim().is_empty() {
+                                                        &song.album
+                                                    } else {
+                                                        song.file_path.as_deref().unwrap_or(&song.title)
+                                                    };
+                                                    let thumb_tex = self.get_album_cover_texture(ui.ctx(), cover_key, song.file_path.as_deref());
+                                                    let (thumb_rect, _) = ui.allocate_exact_size(Vec2::new(30.0, 30.0), egui::Sense::hover());
+                                                    let painter = ui.painter_at(thumb_rect);
+                                                    if let Some(ref tex) = thumb_tex {
+                                                        painter.rect_filled(thumb_rect, 4.0, Color32::from_rgb(15, 23, 42));
+                                                        painter.image(
+                                                            tex.id(),
+                                                            thumb_rect,
+                                                            Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+                                                            Color32::WHITE,
+                                                        );
+                                                        painter.rect_stroke(thumb_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(226, 232, 240)), egui::StrokeKind::Outside);
+                                                    } else {
+                                                        painter.rect_filled(thumb_rect, 4.0, Color32::from_rgb(241, 245, 249));
+                                                        painter.rect_stroke(thumb_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(226, 232, 240)), egui::StrokeKind::Outside);
+                                                        painter.circle_filled(thumb_rect.center(), 10.0, Color32::from_rgb(30, 41, 59));
+                                                        painter.circle_filled(thumb_rect.center(), 3.5, Color32::from_rgb(225, 29, 72));
+                                                    }
                                                     ui.add_space(6.0);
 
                                                     ui.vertical(|ui| {
@@ -818,13 +861,16 @@ impl LunulaApp {
                                 .inner_margin(egui::Margin::symmetric(10, 7))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
-                                        ui.allocate_ui(Vec2::new(32.0, 18.0), |ui| {
+                                        ui.allocate_ui(Vec2::new(28.0, 18.0), |ui| {
                                             ui.label(egui::RichText::new("#").strong().size(11.5).color(Color32::from_rgb(71, 85, 105)));
                                         });
-                                        ui.allocate_ui(Vec2::new(30.0, 18.0), |ui| {
+                                        ui.allocate_ui(Vec2::new(34.0, 18.0), |ui| {
+                                            ui.label(egui::RichText::new("ART").strong().size(10.5).color(Color32::from_rgb(71, 85, 105)));
+                                        });
+                                        ui.allocate_ui(Vec2::new(28.0, 18.0), |ui| {
                                             ui.label(egui::RichText::new("FAV").strong().size(11.0).color(Color32::from_rgb(71, 85, 105)));
                                         });
-                                        ui.allocate_ui(Vec2::new(320.0, 18.0), |ui| {
+                                        ui.allocate_ui(Vec2::new(290.0, 18.0), |ui| {
                                             ui.label(egui::RichText::new("JUDUL & ARTIS").strong().size(11.5).color(Color32::from_rgb(71, 85, 105)));
                                         });
                                         ui.allocate_ui(Vec2::new(220.0, 18.0), |ui| {
@@ -936,7 +982,7 @@ impl LunulaApp {
                                         .show(ui, |ui| {
                                             ui.horizontal(|ui| {
                                                 // Track number / Play indicator
-                                                ui.allocate_ui(Vec2::new(32.0, 34.0), |ui| {
+                                                ui.allocate_ui(Vec2::new(28.0, 34.0), |ui| {
                                                     ui.centered_and_justified(|ui| {
                                                         if is_current {
                                                             ui.colored_label(Color32::from_rgb(5, 150, 105), "▶");
@@ -946,8 +992,35 @@ impl LunulaApp {
                                                     });
                                                 });
 
+                                                // Cover Art Thumbnail
+                                                ui.allocate_ui(Vec2::new(34.0, 34.0), |ui| {
+                                                    let cover_key = if !song.album.trim().is_empty() {
+                                                        &song.album
+                                                    } else {
+                                                        song.file_path.as_deref().unwrap_or(&song.title)
+                                                    };
+                                                    let thumb_tex = self.get_album_cover_texture(ui.ctx(), cover_key, song.file_path.as_deref());
+                                                    let (thumb_rect, _) = ui.allocate_exact_size(Vec2::new(30.0, 30.0), egui::Sense::hover());
+                                                    let painter = ui.painter_at(thumb_rect);
+                                                    if let Some(ref tex) = thumb_tex {
+                                                        painter.rect_filled(thumb_rect, 4.0, Color32::from_rgb(15, 23, 42));
+                                                        painter.image(
+                                                            tex.id(),
+                                                            thumb_rect,
+                                                            Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+                                                            Color32::WHITE,
+                                                        );
+                                                        painter.rect_stroke(thumb_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(226, 232, 240)), egui::StrokeKind::Outside);
+                                                    } else {
+                                                        painter.rect_filled(thumb_rect, 4.0, Color32::from_rgb(241, 245, 249));
+                                                        painter.rect_stroke(thumb_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(226, 232, 240)), egui::StrokeKind::Outside);
+                                                        painter.circle_filled(thumb_rect.center(), 10.0, Color32::from_rgb(30, 41, 59));
+                                                        painter.circle_filled(thumb_rect.center(), 3.5, Color32::from_rgb(14, 165, 233));
+                                                    }
+                                                });
+
                                                 // Favorite Heart Toggle
-                                                ui.allocate_ui(Vec2::new(30.0, 34.0), |ui| {
+                                                ui.allocate_ui(Vec2::new(28.0, 34.0), |ui| {
                                                     ui.centered_and_justified(|ui| {
                                                         let icon = if song.is_favorite { "❤️" } else { "🤍" };
                                                         if ui.button(egui::RichText::new(icon).size(13.0)).clicked() {
@@ -957,7 +1030,7 @@ impl LunulaApp {
                                                 });
 
                                                 // Title & Artist
-                                                ui.allocate_ui(Vec2::new(320.0, 34.0), |ui| {
+                                                ui.allocate_ui(Vec2::new(290.0, 34.0), |ui| {
                                                     ui.vertical(|ui| {
                                                         let title_color = if is_current { Color32::from_rgb(5, 150, 105) } else { Color32::from_rgb(15, 23, 42) };
                                                         ui.add(egui::Label::new(egui::RichText::new(&song.title).strong().size(13.5).color(title_color)).truncate());
@@ -1115,12 +1188,13 @@ impl LunulaApp {
             self.current_track.duration = 0.0;
             self.current_time = 0.0;
             self.is_playing = false;
+            if let Ok(mut c) = self.album_cover_cache.lock() {
+                c.clear();
+            }
         }
 
         if let Some(track) = track_to_play {
-            self.current_track = track;
-            self.current_time = 0.0;
-            self.is_playing = true;
+            self.play_track(track);
         }
 
         if let Some(track) = track_play_next {

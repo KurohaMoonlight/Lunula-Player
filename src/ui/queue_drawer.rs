@@ -183,9 +183,7 @@ impl LunulaApp {
             }
         }
         if let Some(track) = track_to_play {
-            self.current_track = track;
-            self.current_time = 0.0;
-            self.is_playing = true;
+            self.play_track(track);
         }
     }
 }
