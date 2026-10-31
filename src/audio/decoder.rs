@@ -250,11 +250,114 @@ impl AudioDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use symphonia::core::conv::IntoSample;
 
     #[test]
     fn test_decoder_non_existent_file() {
         let res = AudioDecoder::open("non_existent_song.flac");
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_symphonia_scale() {
+        let s_min_16: f32 = (-32768i16).into_sample();
+        let s_max_16: f32 = (32767i16).into_sample();
+        let s_one_16: f32 = (1i16).into_sample();
+
+        let s_min_32: f32 = (-2147483648i32).into_sample();
+        let s_max_32: f32 = (2147483647i32).into_sample();
+        let s_one_32: f32 = (1i32).into_sample();
+
+        println!("16-bit: min={}, max={}, one={}", s_min_16, s_max_16, s_one_16);
+        println!("32-bit: min={}, max={}, one={}", s_min_32, s_max_32, s_one_32);
+
+        // Verify exact inversion with 32768.0
+        assert_eq!((s_min_16 * 32768.0).round() as i16, -32768);
+        assert_eq!((s_max_16 * 32768.0).round() as i16, 32767);
+        assert_eq!((s_one_16 * 32768.0).round() as i16, 1);
+        assert_eq!((IntoSample::<f32>::into_sample(0i16) * 32768.0).round() as i16, 0);
+
+        // Check if all 16-bit values map back 100% losslessly!
+        for val in -32768i16..=32767i16 {
+            let f: f32 = val.into_sample();
+            let recovered = (f as f64 * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
+            assert_eq!(val, recovered, "Failed for val {}", val);
+        }
+    }
+
+    #[test]
+    fn test_decoder_reference_file_bit_perfect_integration() {
+        use std::io::Write;
+
+        let temp_dir = std::env::temp_dir();
+        let wav_path = temp_dir.join("lunula_test_reference.wav");
+
+        // Synthesize valid 16-bit stereo PCM audio with known test values
+        let raw_pcm: Vec<i16> = vec![
+            0, 0,
+            1, -1,
+            32767, -32768,
+            16384, -16384,
+            1234, -5678,
+            9999, -9999,
+            -32768, 32767,
+            100, -100,
+        ];
+
+        let num_samples = raw_pcm.len() as u32;
+        let data_len = num_samples * 2;
+        let byte_rate = 44100u32 * 2 * 2;
+        let block_align = 2u16 * 2;
+        let riff_len = 36 + data_len;
+
+        {
+            let mut f = std::fs::File::create(&wav_path).unwrap();
+            f.write_all(b"RIFF").unwrap();
+            f.write_all(&riff_len.to_le_bytes()).unwrap();
+            f.write_all(b"WAVE").unwrap();
+
+            f.write_all(b"fmt ").unwrap();
+            f.write_all(&16u32.to_le_bytes()).unwrap();
+            f.write_all(&1u16.to_le_bytes()).unwrap(); // PCM
+            f.write_all(&2u16.to_le_bytes()).unwrap(); // 2 channels (Stereo)
+            f.write_all(&44100u32.to_le_bytes()).unwrap(); // 44.1 kHz
+            f.write_all(&byte_rate.to_le_bytes()).unwrap();
+            f.write_all(&block_align.to_le_bytes()).unwrap();
+            f.write_all(&16u16.to_le_bytes()).unwrap(); // 16-bit
+
+            f.write_all(b"data").unwrap();
+            f.write_all(&data_len.to_le_bytes()).unwrap();
+            for &sample in &raw_pcm {
+                f.write_all(&sample.to_le_bytes()).unwrap();
+            }
+        }
+
+        // Open with LunulaPlayer AudioDecoder
+        let mut decoder = AudioDecoder::open(&wav_path).expect("Failed to open reference WAV file");
+        assert_eq!(decoder.sample_rate(), 44100);
+        assert_eq!(decoder.bits_per_sample(), 16);
+
+        let mut read_buf = vec![0.0f32; raw_pcm.len()];
+        let n_read = decoder.read_stereo_samples(&mut read_buf);
+        assert_eq!(n_read, raw_pcm.len(), "Must read all generated stereo samples");
+
+        // Pass through Bit-Perfect pipeline (passthrough: no EQ, no volume scaling)
+        let mut recovered_pcm = Vec::with_capacity(n_read);
+        for &sample_f32 in &read_buf {
+            let sample_i16 = (sample_f32 as f64 * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
+            recovered_pcm.push(sample_i16);
+        }
+
+        // Bit-for-bit comparison against original PCM integers
+        for (i, (&orig, &rec)) in raw_pcm.iter().zip(recovered_pcm.iter()).enumerate() {
+            assert_eq!(
+                orig, rec,
+                "Sample mismatch at index {}: original {}, recovered {}",
+                i, orig, rec
+            );
+        }
+
+        let _ = std::fs::remove_file(wav_path);
     }
 }
 

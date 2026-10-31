@@ -470,9 +470,9 @@ impl CpalBackend {
 
         let to_i16 = |s: f32, state: &mut u32| -> i16 {
             let sample_val = if should_dither {
-                s * 32767.0 + tpdf_dither_val(state)
+                s * 32768.0 + tpdf_dither_val(state)
             } else {
-                s * 32767.0
+                s * 32768.0
             };
             sample_val.round().clamp(-32768.0, 32767.0) as i16
         };

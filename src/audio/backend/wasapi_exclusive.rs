@@ -210,8 +210,8 @@ impl WasapiExclusiveBackend {
                                 temp_r = consumer.pop().unwrap_or(0.0) * vol;
                                 vis_worker.push_sample((temp_l + temp_r) * 0.5);
 
-                                let i_l = (temp_l * 32767.0).round().clamp(-32768.0, 32767.0) as i16;
-                                let i_r = (temp_r * 32767.0).round().clamp(-32768.0, 32767.0) as i16;
+                                let i_l = (temp_l as f64 * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
+                                let i_r = (temp_r as f64 * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
                                 raw_bytes.extend_from_slice(&i_l.to_le_bytes());
                                 raw_bytes.extend_from_slice(&i_r.to_le_bytes());
                             }
@@ -224,12 +224,12 @@ impl WasapiExclusiveBackend {
                                 vis_worker.push_sample((temp_l + temp_r) * 0.5);
 
                                 let (scaled_l, scaled_r) = if valid_bits == 24 {
-                                    let l = ((temp_l as f64 * 8388607.0).round().clamp(-8388608.0, 8388607.0) as i32) << 8;
-                                    let r = ((temp_r as f64 * 8388607.0).round().clamp(-8388608.0, 8388607.0) as i32) << 8;
+                                    let l = ((temp_l as f64 * 8388608.0).round().clamp(-8388608.0, 8388607.0) as i32) << 8;
+                                    let r = ((temp_r as f64 * 8388608.0).round().clamp(-8388608.0, 8388607.0) as i32) << 8;
                                     (l, r)
                                 } else {
-                                    let l = (temp_l as f64 * 2147483647.0).round().clamp(-2147483648.0, 2147483647.0) as i32;
-                                    let r = (temp_r as f64 * 2147483647.0).round().clamp(-2147483648.0, 2147483647.0) as i32;
+                                    let l = (temp_l as f64 * 2147483648.0).round().clamp(-2147483648.0, 2147483647.0) as i32;
+                                    let r = (temp_r as f64 * 2147483648.0).round().clamp(-2147483648.0, 2147483647.0) as i32;
                                     (l, r)
                                 };
                                 raw_bytes.extend_from_slice(&scaled_l.to_le_bytes());

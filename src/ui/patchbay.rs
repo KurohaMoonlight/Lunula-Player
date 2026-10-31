@@ -64,6 +64,7 @@ impl LunulaApp {
 
         self.nodes.push(new_node);
         self.selected_node = Some(id);
+        self.sync_signal_chain_to_engine();
     }
 
     // Interactive Modular Patchbay Canvas with Pan, Drag, and Connect/Disconnect Cables
@@ -119,6 +120,7 @@ impl LunulaApp {
         let mut disconnect_node: Option<usize> = None;
         let mut toggle_dsp = false;
         let mut switch_mode: Option<ChainMode> = None;
+        let mut topology_changed = false;
 
         // Check if cursor is hovering over any node rect
         let is_hovering_any_node = self.nodes.iter().any(|node| {
@@ -224,6 +226,7 @@ impl LunulaApp {
                                     from_node: from_id,
                                     to_node: node.id,
                                 });
+                                topology_changed = true;
                             }
                             break;
                         }
@@ -460,6 +463,7 @@ impl LunulaApp {
         // Remove disconnected cable
         if let Some(idx) = connection_to_remove {
             self.connections.remove(idx);
+            topology_changed = true;
         }
 
         // 5. Draw Live Rubber-Band Cable while Dragging
@@ -779,14 +783,14 @@ impl LunulaApp {
                             Color32::from_rgba_premultiplied(238, 242, 255, 230),
                             Stroke::new(1.0, Color32::from_rgb(199, 210, 254)),
                             "🟣",
-                            "JALUR AUDIO AKTIF (DSP ACTIVE) — 10-Band Peaking EQ & FX aktif dalam presisi 32-bit Float",
+                            "JALUR AUDIO AKTIF (DSP ACTIVE) — 10-Band Peaking EQ dalam presisi 64-bit Float (f64) dengan Headroom Guard",
                             Color32::from_rgb(67, 56, 202),
                         ),
                         ChainMode::OsResampled => (
                             Color32::from_rgba_premultiplied(254, 243, 199, 230),
                             Stroke::new(1.0, Color32::from_rgb(253, 230, 138)),
                             "🟡",
-                            "JALUR AUDIO AKTIF (OS RESAMPLED) — Resampling ke 48.0 kHz via App Linear SRC Shared Mode",
+                            "JALUR AUDIO AKTIF (OS RESAMPLED) — Resampling ke 48.0 kHz via Rubato Sinc SRC Shared Mode",
                             Color32::from_rgb(146, 64, 14),
                         ),
                     }
@@ -827,12 +831,14 @@ impl LunulaApp {
                     from_node: from_id,
                     to_node: to_id,
                 });
+                topology_changed = true;
             }
         }
 
         // Disconnect all cables connected to this node
         if let Some(d_id) = disconnect_node {
             self.connections.retain(|c| c.from_node != d_id && c.to_node != d_id);
+            topology_changed = true;
         }
 
         // Mode switching (via DSP card click or toggle)
@@ -853,6 +859,11 @@ impl LunulaApp {
             if self.selected_node == Some(del_id) {
                 self.selected_node = None;
             }
+            topology_changed = true;
+        }
+
+        if topology_changed {
+            self.sync_signal_chain_to_engine();
         }
     }
 

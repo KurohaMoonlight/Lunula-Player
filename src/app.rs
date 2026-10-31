@@ -302,6 +302,7 @@ impl LunulaApp {
             }
         }
 
+        app.sync_signal_chain_to_engine();
         app
     }
 
@@ -312,6 +313,7 @@ impl LunulaApp {
                 engine.set_eq_band(idx, gain);
             }
         }
+        self.sync_signal_chain_to_engine();
     }
 
     pub fn play_track(&mut self, track: Track) {
@@ -332,6 +334,7 @@ impl LunulaApp {
                     engine.set_eq_band(idx, gain);
                 }
             }
+            self.sync_signal_chain_to_engine();
         }
         self.save_library_state();
     }
@@ -657,8 +660,8 @@ impl LunulaApp {
                 3 => {
                     node.title = "DSP ENGINE".to_string();
                     if report.is_dsp_active {
-                        node.sub1 = "Active (32-bit Float)".to_string();
-                        node.sub2 = "10-Band EQ & FX Active".to_string();
+                        node.sub1 = "Active (64-bit Float)".to_string();
+                        node.sub2 = "10-Band Biquad f64 • Headroom Guard".to_string();
                     } else {
                         node.sub1 = "BYPASSED (Direct Wire)".to_string();
                         node.sub2 = "0.0 dB Pure Master".to_string();
@@ -672,7 +675,7 @@ impl LunulaApp {
                     } else if report.is_resampling {
                         node.title = "APP RESAMPLER".to_string();
                         node.sub1 = report.device_name.clone();
-                        node.sub2 = format!("Linear SRC • {:.1} kHz", report.device_rate as f32 / 1000.0);
+                        node.sub2 = format!("Rubato Sinc SRC • {:.1} kHz", report.device_rate as f32 / 1000.0);
                     } else {
                         node.title = "SHARED STREAM".to_string();
                         node.sub1 = report.device_name.clone();
@@ -743,8 +746,8 @@ impl LunulaApp {
                 match n.id {
                     3 => {
                         if mode == ChainMode::DspActive {
-                            n.sub1 = "Active (32-bit Float)".to_string();
-                            n.sub2 = "10-Band EQ & FX Active".to_string();
+                            n.sub1 = "Active (64-bit Float)".to_string();
+                            n.sub2 = "10-Band Biquad f64 • Headroom Guard".to_string();
                         } else {
                             n.sub1 = "BYPASSED (Direct Wire)".to_string();
                             n.sub2 = "0.0 dB Pure Master".to_string();
@@ -786,6 +789,7 @@ impl LunulaApp {
             engine.set_chain_mode(mode);
         }
 
+        self.sync_signal_chain_to_engine();
         self.save_library_state();
     }
 
@@ -888,6 +892,103 @@ impl LunulaApp {
             reachable_from_source,
             flowing_nodes,
             flowing_cables,
+        }
+    }
+
+    pub fn compile_signal_chain(&self) -> crate::audio::SignalChainGraph {
+        use std::collections::{HashMap, VecDeque};
+        use crate::models::NodeType;
+        use crate::audio::{
+            BassGuardEffect, Effect, GraphicEqEffect, PresetEqEffect, StereoWidenerEffect,
+            TubeWarmerEffect, VolumeAttenuatorEffect,
+        };
+
+        let chain_eval = self.evaluate_signal_chain();
+        if !chain_eval.is_complete {
+            return crate::audio::SignalChainGraph {
+                is_complete: false,
+                effects: Vec::new(),
+            };
+        }
+
+        // Topological sort on flowing nodes starting from Source
+        let mut in_degree: HashMap<usize, usize> = HashMap::new();
+        let mut adj: HashMap<usize, Vec<usize>> = HashMap::new();
+
+        for &node_id in &chain_eval.flowing_nodes {
+            in_degree.insert(node_id, 0);
+            adj.insert(node_id, Vec::new());
+        }
+
+        for &(from, to) in &chain_eval.flowing_cables {
+            if chain_eval.flowing_nodes.contains(&from) && chain_eval.flowing_nodes.contains(&to) {
+                *in_degree.entry(to).or_insert(0) += 1;
+                adj.entry(from).or_default().push(to);
+            }
+        }
+
+        let mut q = VecDeque::new();
+        for (&node_id, &deg) in &in_degree {
+            if deg == 0 {
+                q.push_back(node_id);
+            }
+        }
+
+        let mut ordered_node_ids = Vec::new();
+        while let Some(curr) = q.pop_front() {
+            ordered_node_ids.push(curr);
+            if let Some(neighbors) = adj.get(&curr) {
+                for &next in neighbors {
+                    if let Some(deg) = in_degree.get_mut(&next) {
+                        *deg -= 1;
+                        if *deg == 0 {
+                            q.push_back(next);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Build concrete effects chain in topological sequence
+        let sample_rate = self.signal_path_report.as_ref().map_or(44100.0, |r| r.device_rate as f64);
+        let mut effects: Vec<Box<dyn Effect>> = Vec::new();
+
+        for &id in &ordered_node_ids {
+            if let Some(node) = self.nodes.iter().find(|n| n.id == id) {
+                match &node.node_type {
+                    NodeType::Dsp => {
+                        effects.push(Box::new(GraphicEqEffect::new(self.eq_bands, sample_rate)));
+                    }
+                    NodeType::TubeWarmer => {
+                        effects.push(Box::new(TubeWarmerEffect::new()));
+                    }
+                    NodeType::StereoWidener => {
+                        effects.push(Box::new(StereoWidenerEffect::new(1.35)));
+                    }
+                    NodeType::BassGuard => {
+                        effects.push(Box::new(BassGuardEffect::new(sample_rate)));
+                    }
+                    NodeType::VolumeAttenuator => {
+                        effects.push(Box::new(VolumeAttenuatorEffect::new(-6.02)));
+                    }
+                    NodeType::SavedEqPreset(name) => {
+                        effects.push(Box::new(PresetEqEffect::from_preset(name, sample_rate)));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        crate::audio::SignalChainGraph {
+            is_complete: true,
+            effects,
+        }
+    }
+
+    pub fn sync_signal_chain_to_engine(&self) {
+        if let Some(ref engine) = self.audio_engine {
+            let graph = self.compile_signal_chain();
+            engine.set_signal_chain_graph(graph);
         }
     }
 }

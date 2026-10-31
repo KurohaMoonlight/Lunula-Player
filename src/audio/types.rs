@@ -26,6 +26,57 @@ impl Default for ChainMode {
     }
 }
 
+/// Trait for modular audio DSP effects that can be inserted into the signal graph.
+pub trait Effect: Send + std::fmt::Debug {
+    fn process_frame(&mut self, l: f64, r: f64) -> (f64, f64);
+    fn reset(&mut self);
+    fn set_sample_rate(&mut self, sample_rate: f64);
+    fn name(&self) -> &str;
+    fn set_param(&mut self, _index: usize, _val: f64) {}
+    fn clone_box(&self) -> Box<dyn Effect>;
+}
+
+impl Clone for Box<dyn Effect> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
+}
+
+/// Compiled modular signal chain graph.
+/// Contains the topological execution order of effects and connection completeness status.
+pub struct SignalChainGraph {
+    pub is_complete: bool,
+    pub effects: Vec<Box<dyn Effect>>,
+}
+
+impl Clone for SignalChainGraph {
+    fn clone(&self) -> Self {
+        Self {
+            is_complete: self.is_complete,
+            effects: self.effects.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for SignalChainGraph {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<&str> = self.effects.iter().map(|e| e.name()).collect();
+        f.debug_struct("SignalChainGraph")
+            .field("is_complete", &self.is_complete)
+            .field("effects", &names)
+            .finish()
+    }
+}
+
+impl Default for SignalChainGraph {
+    fn default() -> Self {
+        Self {
+            is_complete: true,
+            effects: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum AudioCommand {
     Play(PathBuf),
@@ -37,10 +88,11 @@ pub enum AudioCommand {
     SetEqBand { index: usize, gain_db: f32 },
     SetEqBypass(bool),
     /// Atomically switch the entire signal chain mode.
-    /// Replaces separate SetForceResample48k + SetEqBypass calls.
     SetChainMode(ChainMode),
     /// Select specific audio hardware output device by friendly name (None = default OS endpoint)
     SetOutputDevice(Option<String>),
+    /// Dynamic modular signal chain graph compiled from patchbay canvas
+    SetSignalChainGraph(SignalChainGraph),
 }
 
 /// Report of the actual signal path configuration determined by the engine.
