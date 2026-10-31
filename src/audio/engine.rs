@@ -309,7 +309,11 @@ fn run_audio_worker(
                                     }
                                 } else if let Some(out) = &output {
                                     // Flush ring buffer without stream recreation: zero clicks, keeps exclusive mode lock
-                                    out.flush();
+                                    if !out.flush() {
+                                        let _ = event_tx.send(AudioEvent::Error(
+                                            "Timeout flush audio (50ms): audio callback tidak merespons ACK".to_string(),
+                                        ));
+                                    }
                                 }
 
                                 if let Some(out) = &output {
@@ -390,7 +394,11 @@ fn run_audio_worker(
                                 raw_len = 0;
 
                                 if let Some(out) = &output {
-                                    out.flush();
+                                    if !out.flush() {
+                                        let _ = event_tx.send(AudioEvent::Error(
+                                            "Timeout flush audio saat seek (50ms): audio callback tidak merespons ACK".to_string(),
+                                        ));
+                                    }
                                     let sr = out.sample_rate();
                                     resampler.reset(dec.sample_rate(), sr);
                                 }
@@ -499,7 +507,11 @@ fn run_audio_worker(
                                     current_stream_mode = Some(chain_mode);
                                 }
                             } else if let Some(out) = &output {
-                                out.flush();
+                                if !out.flush() {
+                                    let _ = event_tx.send(AudioEvent::Error(
+                                        "Timeout flush audio saat stop (50ms): audio callback tidak merespons ACK".to_string(),
+                                    ));
+                                }
                             }
 
                             if let Some(out) = &output {

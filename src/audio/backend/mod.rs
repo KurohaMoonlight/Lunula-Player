@@ -20,7 +20,7 @@ pub trait OutputBackend: Send {
     fn resume(&self);
     fn is_paused(&self) -> bool;
     fn set_volume(&self, vol: f32);
-    fn flush(&self);
+    fn flush(&self) -> bool;
 }
 
 pub fn enumerate_output_devices() -> Vec<OutputDeviceInfo> {

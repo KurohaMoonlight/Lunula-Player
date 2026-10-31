@@ -26,6 +26,20 @@ pub enum NodeType {
     SavedEqPreset(String),
 }
 
+impl NodeType {
+    pub fn is_dsp_or_effect(&self) -> bool {
+        matches!(
+            self,
+            NodeType::Dsp
+                | NodeType::TubeWarmer
+                | NodeType::StereoWidener
+                | NodeType::BassGuard
+                | NodeType::VolumeAttenuator
+                | NodeType::SavedEqPreset(_)
+        )
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ModularNode {
     pub id: usize,

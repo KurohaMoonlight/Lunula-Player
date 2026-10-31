@@ -1,4 +1,74 @@
 use eframe::egui;
+use lunulaplayer::LunulaApp;
+use lunulaplayer::models::{LibraryCategory, Track};
+
+#[test]
+fn test_real_library_panel_all_categories_render() {
+    let ctx = egui::Context::default();
+    let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0)));
+
+    let mut app = LunulaApp::default();
+    app.playlist = vec![
+        Track {
+            title: "Test Track 1".to_string(),
+            artist: "Test Artist".to_string(),
+            album: "Test Album".to_string(),
+            duration: 180.0,
+            format: "FLAC".to_string(),
+            sample_rate: 44100,
+            bit_depth: 16,
+            waveform: vec![0.5; 50],
+            waveform_bass: vec![0.5; 50],
+            waveform_mid: vec![0.5; 50],
+            waveform_treble: vec![0.5; 50],
+            file_path: None,
+            file_size_mb: 25.0,
+            bitrate_kbps: None,
+            is_favorite: true,
+        },
+        Track {
+            title: "Test Track 2".to_string(),
+            artist: "Test Artist".to_string(),
+            album: "Test Album".to_string(),
+            duration: 200.0,
+            format: "FLAC".to_string(),
+            sample_rate: 96000,
+            bit_depth: 24,
+            waveform: vec![0.5; 50],
+            waveform_bass: vec![0.5; 50],
+            waveform_mid: vec![0.5; 50],
+            waveform_treble: vec![0.5; 50],
+            file_path: None,
+            file_size_mb: 60.0,
+            bitrate_kbps: None,
+            is_favorite: false,
+        },
+    ];
+
+    let categories = [
+        LibraryCategory::AllTracks,
+        LibraryCategory::Albums,
+        LibraryCategory::Artists,
+        LibraryCategory::Quality,
+        LibraryCategory::Favorites,
+        LibraryCategory::Playlists,
+    ];
+
+    for cat in categories {
+        app.library_category = cat;
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: screen,
+                time: Some(0.1),
+                ..Default::default()
+            },
+            |ui| {
+                app.render_library_panel(ui);
+            },
+        );
+        out.textures_delta.clear();
+    }
+}
 
 #[test]
 fn test_album_card_button_clicks_not_intercepted() {

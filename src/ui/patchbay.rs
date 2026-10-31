@@ -327,8 +327,13 @@ impl LunulaApp {
                     connection_to_remove = Some(conn_idx);
                 }
 
+                let is_effect_cable = (from_n.node_type.is_dsp_or_effect() || to_n.node_type.is_dsp_or_effect())
+                    && (self.chain_mode == ChainMode::BitPerfect || self.chain_mode == ChainMode::OsResampled);
+
                 let cable_color = if is_hover_cable {
                     Color32::from_rgb(239, 68, 68) // Red on hover to cut
+                } else if is_effect_cable {
+                    Color32::from_rgb(203, 213, 225) // Muted slate gray when connected to bypassed effect
                 } else if is_flowing_cable {
                     theme_color
                 } else {
@@ -340,14 +345,23 @@ impl LunulaApp {
                     painter.line_segment([seg[0] + Vec2::new(0.0, 1.5), seg[1] + Vec2::new(0.0, 1.5)], Stroke::new(3.0, Color32::from_black_alpha(18)));
                 }
 
-                // Cable path
+                // Cable path: draw dashed line if connected to a bypassed effect
                 let stroke_w = if is_hover_cable { 2.8 } else if is_flowing_cable { 2.3 } else { 1.8 };
-                for seg in points.windows(2) {
-                    painter.line_segment([seg[0], seg[1]], Stroke::new(stroke_w, cable_color));
+                if is_effect_cable {
+                    for (i, seg) in points.windows(2).enumerate() {
+                        if i % 2 == 0 {
+                            painter.line_segment([seg[0], seg[1]], Stroke::new(stroke_w, cable_color));
+                        }
+                    }
+                } else {
+                    for seg in points.windows(2) {
+                        painter.line_segment([seg[0], seg[1]], Stroke::new(stroke_w, cable_color));
+                    }
                 }
 
                 // If flowing and song is playing: draw live animated audio data particles traveling along the cable!
-                if is_flowing_cable && self.is_playing {
+                // Only on active flowing paths, NOT through bypassed effects in Bit-Perfect or OsResampled!
+                if is_flowing_cable && !is_effect_cable && self.is_playing {
                     let particle_glow = if is_fallback {
                         Color32::from_rgba_premultiplied(253, 230, 138, 200)
                     } else {
@@ -536,11 +550,11 @@ impl LunulaApp {
                     disconnect_node = Some(node.id);
                     ui.close();
                 }
-                if node.node_type == NodeType::Dsp {
+                if node.node_type.is_dsp_or_effect() {
                     let label = if self.chain_mode == ChainMode::DspActive {
-                        "⚡ Bypass DSP (Direct Bit-Perfect)"
+                        "⚡ Bypass Efek & DSP (Direct Bit-Perfect)"
                     } else {
-                        "⚡ Aktifkan DSP Processing"
+                        "🎛️ Aktifkan DSP Processing (Efek Aktif)"
                     };
                     if ui.button(label).clicked() {
                         toggle_dsp = true;
@@ -562,12 +576,12 @@ impl LunulaApp {
                 }
             };
 
-            let is_bypassed_dsp = node.node_type == NodeType::Dsp
+            let is_bypassed_effect = node.node_type.is_dsp_or_effect()
                 && (self.chain_mode == ChainMode::BitPerfect || self.chain_mode == ChainMode::OsResampled);
 
             let bg = if is_dragging {
                 Color32::from_rgb(241, 245, 249)
-            } else if is_bypassed_dsp {
+            } else if is_bypassed_effect {
                 Color32::from_rgba_premultiplied(248, 250, 252, 220)
             } else if !is_flowing {
                 Color32::from_rgb(255, 245, 245)
@@ -578,11 +592,11 @@ impl LunulaApp {
             painter.rect_filled(node_rect, 8.0, bg);
 
             // Dynamic Outline Styling & Animation
-            if is_bypassed_dsp {
-                // Option B: DSP is BYPASSED — calm muted slate border & direct dashed wire inside
+            if is_bypassed_effect {
+                // Option B: Effect is BYPASSED / DILEWATI — calm muted slate border & direct dashed wire inside
                 painter.rect_stroke(node_rect, 8.0, Stroke::new(1.2, Color32::from_rgb(203, 213, 225)), egui::StrokeKind::Outside);
                 
-                // Dashed direct jumper wire through the center of DSP
+                // Dashed direct jumper wire through the center of effect
                 let pin_l = Pos2::new(node_rect.min.x + 8.0, node_rect.center().y);
                 let pin_r = Pos2::new(node_rect.max.x - 8.0, node_rect.center().y);
                 for d in 0..10 {
@@ -592,6 +606,12 @@ impl LunulaApp {
                         painter.line_segment([p1, p2], Stroke::new(1.2, Color32::from_rgb(203, 213, 225)));
                     }
                 }
+
+                // DILEWATI badge on the top of the node
+                let badge_rect = Rect::from_min_size(node_rect.min + Vec2::new(6.0, 4.0), Vec2::new(44.0, 12.0));
+                painter.rect_filled(badge_rect, 3.0, Color32::from_rgb(226, 232, 240));
+                painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER, "DILEWATI", egui::FontId::proportional(7.5), Color32::from_rgb(100, 116, 139));
+
                 if node_resp.clicked() {
                     switch_mode = Some(ChainMode::DspActive);
                 }
@@ -639,7 +659,7 @@ impl LunulaApp {
             }
 
             // Title
-            let title_col = if is_bypassed_dsp {
+            let title_col = if is_bypassed_effect {
                 Color32::from_rgb(100, 116, 139)
             } else {
                 Color32::from_rgb(15, 23, 42)
@@ -653,8 +673,12 @@ impl LunulaApp {
             );
 
             // Sublabels: Dynamic based on bypassed vs flowing vs broken
-            let (sub1_txt, sub1_col, sub2_txt, sub2_col) = if is_bypassed_dsp {
-                ("BYPASSED (Direct Wire)", Color32::from_rgb(148, 163, 184), "0.0 dB Pure Master", Color32::from_rgb(148, 163, 184))
+            let (sub1_txt, sub1_col, sub2_txt, sub2_col) = if is_bypassed_effect {
+                if node.node_type == NodeType::Dsp {
+                    ("DILEWATI (Direct Wire)", Color32::from_rgb(148, 163, 184), "0.0 dB Pure Master", Color32::from_rgb(148, 163, 184))
+                } else {
+                    ("DILEWATI (Bypassed)", Color32::from_rgb(148, 163, 184), "Nonaktif di Bit-Perfect", Color32::from_rgb(148, 163, 184))
+                }
             } else if is_flowing {
                 (&node.sub1[..], theme_color, &node.sub2[..], Color32::from_rgb(100, 116, 139))
             } else {
@@ -679,7 +703,7 @@ impl LunulaApp {
 
             // Status Indicator Dot (Top-Right)
             let status_dot_pos = Pos2::new(node_rect.max.x - 8.0, node_rect.min.y + 8.0);
-            if is_bypassed_dsp {
+            if is_bypassed_effect {
                 painter.circle_filled(status_dot_pos, 3.0, Color32::from_rgb(203, 213, 225));
             } else if is_flowing {
                 if self.is_playing {
@@ -700,7 +724,7 @@ impl LunulaApp {
                 }
                 let pin_col = if is_hover_in {
                     Color32::from_rgb(14, 165, 233)
-                } else if is_bypassed_dsp {
+                } else if is_bypassed_effect {
                     Color32::from_rgb(203, 213, 225)
                 } else if is_flowing {
                     theme_color
@@ -720,7 +744,7 @@ impl LunulaApp {
                 }
                 let pin_col = if is_hover_out {
                     Color32::from_rgb(14, 165, 233)
-                } else if is_bypassed_dsp {
+                } else if is_bypassed_effect {
                     Color32::from_rgb(203, 213, 225)
                 } else if is_flowing {
                     theme_color

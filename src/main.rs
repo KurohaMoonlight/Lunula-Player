@@ -1,13 +1,6 @@
-mod app;
-pub mod audio;
-mod models;
-mod scanner;
-mod storage;
-mod ui;
-
-use app::LunulaApp;
 use eframe::egui;
 use egui::{Color32, Stroke};
+use lunulaplayer::app::LunulaApp;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {

@@ -58,17 +58,18 @@ impl OutputBackend for CpalBackend {
         self.shared_volume.store(vol.clamp(0.0, 1.5).to_bits(), Ordering::Relaxed);
     }
 
-    fn flush(&self) {
+    fn flush(&self) -> bool {
         self.flush_ack.store(false, Ordering::SeqCst);
         self.flush_requested.store(true, Ordering::SeqCst);
         let start = std::time::Instant::now();
         while !self.flush_ack.load(Ordering::SeqCst) {
             if start.elapsed() >= std::time::Duration::from_millis(50) {
                 self.flush_requested.store(false, Ordering::SeqCst);
-                break;
+                return false;
             }
             std::thread::yield_now();
         }
+        true
     }
 }
 

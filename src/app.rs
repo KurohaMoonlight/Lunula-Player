@@ -107,8 +107,18 @@ pub fn random_index(len: usize) -> usize {
     (x as usize) % len
 }
 
+impl Default for LunulaApp {
+    fn default() -> Self {
+        Self::new_standalone()
+    }
+}
+
 impl LunulaApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+        Self::new_standalone()
+    }
+
+    pub fn new_standalone() -> Self {
         let (sample_waveform, sample_bass, sample_mid, sample_treble) =
             crate::scanner::generate_multiband_waveform("Lunula Default Initial Track", 3600);
 
@@ -1151,6 +1161,9 @@ impl eframe::App for LunulaApp {
                     }
                     crate::audio::AudioEvent::SignalPath(report) => {
                         new_signal_path = Some(report);
+                    }
+                    crate::audio::AudioEvent::Error(err) => {
+                        eprintln!("[Audio Engine Error] {}", err);
                     }
                     _ => {}
                 }

@@ -108,8 +108,9 @@ impl AudioOutput {
     // Zero-stream atomic ring buffer flush on Seek & track transition.
     // Backend flush synchronizes with the audio callback thread via ACK, ensuring
     // zero discarded initial samples of new tracks without arbitrary sleep.
-    pub fn flush(&self) {
-        self.backend.flush();
+    // Returns true if acknowledged by the audio callback, false if timed out (50ms).
+    pub fn flush(&self) -> bool {
+        self.backend.flush()
     }
 }
 
