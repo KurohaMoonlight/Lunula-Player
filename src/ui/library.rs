@@ -262,7 +262,7 @@ impl LunulaApp {
                                             let is_hires = tracks.iter().any(|t| t.sample_rate >= 88200 || t.bit_depth >= 24);
 
                                             let card_id = ui.scope_id().with(("alb_card", alb_name));
-                                            let card_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(card_w - 28.0, 245.0));
+                                            let card_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(card_w, 277.0));
                                             let is_hovered = ui.input(|i| i.pointer.hover_pos().map_or(false, |p| card_rect.contains(p)));
                                             let hover_t = ui.ctx().animate_bool(card_id, is_hovered);
 
@@ -270,7 +270,10 @@ impl LunulaApp {
                                             let border_color = lerp_color(Color32::from_rgb(226, 232, 240), Color32::from_rgb(14, 165, 233), hover_t);
                                             let stroke_w = 1.0 + hover_t * 0.7;
 
-                                            let frame_resp = egui::Frame::new()
+                                            // Allocate card interaction BEFORE inner frame so child buttons are above it and get clicks first
+                                            let card_resp = ui.interact(card_rect, card_id, egui::Sense::click());
+
+                                            let _frame_resp = egui::Frame::new()
                                                 .fill(bg_color)
                                                 .stroke(Stroke::new(stroke_w, border_color))
                                                 .corner_radius(12.0)
@@ -284,21 +287,21 @@ impl LunulaApp {
                                                         let painter = ui.painter_at(art_rect);
                                                         let cover_tex = self.get_album_cover_texture(ui.ctx(), alb_name, tracks[0].file_path.as_deref());
                                                         if let Some(ref tex) = cover_tex {
-                                                            painter.rect_filled(art_rect, 8.0, Color32::from_rgb(15, 23, 42));
-                                                            painter.image(
-                                                                tex.id(),
-                                                                art_rect,
-                                                                Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
-                                                                Color32::WHITE,
-                                                            );
-                                                            painter.rect_stroke(art_rect, 8.0, Stroke::new(1.0, Color32::from_rgb(226, 232, 240)), egui::StrokeKind::Outside);
-                                                            if is_hires {
-                                                                let badge_rect = Rect::from_min_size(art_rect.min + Vec2::new(6.0, 6.0), Vec2::new(48.0, 18.0));
-                                                                painter.rect_filled(badge_rect, 4.0, Color32::from_rgba_unmultiplied(16, 185, 129, 230));
-                                                                painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER, "HI-RES", egui::FontId::proportional(9.0), Color32::WHITE);
-                                                            }
+                                                             painter.rect_filled(art_rect, 8.0, Color32::from_rgb(15, 23, 42));
+                                                             painter.image(
+                                                                 tex.id(),
+                                                                 art_rect,
+                                                                 Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+                                                                 Color32::WHITE,
+                                                             );
+                                                             painter.rect_stroke(art_rect, 8.0, Stroke::new(1.0, Color32::from_rgb(226, 232, 240)), egui::StrokeKind::Outside);
+                                                             if is_hires {
+                                                                 let badge_rect = Rect::from_min_size(art_rect.min + Vec2::new(6.0, 6.0), Vec2::new(48.0, 18.0));
+                                                                 painter.rect_filled(badge_rect, 4.0, Color32::from_rgba_unmultiplied(16, 185, 129, 230));
+                                                                 painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER, "HI-RES", egui::FontId::proportional(9.0), Color32::WHITE);
+                                                             }
                                                         } else {
-                                                            draw_album_art(&painter, art_rect, alb_name, is_hires);
+                                                             draw_album_art(&painter, art_rect, alb_name, is_hires);
                                                         }
 
                                                         ui.add_space(8.0);
@@ -313,6 +316,9 @@ impl LunulaApp {
                                                         ui.horizontal(|ui| {
                                                             if ui.add_sized([58.0, 26.0], egui::Button::new(egui::RichText::new("▶ Putar").strong().size(11.5))).clicked() {
                                                                 track_to_play = Some((*tracks[0]).clone());
+                                                                if tracks.len() > 1 {
+                                                                    tracks_to_queue_bulk = Some(tracks[1..].iter().map(|&t| t.clone()).collect());
+                                                                }
                                                             }
                                                             if ui.add_sized([84.0, 26.0], egui::Button::new(egui::RichText::new("Lihat Lagu").size(11.5))).clicked() {
                                                                 set_album_filter = Some(alb_name.clone());
@@ -326,9 +332,12 @@ impl LunulaApp {
                                                     });
                                                 });
 
-                                            let card_resp = ui.interact(frame_resp.response.rect, ui.scope_id().with(("alb_card", alb_name)), egui::Sense::click());
                                             if card_resp.hovered() {
                                                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                            }
+                                            if card_resp.clicked() {
+                                                set_album_filter = Some(alb_name.clone());
+                                                switch_to_all_tracks = true;
                                             }
                                             card_resp.context_menu(|ui| {
                                                 ui.label(egui::RichText::new(alb_name).strong().size(13.0).color(Color32::from_rgb(15, 23, 42)));
@@ -384,7 +393,7 @@ impl LunulaApp {
                                             let unique_albums: std::collections::HashSet<_> = tracks.iter().map(|t| &t.album).collect();
 
                                             let card_id = ui.scope_id().with(("art_card", art_name));
-                                            let card_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(card_w - 28.0, 205.0));
+                                            let card_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(card_w, 237.0));
                                             let is_hovered = ui.input(|i| i.pointer.hover_pos().map_or(false, |p| card_rect.contains(p)));
                                             let hover_t = ui.ctx().animate_bool(card_id, is_hovered);
 
@@ -392,7 +401,10 @@ impl LunulaApp {
                                             let border_color = lerp_color(Color32::from_rgb(226, 232, 240), Color32::from_rgb(16, 185, 129), hover_t);
                                             let stroke_w = 1.0 + hover_t * 0.7;
 
-                                            let frame_resp = egui::Frame::new()
+                                            // Allocate card interaction BEFORE inner frame so child buttons are above it and get clicks first
+                                            let card_resp = ui.interact(card_rect, card_id, egui::Sense::click());
+
+                                            let _frame_resp = egui::Frame::new()
                                                 .fill(bg_color)
                                                 .stroke(Stroke::new(stroke_w, border_color))
                                                 .corner_radius(12.0)
@@ -431,9 +443,12 @@ impl LunulaApp {
                                                     });
                                                 });
 
-                                            let card_resp = ui.interact(frame_resp.response.rect, ui.scope_id().with(("art_card", art_name)), egui::Sense::click());
                                             if card_resp.hovered() {
                                                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                            }
+                                            if card_resp.clicked() {
+                                                set_artist_filter = Some(art_name.clone());
+                                                switch_to_all_tracks = true;
                                             }
                                             card_resp.context_menu(|ui| {
                                                 ui.label(egui::RichText::new(art_name).strong().size(13.0).color(Color32::from_rgb(15, 23, 42)));
@@ -568,7 +583,10 @@ impl LunulaApp {
                                         let border_color = lerp_color(Color32::TRANSPARENT, Color32::from_rgb(254, 205, 211), hover_t);
                                         let stroke = Stroke::new(1.0, border_color);
 
-                                        let row_resp = egui::Frame::new()
+                                        // Allocate row interaction BEFORE inner frame so child buttons are above it and get clicks first
+                                        let row_click = ui.interact(row_rect, fav_row_id, egui::Sense::click());
+
+                                        let _row_resp = egui::Frame::new()
                                             .fill(bg_color)
                                             .stroke(stroke)
                                             .corner_radius(6.0)
@@ -628,7 +646,6 @@ impl LunulaApp {
 
                                         ui.add_space(2.0);
 
-                                        let row_click = ui.interact(row_resp.response.rect, ui.scope_id().with(("fav_row", idx)), egui::Sense::click());
                                         if row_click.hovered() {
                                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                         }
@@ -814,7 +831,7 @@ impl LunulaApp {
                                     }).cloned().collect();
 
                                     let card_id = ui.scope_id().with(("pl_card", pl_id));
-                                    let card_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), 65.0));
+                                    let card_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), 76.0));
                                     let is_hovered = ui.input(|i| i.pointer.hover_pos().map_or(false, |p| card_rect.contains(p)));
                                     let hover_t = ui.ctx().animate_bool(card_id, is_hovered);
 
@@ -822,7 +839,10 @@ impl LunulaApp {
                                     let border_color = lerp_color(Color32::from_rgb(226, 232, 240), Color32::from_rgb(99, 102, 241), hover_t);
                                     let stroke = Stroke::new(1.0 + hover_t * 0.8, border_color);
 
-                                    let frame_resp = egui::Frame::new()
+                                    // Allocate playlist interaction BEFORE inner frame so child buttons are above it and get clicks first
+                                    let pl_click = ui.interact(card_rect, card_id, egui::Sense::click());
+
+                                    let _frame_resp = egui::Frame::new()
                                         .fill(bg_color)
                                         .stroke(stroke)
                                         .corner_radius(10.0)
@@ -864,9 +884,12 @@ impl LunulaApp {
                                             });
                                         });
 
-                                    let pl_click = ui.interact(frame_resp.response.rect, ui.scope_id().with(("pl_card", pl_id)), egui::Sense::click());
                                     if pl_click.hovered() {
                                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                    }
+                                    if pl_click.clicked() {
+                                        set_playlist_filter = Some(pl_name.clone());
+                                        switch_to_all_tracks = true;
                                     }
                                     pl_click.context_menu(|ui| {
                                         ui.label(egui::RichText::new(&pl.name).strong().size(13.0).color(Color32::from_rgb(15, 23, 42)));
@@ -1045,7 +1068,10 @@ impl LunulaApp {
                                     };
                                     let stroke = Stroke::new(if is_current { 1.0 + hover_t * 0.3 } else { hover_t * 1.0 }, border_color);
 
-                                    let row_resp = egui::Frame::new()
+                                    // Allocate row interaction BEFORE inner frame so favorite button is above it and gets clicks first
+                                    let row_click = ui.interact(row_rect, row_id, egui::Sense::click());
+
+                                    let _row_resp = egui::Frame::new()
                                         .fill(bg_color)
                                         .stroke(stroke)
                                         .corner_radius(6.0)
@@ -1163,7 +1189,6 @@ impl LunulaApp {
                                     ui.add_space(2.0);
 
                                     // Click row to play
-                                    let row_click = ui.interact(row_resp.response.rect, ui.scope_id().with(("lib_row", idx)), egui::Sense::click());
                                     if row_click.hovered() {
                                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                     }
