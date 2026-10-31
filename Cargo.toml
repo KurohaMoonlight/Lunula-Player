@@ -20,9 +20,6 @@ rubato = "5.0.1"
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.26"
 
-[target.'cfg(windows)'.build-dependencies]
-winres = "0.1"
-
 [profile.dev]
 opt-level = 1
 
