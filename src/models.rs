@@ -39,6 +39,32 @@ impl FilterType {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default)]
+pub enum FilterSlope {
+    #[default]
+    Db12,
+    Db24,
+    Db48,
+}
+
+impl FilterSlope {
+    pub fn name(&self) -> &'static str {
+        match self {
+            FilterSlope::Db12 => "12 dB/oct",
+            FilterSlope::Db24 => "24 dB/oct",
+            FilterSlope::Db48 => "48 dB/oct",
+        }
+    }
+
+    pub fn biquad_count(&self) -> usize {
+        match self {
+            FilterSlope::Db12 => 1,
+            FilterSlope::Db24 => 2,
+            FilterSlope::Db48 => 4,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ParametricBand {
     pub enabled: bool,
@@ -46,6 +72,8 @@ pub struct ParametricBand {
     pub freq: f32,       // 20.0 .. 20000.0 Hz
     pub gain_db: f32,    // -18.0 .. 18.0 dB
     pub q: f32,          // 0.1 .. 10.0
+    #[serde(default)]
+    pub slope: FilterSlope,
 }
 
 impl Default for ParametricBand {
@@ -56,6 +84,7 @@ impl Default for ParametricBand {
             freq: 1000.0,
             gain_db: 0.0,
             q: 1.414,
+            slope: FilterSlope::Db12,
         }
     }
 }
@@ -68,6 +97,18 @@ impl ParametricBand {
             freq,
             gain_db,
             q,
+            slope: FilterSlope::Db12,
+        }
+    }
+
+    pub fn new_cut(filter_type: FilterType, freq: f32, q: f32, slope: FilterSlope) -> Self {
+        Self {
+            enabled: true,
+            filter_type,
+            freq,
+            gain_db: 0.0,
+            q,
+            slope,
         }
     }
 
@@ -108,8 +149,6 @@ pub struct ParametricEqPreset {
     pub bands: Vec<ParametricBand>,
     pub preamp_mode: PreampMode,
     pub manual_preamp_db: f32,
-    pub limiter_enabled: bool,
-    pub dither_mode: DitherMode,
 }
 
 impl ParametricEqPreset {
@@ -120,8 +159,6 @@ impl ParametricEqPreset {
                 bands: ParametricBand::default_10_bands(),
                 preamp_mode: PreampMode::Auto,
                 manual_preamp_db: 0.0,
-                limiter_enabled: false,
-                dither_mode: DitherMode::None,
             },
             Self {
                 name: "Bass Boost & Warmth".to_string(),
@@ -138,11 +175,9 @@ impl ParametricEqPreset {
                 ],
                 preamp_mode: PreampMode::Auto,
                 manual_preamp_db: -5.5,
-                limiter_enabled: false,
-                dither_mode: DitherMode::None,
             },
             Self {
-                name: "Audiophile Harman Target".to_string(),
+                name: "Harman-style Tilt (Generik)".to_string(),
                 bands: vec![
                     ParametricBand::new(FilterType::LowShelf, 105.0, 4.5, 0.707),
                     ParametricBand::new(FilterType::Peaking, 200.0, 0.0, 1.414),
@@ -154,13 +189,11 @@ impl ParametricEqPreset {
                 ],
                 preamp_mode: PreampMode::Auto,
                 manual_preamp_db: -4.5,
-                limiter_enabled: false,
-                dither_mode: DitherMode::None,
             },
             Self {
                 name: "Vocal Clarity".to_string(),
                 bands: vec![
-                    ParametricBand::new(FilterType::HighPass, 75.0, 0.0, 0.707),
+                    ParametricBand::new_cut(FilterType::HighPass, 75.0, 0.707, FilterSlope::Db12),
                     ParametricBand::new(FilterType::Peaking, 250.0, -2.5, 1.8),
                     ParametricBand::new(FilterType::Peaking, 1000.0, 1.0, 1.414),
                     ParametricBand::new(FilterType::Peaking, 2500.0, 3.5, 1.414),
@@ -169,8 +202,6 @@ impl ParametricEqPreset {
                 ],
                 preamp_mode: PreampMode::Auto,
                 manual_preamp_db: -3.5,
-                limiter_enabled: false,
-                dither_mode: DitherMode::None,
             },
             Self {
                 name: "Warm Vinyl / Acoustic".to_string(),
@@ -183,8 +214,6 @@ impl ParametricEqPreset {
                 ],
                 preamp_mode: PreampMode::Auto,
                 manual_preamp_db: -2.0,
-                limiter_enabled: false,
-                dither_mode: DitherMode::None,
             },
             Self {
                 name: "Air & Sparkle".to_string(),
@@ -195,8 +224,6 @@ impl ParametricEqPreset {
                 ],
                 preamp_mode: PreampMode::Auto,
                 manual_preamp_db: -4.5,
-                limiter_enabled: false,
-                dither_mode: DitherMode::None,
             },
         ]
     }

@@ -1,7 +1,7 @@
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 use crate::app::LunulaApp;
-use crate::models::{DitherMode, FilterType, ParametricBand, ParametricEqPreset, PreampMode};
+use crate::models::{ChainMode, DitherMode, FilterSlope, FilterType, ParametricBand, ParametricEqPreset, PreampMode, SignalNodeStatus};
 use crate::ui::components::render_card_frame;
 
 // Precise f64 Biquad Filter Magnitude Response Calculation (Robert Bristow-Johnson Audio EQ Cookbook)
@@ -109,7 +109,15 @@ pub fn compute_biquad_response_db(band: &ParametricBand, freq: f64, sample_rate:
     let den_im = -(a1_norm * sin1 + a2_norm * sin2);
 
     let mag_sq = (num_re * num_re + num_im * num_im) / (den_re * den_re + den_im * den_im).max(1e-12);
-    (10.0 * mag_sq.max(1e-12).log10()).clamp(-60.0, 30.0)
+    let single_biquad_db = 10.0 * mag_sq.max(1e-12).log10();
+
+    // Multiply response in dB by slope order factor for HPF / LPF (12/24/48 dB/oct)
+    let slope_factor = match band.filter_type {
+        FilterType::HighPass | FilterType::LowPass => band.slope.biquad_count() as f64,
+        _ => 1.0,
+    };
+
+    (single_biquad_db * slope_factor).clamp(-96.0, 36.0)
 }
 
 pub fn compute_total_curve_db(
@@ -128,13 +136,15 @@ pub fn compute_total_curve_db(
             total_db += compute_biquad_response_db(band, freq, sample_rate);
         }
     }
-    total_db.clamp(-60.0, 30.0)
+    total_db.clamp(-96.0, 36.0)
 }
 
-pub fn calculate_max_boost(bands: &[ParametricBand], sample_rate: f64) -> f32 {
+// Evaluates the combined response curve across the spectrum to find true composite peak boost
+pub fn calculate_combined_peak_boost(bands: &[ParametricBand], sample_rate: f64) -> f32 {
     let mut max_boost = 0.0_f64;
-    for i in 0..=48 {
-        let t = i as f64 / 48.0;
+    // 96 evaluation points across 20 Hz to 20 kHz
+    for i in 0..=96 {
+        let t = i as f64 / 96.0;
         let freq = 20.0 * (1000.0_f64).powf(t);
         let mut total_db = 0.0;
         for band in bands {
@@ -149,18 +159,53 @@ pub fn calculate_max_boost(bands: &[ParametricBand], sample_rate: f64) -> f32 {
     max_boost as f32
 }
 
+// Honest string formatting helpers eliminating negative zero "-0.0 dB"
+pub fn format_db_clean(val: f32) -> String {
+    if val.abs() < 0.005 {
+        "0.0 dB".to_string()
+    } else {
+        format!("{:+0.1} dB", val)
+    }
+}
+
+pub fn format_margin_clean(val: f32) -> String {
+    if val.abs() < 0.005 {
+        "0.0 dB Margin".to_string()
+    } else {
+        format!("{:0.1} dB Margin", val.max(0.0))
+    }
+}
+
+pub fn format_freq(f: f32) -> String {
+    if f >= 1000.0 {
+        let khz = f / 1000.0;
+        if (khz.round() - khz).abs() < 0.02 {
+            format!("{:.0} kHz", khz)
+        } else {
+            format!("{:.1} kHz", khz)
+        }
+    } else {
+        format!("{:.0} Hz", f)
+    }
+}
+
+// Canvas coordinate mappings with generous inset padding preventing label clipping
 pub fn freq_to_x(freq: f32, rect: Rect) -> f32 {
     let min_f = 20.0_f32;
     let max_f = 20000.0_f32;
+    let inset = 24.0;
+    let inner_w = (rect.width() - inset * 2.0).max(10.0);
     let f = freq.clamp(min_f, max_f);
     let t = (f / min_f).log10() / (max_f / min_f).log10();
-    rect.min.x + t * rect.width()
+    rect.min.x + inset + t * inner_w
 }
 
 pub fn x_to_freq(x: f32, rect: Rect) -> f32 {
     let min_f = 20.0_f32;
     let max_f = 20000.0_f32;
-    let t = ((x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
+    let inset = 24.0;
+    let inner_w = (rect.width() - inset * 2.0).max(10.0);
+    let t = ((x - (rect.min.x + inset)) / inner_w).clamp(0.0, 1.0);
     min_f * (max_f / min_f).powf(t)
 }
 
@@ -190,16 +235,16 @@ fn filter_color(filter_type: FilterType) -> Color32 {
 impl LunulaApp {
     pub fn sync_parametric_to_legacy_eq(&mut self) {
         let legacy_freqs = [31.0, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0];
-        let max_boost = calculate_max_boost(&self.parametric_bands, 44100.0);
-        let preamp = if self.eq_preamp_mode == PreampMode::Auto {
+        let max_boost = calculate_combined_peak_boost(&self.active_eq.bands, 44100.0);
+        let preamp = if self.active_eq.preamp_mode == PreampMode::Auto {
             if max_boost > 0.0 { -max_boost } else { 0.0 }
         } else {
-            self.eq_manual_preamp_db
+            self.active_eq.manual_preamp_db
         };
 
         for (i, &f) in legacy_freqs.iter().enumerate() {
             let total_db = compute_total_curve_db(
-                &self.parametric_bands,
+                &self.active_eq.bands,
                 f,
                 44100.0,
                 preamp as f64,
@@ -289,75 +334,77 @@ impl LunulaApp {
         });
     }
 
+    // Main Equalizer Tab renders the reusable Parametric EQ editor on active_eq
     pub fn render_equalizer_panel(&mut self, ui: &mut egui::Ui) {
+        let mut active_eq = self.active_eq.clone();
+        let mut is_dirty = self.eq_is_dirty;
+
+        self.render_parametric_eq_editor(ui, &mut active_eq, &mut is_dirty);
+
+        self.active_eq = active_eq;
+        self.eq_is_dirty = is_dirty;
+    }
+
+    // Reusable Parametric EQ Editor Widget operating on any EqPreset reference
+    pub fn render_parametric_eq_editor(
+        &mut self,
+        ui: &mut egui::Ui,
+        preset: &mut ParametricEqPreset,
+        is_dirty: &mut bool,
+    ) {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 render_card_frame(ui, |ui| {
                     ui.vertical(|ui| {
                         // 1. HEADER & PRESET MANAGEMENT BAR
-                        self.render_eq_header_bar(ui);
+                        self.render_eq_header_bar(ui, preset, is_dirty);
 
                         ui.add_space(8.0);
 
-                        // Mode status notices (Bit-Perfect vs DSP vs OS Resampled)
-                        if self.chain_mode == crate::models::ChainMode::BitPerfect {
-                            egui::Frame::new()
-                                .fill(Color32::from_rgba_premultiplied(236, 253, 245, 230))
-                                .stroke(Stroke::new(1.0, Color32::from_rgb(167, 243, 208)))
-                                .corner_radius(6.0)
-                                .inner_margin(egui::Margin::symmetric(12, 6))
-                                .show(ui, |ui| {
-                                    ui.label(egui::RichText::new("⚡ Mode Bit-Perfect Aktif: Rantai biquad parametric dilewati murni tanpa kalkulasi software untuk menjaga keutuhan bit audio asli. Klik tombol '🎛️ AKTIFKAN EQ' untuk berpindah ke mode DSP.").size(11.5).color(Color32::from_rgb(6, 95, 70)));
-                                });
-                            ui.add_space(6.0);
-                        } else if self.chain_mode == crate::models::ChainMode::OsResampled {
-                            egui::Frame::new()
-                                .fill(Color32::from_rgba_premultiplied(254, 243, 199, 230))
-                                .stroke(Stroke::new(1.0, Color32::from_rgb(253, 230, 138)))
-                                .corner_radius(6.0)
-                                .inner_margin(egui::Margin::symmetric(12, 6))
-                                .show(ui, |ui| {
-                                    ui.label(egui::RichText::new("🟡 Mode OS Resampled Aktif: Sinyal dialirkan ke Shared Audio Mixer (48 kHz) dengan bypass filter EQ.").size(11.5).color(Color32::from_rgb(146, 64, 14)));
-                                });
-                            ui.add_space(6.0);
-                        }
+                        // Mode status notices with genuine signal chain verification
+                        self.render_eq_status_notice(ui);
 
-                        // 2. INTERACTIVE FREQUENCY RESPONSE DISPLAY (Biquad Spline & Draggable Nodes)
-                        self.render_eq_interactive_display(ui);
+                        // 2. INTERACTIVE FREQUENCY RESPONSE DISPLAY
+                        self.render_eq_interactive_display(ui, preset, is_dirty);
 
                         ui.add_space(10.0);
 
                         // 3. PREAMP & HEADROOM COMPENSATOR BAR
-                        self.render_eq_preamp_and_headroom_bar(ui);
+                        self.render_eq_preamp_and_headroom_bar(ui, preset, is_dirty);
 
                         ui.add_space(10.0);
 
-                        // 4. SELECTED BAND PARAMETRIC INSPECTOR
-                        self.render_eq_band_inspector(ui);
+                        // 4. SELECTED BAND PARAMETRIC INSPECTOR (Adaptive controls)
+                        self.render_eq_band_inspector(ui, preset, is_dirty);
 
                         ui.add_space(8.0);
 
                         // 5. BANDS QUICK STRIP / MINI-CHIPS
-                        self.render_eq_bands_strip(ui);
+                        self.render_eq_bands_strip(ui, preset);
 
                         ui.add_space(14.0);
 
-                        // 6. SIGNAL TRANSPARENCY & AUDIOPHILE METERING SECTION (Tahap 2 Preview)
-                        self.render_eq_transparency_section(ui);
+                        // 6. SIGNAL TRANSPARENCY & OUTPUT METERING SECTION
+                        self.render_eq_transparency_section(ui, preset, is_dirty);
                     });
                 });
             });
     }
 
-    fn render_eq_header_bar(&mut self, ui: &mut egui::Ui) {
+    fn render_eq_header_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        preset: &mut ParametricEqPreset,
+        is_dirty: &mut bool,
+    ) {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("🎛️ PARAMETRIC EQUALIZER STUDIO").strong().size(15.0).color(Color32::from_rgb(15, 23, 42)));
 
-            // Dirty indicator with star
-            let dirty_star = if self.eq_is_dirty { "*" } else { "" };
-            let preset_title = format!("Preset: \"{}{}\"", self.eq_current_preset_name, dirty_star);
-            let pill_color = if self.eq_is_dirty {
+            // Honest dirty indicator with star
+            let dirty_star = if *is_dirty { "*" } else { "" };
+            let preset_title = format!("Preset: \"{}{}\"", preset.name, dirty_star);
+            let pill_color = if *is_dirty {
                 Color32::from_rgb(249, 115, 22) // Orange dirty badge
             } else {
                 Color32::from_rgb(100, 116, 139)
@@ -374,9 +421,9 @@ impl LunulaApp {
                 if ui.button(bypass_btn_text).clicked() {
                     self.eq_bypass = !self.eq_bypass;
                     if self.eq_bypass {
-                        self.set_chain_mode(crate::models::ChainMode::BitPerfect);
+                        self.set_chain_mode(ChainMode::BitPerfect);
                     } else {
-                        self.set_chain_mode(crate::models::ChainMode::DspActive);
+                        self.set_chain_mode(ChainMode::DspActive);
                     }
                     self.sync_parametric_to_legacy_eq();
                 }
@@ -395,74 +442,72 @@ impl LunulaApp {
 
         ui.add_space(6.0);
 
-        // Preset selector bar & actions
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("Preset Pilihan:").strong().size(12.0).color(Color32::from_rgb(100, 116, 139)));
+        // Preset selector in a horizontal scrollable row preventing chip overflow
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Preset:").strong().size(12.0).color(Color32::from_rgb(100, 116, 139)));
 
-            let preset_names: Vec<String> = self.eq_presets.iter().map(|p| p.name.clone()).collect();
-            for name in preset_names {
-                let is_selected = self.eq_current_preset_name == name;
-                let btn = egui::Button::new(egui::RichText::new(&name).size(11.5).strong())
-                    .fill(if is_selected { Color32::from_rgb(224, 242, 254) } else { Color32::from_rgb(241, 245, 249) })
-                    .stroke(Stroke::new(1.0, if is_selected { Color32::from_rgb(14, 165, 233) } else { Color32::from_rgb(203, 213, 225) }));
-                if ui.add(btn).clicked() {
-                    if let Some(preset) = self.eq_presets.iter().find(|p| p.name == name).cloned() {
-                        self.parametric_bands = preset.bands.clone();
-                        self.eq_preamp_mode = preset.preamp_mode;
-                        self.eq_manual_preamp_db = preset.manual_preamp_db;
-                        self.eq_limiter_enabled = preset.limiter_enabled;
-                        self.eq_dither_mode = preset.dither_mode;
-                        self.eq_current_preset_name = preset.name.clone();
-                        self.eq_is_dirty = false;
-                        self.selected_band_idx = Some(0);
-                        self.sync_parametric_to_legacy_eq();
-                    }
-                }
-            }
+            egui::ScrollArea::horizontal()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let preset_names: Vec<String> = self.eq_presets.iter().map(|p| p.name.clone()).collect();
+                        for name in preset_names {
+                            let is_selected = preset.name == name;
+                            let btn = egui::Button::new(egui::RichText::new(&name).size(11.0).strong())
+                                .fill(if is_selected { Color32::from_rgb(224, 242, 254) } else { Color32::from_rgb(241, 245, 249) })
+                                .stroke(Stroke::new(1.0, if is_selected { Color32::from_rgb(14, 165, 233) } else { Color32::from_rgb(203, 213, 225) }));
+                            if ui.add(btn).clicked() {
+                                if let Some(p) = self.eq_presets.iter().find(|item| item.name == name).cloned() {
+                                    *preset = p;
+                                    *is_dirty = false;
+                                    self.selected_band_idx = Some(0);
+                                    self.active_eq = preset.clone();
+                                    self.sync_parametric_to_legacy_eq();
+                                }
+                            }
+                        }
 
-            ui.separator();
+                        ui.separator();
 
-            // Preset Action Buttons
-            if ui.button(egui::RichText::new("💾 Simpan").size(11.5).strong()).clicked() {
-                // Update current preset in list or save as custom
-                let cur_name = self.eq_current_preset_name.clone();
-                let new_preset = ParametricEqPreset {
-                    name: cur_name.clone(),
-                    bands: self.parametric_bands.clone(),
-                    preamp_mode: self.eq_preamp_mode,
-                    manual_preamp_db: self.eq_manual_preamp_db,
-                    limiter_enabled: self.eq_limiter_enabled,
-                    dither_mode: self.eq_dither_mode,
-                };
-                if let Some(pos) = self.eq_presets.iter().position(|p| p.name == cur_name) {
-                    self.eq_presets[pos] = new_preset;
-                } else {
-                    self.eq_presets.push(new_preset);
-                }
-                self.eq_is_dirty = false;
-                self.save_library_state();
-            }
+                        // Preset Action Buttons
+                        if ui.button(egui::RichText::new("💾 Simpan").size(11.0).strong()).clicked() {
+                            let cur_name = preset.name.clone();
+                            let new_preset = preset.clone();
+                            if let Some(pos) = self.eq_presets.iter().position(|p| p.name == cur_name) {
+                                self.eq_presets[pos] = new_preset;
+                            } else {
+                                self.eq_presets.push(new_preset);
+                            }
+                            *is_dirty = false;
+                            self.active_eq = preset.clone();
+                            self.save_library_state();
+                        }
 
-            if ui.button(egui::RichText::new("➕ Simpan Sebagai...").size(11.5)).clicked() {
-                self.show_save_preset_dialog = !self.show_save_preset_dialog;
-            }
+                        if ui.button(egui::RichText::new("➕ Simpan Sebagai...").size(11.0)).clicked() {
+                            self.show_save_preset_dialog = !self.show_save_preset_dialog;
+                        }
 
-            if ui.button(egui::RichText::new("🔄 Reset Preset").size(11.5)).clicked() {
-                let cur_name = self.eq_current_preset_name.clone();
-                if let Some(preset) = self.eq_presets.iter().find(|p| p.name == cur_name).cloned() {
-                    self.parametric_bands = preset.bands.clone();
-                    self.eq_preamp_mode = preset.preamp_mode;
-                    self.eq_manual_preamp_db = preset.manual_preamp_db;
-                    self.eq_limiter_enabled = preset.limiter_enabled;
-                    self.eq_dither_mode = preset.dither_mode;
-                    self.eq_is_dirty = false;
-                    self.sync_parametric_to_legacy_eq();
-                } else {
-                    self.parametric_bands = ParametricBand::default_10_bands();
-                    self.eq_is_dirty = false;
-                    self.sync_parametric_to_legacy_eq();
-                }
-            }
+                        if ui.button(egui::RichText::new("🔄 Reset").size(11.0)).clicked() {
+                            let cur_name = preset.name.clone();
+                            if let Some(p) = self.eq_presets.iter().find(|item| item.name == cur_name).cloned() {
+                                *preset = p;
+                                *is_dirty = false;
+                                self.active_eq = preset.clone();
+                                self.sync_parametric_to_legacy_eq();
+                            } else {
+                                *preset = ParametricEqPreset {
+                                    name: "Flat (Netral)".to_string(),
+                                    bands: ParametricBand::default_10_bands(),
+                                    preamp_mode: PreampMode::Auto,
+                                    manual_preamp_db: 0.0,
+                                };
+                                *is_dirty = false;
+                                self.active_eq = preset.clone();
+                                self.sync_parametric_to_legacy_eq();
+                            }
+                        }
+                    });
+                });
         });
 
         // Save preset modal dialog
@@ -480,19 +525,12 @@ impl LunulaApp {
                         if ui.button(egui::RichText::new("Simpan Preset").strong()).clicked() {
                             let name = self.eq_preset_name_input.trim().to_string();
                             if !name.is_empty() {
-                                let new_preset = ParametricEqPreset {
-                                    name: name.clone(),
-                                    bands: self.parametric_bands.clone(),
-                                    preamp_mode: self.eq_preamp_mode,
-                                    manual_preamp_db: self.eq_manual_preamp_db,
-                                    limiter_enabled: self.eq_limiter_enabled,
-                                    dither_mode: self.eq_dither_mode,
-                                };
+                                preset.name = name.clone();
                                 self.eq_presets.retain(|p| p.name != name);
-                                self.eq_presets.push(new_preset);
-                                self.eq_current_preset_name = name;
-                                self.eq_is_dirty = false;
+                                self.eq_presets.push(preset.clone());
+                                *is_dirty = false;
                                 self.show_save_preset_dialog = false;
+                                self.active_eq = preset.clone();
                                 self.save_library_state();
                             }
                         }
@@ -504,7 +542,49 @@ impl LunulaApp {
         }
     }
 
-    fn render_eq_interactive_display(&mut self, ui: &mut egui::Ui) {
+    fn render_eq_status_notice(&self, ui: &mut egui::Ui) {
+        let chain_eval = self.evaluate_signal_chain();
+        let is_node3_active = chain_eval.is_complete && chain_eval.node_status(3) == SignalNodeStatus::Flowing;
+
+        if self.chain_mode == ChainMode::BitPerfect {
+            egui::Frame::new()
+                .fill(Color32::from_rgba_premultiplied(236, 253, 245, 230))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(167, 243, 208)))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(12, 6))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new("⚡ Tidak Aktif: Mode Bit-Perfect Aktif. Rantai biquad dilewati murni untuk menjaga keutuhan bit audio asli. Klik '🎛️ EQ AKTIF' untuk mengaktifkan pemrosesan DSP.").size(11.5).color(Color32::from_rgb(6, 95, 70)));
+                });
+            ui.add_space(6.0);
+        } else if self.eq_bypass {
+            egui::Frame::new()
+                .fill(Color32::from_rgba_premultiplied(254, 243, 199, 230))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(253, 230, 138)))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(12, 6))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new("⚡ Tidak Aktif: Equalizer di-bypass manual (Pure Direct Passthrough).").size(11.5).color(Color32::from_rgb(146, 64, 14)));
+                });
+            ui.add_space(6.0);
+        } else if !is_node3_active {
+            egui::Frame::new()
+                .fill(Color32::from_rgba_premultiplied(254, 242, 242, 230))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(252, 165, 165)))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(12, 6))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new("⚠️ Tidak Aktif: Node DSP (3) di Signal Chain Studio terputus atau tidak tersambung ke Endpoint audio.").size(11.5).color(Color32::from_rgb(185, 28, 28)));
+                });
+            ui.add_space(6.0);
+        }
+    }
+
+    fn render_eq_interactive_display(
+        &mut self,
+        ui: &mut egui::Ui,
+        preset: &mut ParametricEqPreset,
+        is_dirty: &mut bool,
+    ) {
         let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 250.0), egui::Sense::click_and_drag());
         let painter = ui.painter_at(rect);
 
@@ -512,7 +592,7 @@ impl LunulaApp {
         painter.rect_filled(rect, 8.0, Color32::from_rgb(15, 23, 42)); // Slate 900
         painter.rect_stroke(rect, 8.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Outside);
 
-        // 1. Logarithmic Frequency Grid Lines & Labels
+        // 1. Logarithmic Frequency Grid Lines & Labels (with inset padding so 20 and 20k never clip)
         let grid_freqs = [
             (20.0, "20"), (50.0, "50"), (100.0, "100"), (200.0, "200"),
             (500.0, "500"), (1000.0, "1k"), (2000.0, "2k"), (5000.0, "5k"),
@@ -548,7 +628,7 @@ impl LunulaApp {
 
             let label = if is_zero { "0 dB".to_string() } else { format!("{:+0.0} dB", db) };
             painter.text(
-                Pos2::new(rect.min.x + 24.0, y - 2.0),
+                Pos2::new(rect.min.x + 10.0, y - 2.0),
                 egui::Align2::LEFT_BOTTOM,
                 label,
                 egui::FontId::proportional(9.0),
@@ -575,12 +655,12 @@ impl LunulaApp {
             }
         }
 
-        // 4. Calculate Effective Preamp & Response Curve Points
-        let max_boost = calculate_max_boost(&self.parametric_bands, 44100.0);
-        let effective_preamp = if self.eq_preamp_mode == PreampMode::Auto {
+        // 4. Calculate Combined Peak Boost & Response Curve Points
+        let max_boost = calculate_combined_peak_boost(&preset.bands, 44100.0);
+        let effective_preamp = if preset.preamp_mode == PreampMode::Auto {
             if max_boost > 0.0 { -max_boost } else { 0.0 }
         } else {
-            self.eq_manual_preamp_db
+            preset.manual_preamp_db
         };
 
         let sample_rate = 44100.0_f64;
@@ -591,7 +671,7 @@ impl LunulaApp {
             let t = i as f32 / (points_count - 1) as f32;
             let f = 20.0 * (1000.0_f32).powf(t);
             let total_db = compute_total_curve_db(
-                &self.parametric_bands,
+                &preset.bands,
                 f as f64,
                 sample_rate,
                 effective_preamp as f64,
@@ -640,9 +720,9 @@ impl LunulaApp {
         let pointer_pos = response.hover_pos();
         let is_dragging = response.dragged();
 
-        let num_bands = self.parametric_bands.len();
+        let num_bands = preset.bands.len();
         for i in 0..num_bands {
-            let band = &self.parametric_bands[i];
+            let band = &preset.bands[i];
             let nx = freq_to_x(band.freq, rect);
             let ny = if band.filter_type.has_gain() {
                 gain_to_y(band.gain_db, rect)
@@ -688,13 +768,14 @@ impl LunulaApp {
             } else if response.double_clicked() {
                 // Double click on empty space creates a new band!
                 if let Some(pos) = pointer_pos {
-                    if self.parametric_bands.len() < 32 {
+                    if preset.bands.len() < 32 {
                         let new_freq = x_to_freq(pos.x, rect);
                         let new_gain = y_to_gain(pos.y, rect);
                         let new_band = ParametricBand::new(FilterType::Peaking, new_freq, new_gain, 1.414);
-                        self.parametric_bands.push(new_band);
-                        self.selected_band_idx = Some(self.parametric_bands.len() - 1);
-                        self.eq_is_dirty = true;
+                        preset.bands.push(new_band);
+                        self.selected_band_idx = Some(preset.bands.len() - 1);
+                        *is_dirty = true;
+                        self.active_eq = preset.clone();
                         self.sync_parametric_to_legacy_eq();
                     }
                 }
@@ -707,15 +788,16 @@ impl LunulaApp {
                     self.dragging_band_idx = hovered_band;
                 }
                 if let Some(d_idx) = self.dragging_band_idx {
-                    if d_idx < self.parametric_bands.len() {
+                    if d_idx < preset.bands.len() {
                         self.selected_band_idx = Some(d_idx);
                         let new_f = x_to_freq(pos.x, rect);
-                        self.parametric_bands[d_idx].freq = new_f;
-                        if self.parametric_bands[d_idx].filter_type.has_gain() {
+                        preset.bands[d_idx].freq = new_f;
+                        if preset.bands[d_idx].filter_type.has_gain() {
                             let new_g = y_to_gain(pos.y, rect);
-                            self.parametric_bands[d_idx].gain_db = new_g;
+                            preset.bands[d_idx].gain_db = new_g;
                         }
-                        self.eq_is_dirty = true;
+                        *is_dirty = true;
+                        self.active_eq = preset.clone();
                         self.sync_parametric_to_legacy_eq();
                     }
                 }
@@ -724,83 +806,102 @@ impl LunulaApp {
             self.dragging_band_idx = None;
         }
 
-        // Mouse Wheel over node adjusts Q factor
+        // Mouse Wheel over node adjusts Q factor (logarithmic feel)
         if let Some(h_idx) = hovered_band {
             let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
             if scroll_delta.abs() > 0.5 {
-                let delta = if scroll_delta > 0.0 { 0.1 } else { -0.1 };
-                let new_q = (self.parametric_bands[h_idx].q + delta).clamp(0.1, 10.0);
-                self.parametric_bands[h_idx].q = new_q;
-                self.eq_is_dirty = true;
+                let factor = if scroll_delta > 0.0 { 1.05 } else { 0.95 };
+                let new_q = (preset.bands[h_idx].q * factor).clamp(0.1, 10.0);
+                preset.bands[h_idx].q = new_q;
+                *is_dirty = true;
+                self.active_eq = preset.clone();
                 self.sync_parametric_to_legacy_eq();
             }
 
             // Hover tooltip
-            let band = &self.parametric_bands[h_idx];
+            let band = &preset.bands[h_idx];
+            let gain_str = if band.filter_type.has_gain() {
+                format!("Gain: {}\n", format_db_clean(band.gain_db))
+            } else {
+                String::new()
+            };
+            let slope_str = match band.filter_type {
+                FilterType::HighPass | FilterType::LowPass => format!("Slope: {}\n", band.slope.name()),
+                _ => String::new(),
+            };
             response.show_tooltip_text(format!(
-                "Band {} • {}\nFrekuensi: {:0.0} Hz\nGain: {:+0.1} dB\nQ-Factor: {:0.2}\n(Gulir mouse untuk atur Q)",
+                "Band {} • {}\nFrekuensi: {}\n{}{}Q-Factor: {:0.2}\n(Gulir mouse untuk atur Q)",
                 h_idx + 1,
                 band.filter_type.name(),
-                band.freq,
-                band.gain_db,
+                format_freq(band.freq),
+                gain_str,
+                slope_str,
                 band.q
             ));
         }
     }
 
-    fn render_eq_preamp_and_headroom_bar(&mut self, ui: &mut egui::Ui) {
-        let max_boost = calculate_max_boost(&self.parametric_bands, 44100.0);
-        let required_attenuation = -max_boost;
+    fn render_eq_preamp_and_headroom_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        preset: &mut ParametricEqPreset,
+        is_dirty: &mut bool,
+    ) {
+        let max_boost = calculate_combined_peak_boost(&preset.bands, 44100.0);
+        let required_attenuation = if max_boost > 0.005 { -max_boost } else { 0.0 };
 
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Headroom & Preamp:").strong().size(12.5).color(Color32::from_rgb(15, 23, 42)));
 
             // Preamp Mode: Auto vs Manual
-            let auto_active = self.eq_preamp_mode == PreampMode::Auto;
+            let auto_active = preset.preamp_mode == PreampMode::Auto;
             let auto_btn = egui::Button::new(egui::RichText::new("Auto Preamp").size(11.5).strong())
                 .fill(if auto_active { Color32::from_rgb(224, 242, 254) } else { Color32::from_rgb(241, 245, 249) })
                 .stroke(Stroke::new(1.0, if auto_active { Color32::from_rgb(14, 165, 233) } else { Color32::from_rgb(203, 213, 225) }));
             if ui.add(auto_btn).clicked() {
-                self.eq_preamp_mode = PreampMode::Auto;
-                self.eq_is_dirty = true;
+                preset.preamp_mode = PreampMode::Auto;
+                *is_dirty = true;
+                self.active_eq = preset.clone();
                 self.sync_parametric_to_legacy_eq();
             }
 
-            let manual_active = self.eq_preamp_mode == PreampMode::Manual;
+            let manual_active = preset.preamp_mode == PreampMode::Manual;
             let man_btn = egui::Button::new(egui::RichText::new("Manual").size(11.5).strong())
                 .fill(if manual_active { Color32::from_rgb(224, 242, 254) } else { Color32::from_rgb(241, 245, 249) })
                 .stroke(Stroke::new(1.0, if manual_active { Color32::from_rgb(14, 165, 233) } else { Color32::from_rgb(203, 213, 225) }));
             if ui.add(man_btn).clicked() {
-                self.eq_preamp_mode = PreampMode::Manual;
-                self.eq_is_dirty = true;
+                preset.preamp_mode = PreampMode::Manual;
+                *is_dirty = true;
+                self.active_eq = preset.clone();
                 self.sync_parametric_to_legacy_eq();
             }
 
             ui.add_space(8.0);
 
-            // Preamp Slider & Display
-            if self.eq_preamp_mode == PreampMode::Auto {
+            // Preamp Slider & Display (Without -0.0 dB artifact!)
+            if preset.preamp_mode == PreampMode::Auto {
                 ui.label(
-                    egui::RichText::new(format!("Kompensasi Otomatis: {:+0.1} dB", required_attenuation))
+                    egui::RichText::new(format!("Kompensasi Otomatis: {}", format_db_clean(required_attenuation)))
                         .strong()
                         .size(12.0)
                         .color(Color32::from_rgb(14, 165, 233)),
                 );
             } else {
-                ui.label(egui::RichText::new(format!("Gain: {:+0.1} dB", self.eq_manual_preamp_db)).strong().size(12.0));
-                let s_res = ui.add(egui::Slider::new(&mut self.eq_manual_preamp_db, -24.0..=12.0).suffix(" dB").show_value(false));
+                ui.label(egui::RichText::new(format!("Gain: {}", format_db_clean(preset.manual_preamp_db))).strong().size(12.0));
+                let s_res = ui.add(egui::Slider::new(&mut preset.manual_preamp_db, -24.0..=12.0).suffix(" dB").show_value(false));
                 if s_res.changed() {
-                    self.eq_is_dirty = true;
+                    *is_dirty = true;
+                    self.active_eq = preset.clone();
                     self.sync_parametric_to_legacy_eq();
                 }
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Headroom Badge & Warning
-                let effective_preamp = if self.eq_preamp_mode == PreampMode::Auto {
+                let effective_preamp = if preset.preamp_mode == PreampMode::Auto {
                     required_attenuation
                 } else {
-                    self.eq_manual_preamp_db
+                    preset.manual_preamp_db
                 };
 
                 let peak_level = effective_preamp + max_boost;
@@ -820,21 +921,26 @@ impl LunulaApp {
                         .corner_radius(4.0)
                         .inner_margin(egui::Margin::symmetric(8, 3));
                     pill.show(ui, |ui| {
-                        ui.label(egui::RichText::new(format!("✓ Headroom Aman: {:0.1} dB Margin", -peak_level)).strong().size(11.5).color(Color32::from_rgb(22, 163, 74)));
+                        ui.label(egui::RichText::new(format!("✓ Headroom Aman: {}", format_margin_clean(-peak_level))).strong().size(11.5).color(Color32::from_rgb(22, 163, 74)));
                     });
                 }
             });
         });
     }
 
-    fn render_eq_band_inspector(&mut self, ui: &mut egui::Ui) {
+    fn render_eq_band_inspector(
+        &mut self,
+        ui: &mut egui::Ui,
+        preset: &mut ParametricEqPreset,
+        is_dirty: &mut bool,
+    ) {
         let selected_idx = self.selected_band_idx.unwrap_or(0);
-        if selected_idx >= self.parametric_bands.len() {
+        if selected_idx >= preset.bands.len() {
             return;
         }
 
-        let total_bands = self.parametric_bands.len();
-        let mut band = self.parametric_bands[selected_idx].clone();
+        let total_bands = preset.bands.len();
+        let mut band = preset.bands[selected_idx].clone();
         let mut changed = false;
         let mut delete_band = false;
         let mut add_band = false;
@@ -893,13 +999,13 @@ impl LunulaApp {
 
                 ui.add_space(8.0);
 
-                // Sliders & Numeric Inputs: Frequency, Gain, Q Factor
+                // Adaptive Controls: Frequency, Gain/Slope, Q Factor
                 ui.columns(3, |columns| {
                     // Column 1: Frequency
                     columns[0].vertical(|ui| {
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new("Frekuensi:").strong().size(12.0));
-                            let dv = ui.add(egui::DragValue::new(&mut band.freq).range(20.0..=20000.0).speed(5.0).suffix(" Hz"));
+                            let dv = ui.add(egui::DragValue::new(&mut band.freq).range(20.0..=20000.0).speed(5.0).custom_formatter(|f, _| format_freq(f as f32)));
                             if dv.changed() {
                                 changed = true;
                             }
@@ -910,38 +1016,66 @@ impl LunulaApp {
                         }
                     });
 
-                    // Column 2: Gain (Disabled for HPF / LPF / Notch)
+                    // Column 2: Gain OR Filter Slope (Adaptive!)
                     columns[1].vertical(|ui| {
-                        let has_gain = band.filter_type.has_gain();
-                        ui.add_enabled_ui(has_gain, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("Gain:").strong().size(12.0));
-                                let dv = ui.add(egui::DragValue::new(&mut band.gain_db).range(-18.0..=18.0).speed(0.1).suffix(" dB"));
-                                if dv.changed() {
-                                    changed = true;
-                                }
-                                if ui.button(egui::RichText::new("0 dB").size(10.0)).clicked() {
-                                    band.gain_db = 0.0;
-                                    changed = true;
-                                }
-                            });
-                            let s = ui.add(egui::Slider::new(&mut band.gain_db, -18.0..=18.0).show_value(false));
-                            if s.changed() {
-                                changed = true;
+                        match band.filter_type {
+                            FilterType::HighPass | FilterType::LowPass => {
+                                // HPF / LPF has no Gain: Show Slope Selector (12/24/48 dB/oct)
+                                ui.label(egui::RichText::new("Slope Filter:").strong().size(12.0));
+                                ui.horizontal(|ui| {
+                                    let slopes = [
+                                        (FilterSlope::Db12, "12 dB/oct"),
+                                        (FilterSlope::Db24, "24 dB/oct"),
+                                        (FilterSlope::Db48, "48 dB/oct"),
+                                    ];
+                                    for (sl, label) in slopes {
+                                        let is_cur = band.slope == sl;
+                                        let btn = egui::Button::new(egui::RichText::new(label).size(10.5).strong())
+                                            .fill(if is_cur { Color32::from_rgb(224, 242, 254) } else { Color32::from_rgb(241, 245, 249) })
+                                            .stroke(Stroke::new(1.0, if is_cur { Color32::from_rgb(14, 165, 233) } else { Color32::from_rgb(203, 213, 225) }));
+                                        if ui.add(btn).clicked() {
+                                            band.slope = sl;
+                                            changed = true;
+                                        }
+                                    }
+                                });
                             }
-                        });
+                            FilterType::Notch => {
+                                // Notch has no Gain: Label indicating band-stop
+                                ui.label(egui::RichText::new("Karakteristik:").strong().size(12.0));
+                                ui.label(egui::RichText::new("Zero-Gain Band Stop Notch").size(11.0).color(Color32::from_rgb(100, 116, 139)));
+                            }
+                            FilterType::Peaking | FilterType::LowShelf | FilterType::HighShelf => {
+                                // Peaking and Shelves have Gain slider
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new("Gain:").strong().size(12.0));
+                                    let dv = ui.add(egui::DragValue::new(&mut band.gain_db).range(-18.0..=18.0).speed(0.1).custom_formatter(|g, _| format_db_clean(g as f32)));
+                                    if dv.changed() {
+                                        changed = true;
+                                    }
+                                    if ui.button(egui::RichText::new("0 dB").size(10.0)).clicked() {
+                                        band.gain_db = 0.0;
+                                        changed = true;
+                                    }
+                                });
+                                let s = ui.add(egui::Slider::new(&mut band.gain_db, -18.0..=18.0).show_value(false));
+                                if s.changed() {
+                                    changed = true;
+                                }
+                            }
+                        }
                     });
 
-                    // Column 3: Q Factor
+                    // Column 3: Q Factor (Logarithmic slider centered at 1.0..1.414)
                     columns[2].vertical(|ui| {
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new("Q Factor:").strong().size(12.0));
-                            let dv = ui.add(egui::DragValue::new(&mut band.q).range(0.1..=10.0).speed(0.05));
+                            let dv = ui.add(egui::DragValue::new(&mut band.q).range(0.1..=10.0).speed(0.02));
                             if dv.changed() {
                                 changed = true;
                             }
                         });
-                        let s = ui.add(egui::Slider::new(&mut band.q, 0.1..=10.0).show_value(false));
+                        let s = ui.add(egui::Slider::new(&mut band.q, 0.1..=10.0).logarithmic(true).show_value(false));
                         if s.changed() {
                             changed = true;
                         }
@@ -950,41 +1084,44 @@ impl LunulaApp {
             });
 
         if delete_band {
-            if self.parametric_bands.len() > 1 {
-                self.parametric_bands.remove(selected_idx);
-                if selected_idx >= self.parametric_bands.len() && !self.parametric_bands.is_empty() {
-                    self.selected_band_idx = Some(self.parametric_bands.len() - 1);
+            if preset.bands.len() > 1 {
+                preset.bands.remove(selected_idx);
+                if selected_idx >= preset.bands.len() && !preset.bands.is_empty() {
+                    self.selected_band_idx = Some(preset.bands.len() - 1);
                 }
-                self.eq_is_dirty = true;
+                *is_dirty = true;
+                self.active_eq = preset.clone();
                 self.sync_parametric_to_legacy_eq();
             }
         } else if add_band {
-            if self.parametric_bands.len() < 32 {
+            if preset.bands.len() < 32 {
                 let new_band = ParametricBand::new(FilterType::Peaking, 1000.0, 0.0, 1.414);
-                self.parametric_bands.push(new_band);
-                self.selected_band_idx = Some(self.parametric_bands.len() - 1);
-                self.eq_is_dirty = true;
+                preset.bands.push(new_band);
+                self.selected_band_idx = Some(preset.bands.len() - 1);
+                *is_dirty = true;
+                self.active_eq = preset.clone();
                 self.sync_parametric_to_legacy_eq();
             }
         } else if changed {
-            self.parametric_bands[selected_idx] = band;
-            self.eq_is_dirty = true;
+            preset.bands[selected_idx] = band;
+            *is_dirty = true;
+            self.active_eq = preset.clone();
             self.sync_parametric_to_legacy_eq();
         }
     }
 
-    fn render_eq_bands_strip(&mut self, ui: &mut egui::Ui) {
+    fn render_eq_bands_strip(&mut self, ui: &mut egui::Ui, preset: &ParametricEqPreset) {
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new("Bands:").strong().size(11.5).color(Color32::from_rgb(100, 116, 139)));
-            let num_bands = self.parametric_bands.len();
+            let num_bands = preset.bands.len();
             for i in 0..num_bands {
-                let band = &self.parametric_bands[i];
+                let band = &preset.bands[i];
                 let is_selected = self.selected_band_idx == Some(i);
 
                 let label = if band.filter_type.has_gain() {
-                    format!("#{}: {} {:0.0}Hz ({:+0.1}dB)", i + 1, band.filter_type.short_name(), band.freq, band.gain_db)
+                    format!("#{}: {} {} ({})", i + 1, band.filter_type.short_name(), format_freq(band.freq), format_db_clean(band.gain_db))
                 } else {
-                    format!("#{}: {} {:0.0}Hz", i + 1, band.filter_type.short_name(), band.freq)
+                    format!("#{}: {} {}", i + 1, band.filter_type.short_name(), format_freq(band.freq))
                 };
 
                 let col = filter_color(band.filter_type);
@@ -999,34 +1136,52 @@ impl LunulaApp {
         });
     }
 
-    fn render_eq_transparency_section(&mut self, ui: &mut egui::Ui) {
+    fn render_eq_transparency_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        preset: &ParametricEqPreset,
+        is_dirty: &mut bool,
+    ) {
         egui::Frame::new()
-            .fill(Color32::from_rgb(241, 245, 249)) // Neutral Slate Frame
+            .fill(Color32::from_rgb(241, 245, 249))
             .stroke(Stroke::new(1.0, Color32::from_rgb(203, 213, 225)))
             .corner_radius(8.0)
             .inner_margin(egui::Margin::symmetric(14, 10))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("🔊 SIGNAL TRANSPARENCY & AUDIOPHILE METERING").strong().size(13.0).color(Color32::from_rgb(15, 23, 42)));
+                    ui.label(egui::RichText::new("🔊 I/O LEVEL & OUTPUT CONFIGURATION").strong().size(13.0).color(Color32::from_rgb(15, 23, 42)));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new("Tahap 2: Transparansi Bit-Accurate & True-Peak Precision").size(11.0).color(Color32::from_rgb(100, 116, 139)));
+                        ui.label(egui::RichText::new("Pemisahan Pengaturan Output Global dari Preset EQ").size(11.0).color(Color32::from_rgb(100, 116, 139)));
                     });
                 });
 
                 ui.add_space(8.0);
 
                 ui.columns(3, |columns| {
-                    // Column 1: I/O Peak Metering & Clip Counter
+                    // Column 1: I/O Peak Metering & Clip Counter (Consistent on Flat EQ!)
                     columns[0].vertical(|ui| {
-                        ui.label(egui::RichText::new("I/O Peak & Clip Counter").strong().size(11.5).color(Color32::from_rgb(30, 41, 59)));
+                        ui.label(egui::RichText::new("Sample Peak (dBFS)").strong().size(11.5).color(Color32::from_rgb(30, 41, 59)));
                         ui.add_space(4.0);
 
-                        // Simulated Peak Level Bar (linked to volume & mute)
                         let vol = if self.is_muted { 0.0 } else { self.volume.clamp(0.0, 1.2) };
                         let in_peak_db = if vol > 0.001 { -18.0 + vol * 8.0 } else { -60.0 };
-                        let out_peak_db = if vol > 0.001 { in_peak_db + 2.0 } else { -60.0 };
 
-                        ui.label(egui::RichText::new(format!("In Peak: {:0.1} dBFS  •  Out Peak: {:0.1} dBFS", in_peak_db, out_peak_db)).size(11.0).color(Color32::from_rgb(71, 85, 105)));
+                        let max_boost = calculate_combined_peak_boost(&preset.bands, 44100.0);
+                        let is_flat_or_bypassed = self.eq_bypass || (max_boost < 0.01 && preset.manual_preamp_db.abs() < 0.01);
+
+                        // On flat EQ, In Peak == Out Peak consistently!
+                        let out_peak_db = if is_flat_or_bypassed {
+                            in_peak_db
+                        } else {
+                            let effective_preamp = if preset.preamp_mode == PreampMode::Auto {
+                                -max_boost
+                            } else {
+                                preset.manual_preamp_db
+                            };
+                            in_peak_db + effective_preamp + max_boost
+                        };
+
+                        ui.label(egui::RichText::new(format!("In: {:0.1} dBFS  •  Out: {:0.1} dBFS", in_peak_db, out_peak_db)).size(11.0).color(Color32::from_rgb(71, 85, 105)));
 
                         ui.horizontal(|ui| {
                             let clip_badge = if self.eq_clip_count == 0 {
@@ -1041,29 +1196,29 @@ impl LunulaApp {
                         });
                     });
 
-                    // Column 2: Limiter Option (Default OFF for bit-accuracy)
+                    // Column 2: Limiter Option (Output Stage: Default OFF for bit-accuracy)
                     columns[1].vertical(|ui| {
                         ui.label(egui::RichText::new("Soft Limiter").strong().size(11.5).color(Color32::from_rgb(30, 41, 59)));
                         ui.add_space(4.0);
 
                         let mut lim = self.eq_limiter_enabled;
                         let text = if lim {
-                            egui::RichText::new("Limiter: AKTIF (-0.9 dBFS)").strong().size(11.5).color(Color32::from_rgb(234, 88, 12))
+                            egui::RichText::new("Aktif (-0.9 dBFS)").strong().size(11.5).color(Color32::from_rgb(234, 88, 12))
                         } else {
-                            egui::RichText::new("Limiter: MATI (Transparan Murni)").strong().size(11.5).color(Color32::from_rgb(16, 185, 129))
+                            egui::RichText::new("Mati (Transparan)").strong().size(11.5).color(Color32::from_rgb(16, 185, 129))
                         };
 
                         if ui.checkbox(&mut lim, text).changed() {
                             self.eq_limiter_enabled = lim;
-                            self.eq_is_dirty = true;
+                            *is_dirty = true;
                         }
 
-                        ui.label(egui::RichText::new("Default MATI agar output bit-accurate tanpa pewarnaan audio.").size(10.5).color(Color32::from_rgb(100, 116, 139)));
+                        ui.label(egui::RichText::new("Default MATI agar audio murni linear tanpa pewarnaan.").size(10.5).color(Color32::from_rgb(100, 116, 139)));
                     });
 
-                    // Column 3: Dither Selector
+                    // Column 3: Dither Selector (Output Stage)
                     columns[2].vertical(|ui| {
-                        ui.label(egui::RichText::new("Dither (Saat Turun Bit-Depth)").strong().size(11.5).color(Color32::from_rgb(30, 41, 59)));
+                        ui.label(egui::RichText::new("Dither Output DAC").strong().size(11.5).color(Color32::from_rgb(30, 41, 59)));
                         ui.add_space(4.0);
 
                         ui.horizontal(|ui| {
@@ -1080,12 +1235,12 @@ impl LunulaApp {
                                     .stroke(Stroke::new(1.0, if is_cur { Color32::from_rgb(14, 165, 233) } else { Color32::from_rgb(203, 213, 225) }));
                                 if ui.add(btn).clicked() {
                                     self.eq_dither_mode = m;
-                                    self.eq_is_dirty = true;
+                                    *is_dirty = true;
                                 }
                             }
                         });
 
-                        ui.label(egui::RichText::new("Hanya aktif jika output DAC 16-bit untuk file 24-bit.").size(10.5).color(Color32::from_rgb(100, 116, 139)));
+                        ui.label(egui::RichText::new("Diterapkan pada stage output saat bit depth DAC < sumber.").size(10.5).color(Color32::from_rgb(100, 116, 139)));
                     });
                 });
             });
@@ -1102,11 +1257,9 @@ mod tests {
         let band = ParametricBand::new(FilterType::Peaking, 1000.0, 6.0, 1.414);
         let sample_rate = 44100.0;
 
-        // At center frequency (1000 Hz), response should be +6.0 dB (+/- 0.05 dB)
         let resp_center = compute_biquad_response_db(&band, 1000.0, sample_rate);
         assert!((resp_center - 6.0).abs() < 0.05, "Center freq gain was {}", resp_center);
 
-        // Far away from center (100 Hz), response should be near 0 dB
         let resp_far = compute_biquad_response_db(&band, 100.0, sample_rate);
         assert!(resp_far.abs() < 0.15, "Far freq gain was {}", resp_far);
     }
@@ -1116,11 +1269,9 @@ mod tests {
         let band = ParametricBand::new(FilterType::LowShelf, 100.0, 5.0, 0.707);
         let sample_rate = 44100.0;
 
-        // Sub-bass (25 Hz) should approach +5.0 dB shelf plateau
         let resp_bass = compute_biquad_response_db(&band, 25.0, sample_rate);
         assert!((resp_bass - 5.0).abs() < 0.15, "Shelf bass response was {}", resp_bass);
 
-        // Treble (10 kHz) should be near 0 dB
         let resp_treble = compute_biquad_response_db(&band, 10000.0, sample_rate);
         assert!(resp_treble.abs() < 0.10, "Shelf treble response was {}", resp_treble);
     }
@@ -1130,27 +1281,33 @@ mod tests {
         let band = ParametricBand::new(FilterType::HighShelf, 10000.0, 4.0, 0.707);
         let sample_rate = 44100.0;
 
-        // High treble (18 kHz) should approach +4.0 dB shelf plateau
         let resp_air = compute_biquad_response_db(&band, 18000.0, sample_rate);
         assert!((resp_air - 4.0).abs() < 0.20, "Shelf air response was {}", resp_air);
 
-        // Bass (100 Hz) should be near 0 dB
         let resp_bass = compute_biquad_response_db(&band, 100.0, sample_rate);
         assert!(resp_bass.abs() < 0.10, "Shelf bass response was {}", resp_bass);
     }
 
     #[test]
-    fn test_high_pass_filter_response() {
-        let band = ParametricBand::new(FilterType::HighPass, 80.0, 0.0, 0.707);
+    fn test_high_pass_filter_slopes() {
+        let band_12 = ParametricBand::new_cut(FilterType::HighPass, 100.0, 0.707, FilterSlope::Db12);
+        let band_24 = ParametricBand::new_cut(FilterType::HighPass, 100.0, 0.707, FilterSlope::Db24);
+        let band_48 = ParametricBand::new_cut(FilterType::HighPass, 100.0, 0.707, FilterSlope::Db48);
         let sample_rate = 44100.0;
 
-        // 20 Hz should be attenuated significantly (< -10 dB)
-        let resp_sub = compute_biquad_response_db(&band, 20.0, sample_rate);
-        assert!(resp_sub < -10.0, "HPF sub response was {}", resp_sub);
+        // 1 octave below cutoff (50 Hz)
+        let resp_12 = compute_biquad_response_db(&band_12, 50.0, sample_rate);
+        let resp_24 = compute_biquad_response_db(&band_24, 50.0, sample_rate);
+        let resp_48 = compute_biquad_response_db(&band_48, 50.0, sample_rate);
 
-        // 1 kHz should pass transparently (~ 0 dB)
-        let resp_mid = compute_biquad_response_db(&band, 1000.0, sample_rate);
-        assert!(resp_mid.abs() < 0.05, "HPF pass response was {}", resp_mid);
+        assert!((resp_12 - (-12.0)).abs() < 2.5, "12dB slope at 50Hz was {}", resp_12);
+        assert!((resp_24 - (-24.0)).abs() < 5.0, "24dB slope at 50Hz was {}", resp_24);
+        assert!((resp_48 - (-48.0)).abs() < 10.0, "48dB slope at 50Hz was {}", resp_48);
+
+        // Passband (1 kHz) should pass transparently (~ 0 dB)
+        assert!(compute_biquad_response_db(&band_12, 1000.0, sample_rate).abs() < 0.05);
+        assert!(compute_biquad_response_db(&band_24, 1000.0, sample_rate).abs() < 0.05);
+        assert!(compute_biquad_response_db(&band_48, 1000.0, sample_rate).abs() < 0.05);
     }
 
     #[test]
@@ -1158,11 +1315,9 @@ mod tests {
         let band = ParametricBand::new(FilterType::Notch, 1000.0, 0.0, 2.0);
         let sample_rate = 44100.0;
 
-        // Center frequency (1000 Hz) should be notched out deeply (< -25 dB)
         let resp_notch = compute_biquad_response_db(&band, 1000.0, sample_rate);
         assert!(resp_notch < -25.0, "Notch attenuation was {}", resp_notch);
 
-        // 100 Hz should pass through (~ 0 dB)
         let resp_pass = compute_biquad_response_db(&band, 100.0, sample_rate);
         assert!(resp_pass.abs() < 0.10, "Notch pass response was {}", resp_pass);
     }
@@ -1189,15 +1344,35 @@ mod tests {
     }
 
     #[test]
-    fn test_max_boost_and_headroom_calculation() {
+    fn test_combined_curve_peak_boost_adjacent_bands() {
+        // Two adjacent +6 dB bands at 800 Hz and 1200 Hz
         let bands = vec![
-            ParametricBand::new(FilterType::LowShelf, 45.0, 6.0, 0.707),
-            ParametricBand::new(FilterType::Peaking, 1000.0, 2.0, 1.414),
+            ParametricBand::new(FilterType::Peaking, 800.0, 6.0, 1.414),
+            ParametricBand::new(FilterType::Peaking, 1200.0, 6.0, 1.414),
         ];
 
-        let max_boost = calculate_max_boost(&bands, 44100.0);
-        // Maximum boost should be approximately +6.0 dB
-        assert!((max_boost - 6.0).abs() < 0.25, "Calculated max boost was {}", max_boost);
+        let combined_peak = calculate_combined_peak_boost(&bands, 44100.0);
+        // Combined boost must exceed individual band max (+6.0 dB) due to overlap
+        assert!(combined_peak > 6.5, "Combined peak should exceed 6.5 dB, got {}", combined_peak);
+        assert!(combined_peak < 9.5, "Combined peak should be reasonable (< 9.5 dB), got {}", combined_peak);
+    }
+
+    #[test]
+    fn test_clean_format_helpers_no_negative_zero() {
+        assert_eq!(format_db_clean(0.0), "0.0 dB");
+        assert_eq!(format_db_clean(-0.0), "0.0 dB");
+        assert_eq!(format_db_clean(-0.0001), "0.0 dB");
+        assert_eq!(format_db_clean(5.5), "+5.5 dB");
+        assert_eq!(format_db_clean(-3.2), "-3.2 dB");
+
+        assert_eq!(format_margin_clean(0.0), "0.0 dB Margin");
+        assert_eq!(format_margin_clean(-0.0), "0.0 dB Margin");
+        assert_eq!(format_margin_clean(6.0), "6.0 dB Margin");
+
+        assert_eq!(format_freq(31.0), "31 Hz");
+        assert_eq!(format_freq(1000.0), "1 kHz");
+        assert_eq!(format_freq(2500.0), "2.5 kHz");
+        assert_eq!(format_freq(16000.0), "16 kHz");
     }
 
     #[test]
@@ -1206,10 +1381,10 @@ mod tests {
         let screen = Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0)));
 
         let mut app = LunulaApp::default();
-        assert_eq!(app.parametric_bands.len(), 10);
+        assert_eq!(app.active_eq.bands.len(), 10);
         assert!(!app.eq_is_dirty);
 
-        let _ = ctx.run_ui(
+        let mut out = ctx.run_ui(
             egui::RawInput {
                 screen_rect: screen,
                 time: Some(0.1),
@@ -1221,6 +1396,6 @@ mod tests {
                 });
             },
         );
+        out.textures_delta.clear();
     }
 }
-
