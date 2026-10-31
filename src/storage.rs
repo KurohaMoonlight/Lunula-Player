@@ -31,6 +31,12 @@ impl LunulaApp {
             repeat_mode: self.repeat_mode,
             queue_cursor: self.queue_cursor,
             selected_output_device: self.selected_output_device.clone(),
+            parametric_bands: Some(self.parametric_bands.clone()),
+            eq_preamp_mode: Some(self.eq_preamp_mode),
+            eq_manual_preamp_db: Some(self.eq_manual_preamp_db),
+            eq_current_preset_name: Some(self.eq_current_preset_name.clone()),
+            eq_limiter_enabled: Some(self.eq_limiter_enabled),
+            eq_dither_mode: Some(self.eq_dither_mode),
         };
         if let Ok(json) = serde_json::to_string_pretty(&saved_state) {
             let path = get_storage_path();

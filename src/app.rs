@@ -2,8 +2,9 @@ use eframe::egui;
 use egui::{Color32, Pos2, Stroke, Vec2};
 use std::time::Instant;
 use crate::models::{
-    AppTab, CableConnection, ChainMode, CustomPlaylist, LibraryCategory,
-    ModularNode, NodeType, RepeatMode, ScanMsg, Track, WaveformMode,
+    AppTab, CableConnection, ChainMode, CustomPlaylist, DitherMode,
+    LibraryCategory, ModularNode, NodeType, ParametricBand, ParametricEqPreset,
+    PreampMode, RepeatMode, ScanMsg, Track, WaveformMode,
 };
 use crate::ui::components::render_card_frame;
 
@@ -37,9 +38,25 @@ pub struct LunulaApp {
     // Oscilloscope state
     pub zoom_level: f32,
 
-    // EQ bands (-12.0 to +12.0 dB)
+    // Legacy EQ bands (-12.0 to +12.0 dB)
     pub eq_bands: [f32; 10],
     pub eq_bypass: bool,
+
+    // Parametric Equalizer State
+    pub parametric_bands: Vec<ParametricBand>,
+    pub selected_band_idx: Option<usize>,
+    pub dragging_band_idx: Option<usize>,
+    pub eq_preamp_mode: PreampMode,
+    pub eq_manual_preamp_db: f32,
+    pub eq_current_preset_name: String,
+    pub eq_is_dirty: bool,
+    pub eq_limiter_enabled: bool,
+    pub eq_dither_mode: DitherMode,
+    pub eq_clip_count: u32,
+    pub eq_show_spectrum_overlay: bool,
+    pub eq_presets: Vec<ParametricEqPreset>,
+    pub eq_preset_name_input: String,
+    pub show_save_preset_dialog: bool,
 
     // Track data
     pub current_track: Track,
@@ -228,6 +245,21 @@ impl LunulaApp {
             eq_bands: [0.0; 10],
             eq_bypass: true,
 
+            parametric_bands: ParametricBand::default_10_bands(),
+            selected_band_idx: Some(0),
+            dragging_band_idx: None,
+            eq_preamp_mode: PreampMode::Auto,
+            eq_manual_preamp_db: 0.0,
+            eq_current_preset_name: "Flat (Netral)".to_string(),
+            eq_is_dirty: false,
+            eq_limiter_enabled: false,
+            eq_dither_mode: DitherMode::None,
+            eq_clip_count: 0,
+            eq_show_spectrum_overlay: true,
+            eq_presets: ParametricEqPreset::default_presets(),
+            eq_preset_name_input: "Preset Kustom".to_string(),
+            show_save_preset_dialog: false,
+
             current_track: Track {
                 title: "Belum Ada Lagu Diputar".to_string(),
                 artist: "Lunula Audio Engine Ready".to_string(),
@@ -322,6 +354,24 @@ impl LunulaApp {
             app.repeat_mode = state.repeat_mode;
             app.queue_cursor = state.queue_cursor;
             app.selected_output_device = state.selected_output_device;
+            if let Some(bands) = state.parametric_bands {
+                app.parametric_bands = bands;
+            }
+            if let Some(mode) = state.eq_preamp_mode {
+                app.eq_preamp_mode = mode;
+            }
+            if let Some(gain) = state.eq_manual_preamp_db {
+                app.eq_manual_preamp_db = gain;
+            }
+            if let Some(name) = state.eq_current_preset_name {
+                app.eq_current_preset_name = name;
+            }
+            if let Some(lim) = state.eq_limiter_enabled {
+                app.eq_limiter_enabled = lim;
+            }
+            if let Some(dith) = state.eq_dither_mode {
+                app.eq_dither_mode = dith;
+            }
             app.set_chain_mode(state.chain_mode);
         } else {
             app.eq_bands[0] = 3.0;

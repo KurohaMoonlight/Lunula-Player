@@ -1,6 +1,207 @@
 use eframe::egui::Pos2;
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum FilterType {
+    Peaking,
+    LowShelf,
+    HighShelf,
+    HighPass,
+    LowPass,
+    Notch,
+}
+
+impl FilterType {
+    pub fn name(&self) -> &'static str {
+        match self {
+            FilterType::Peaking => "Peaking (Bell)",
+            FilterType::LowShelf => "Low Shelf",
+            FilterType::HighShelf => "High Shelf",
+            FilterType::HighPass => "High-Pass (HPF)",
+            FilterType::LowPass => "Low-Pass (LPF)",
+            FilterType::Notch => "Notch (Band-Stop)",
+        }
+    }
+
+    pub fn short_name(&self) -> &'static str {
+        match self {
+            FilterType::Peaking => "Peak",
+            FilterType::LowShelf => "L-Shelf",
+            FilterType::HighShelf => "H-Shelf",
+            FilterType::HighPass => "HPF",
+            FilterType::LowPass => "LPF",
+            FilterType::Notch => "Notch",
+        }
+    }
+
+    pub fn has_gain(&self) -> bool {
+        matches!(self, FilterType::Peaking | FilterType::LowShelf | FilterType::HighShelf)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ParametricBand {
+    pub enabled: bool,
+    pub filter_type: FilterType,
+    pub freq: f32,       // 20.0 .. 20000.0 Hz
+    pub gain_db: f32,    // -18.0 .. 18.0 dB
+    pub q: f32,          // 0.1 .. 10.0
+}
+
+impl Default for ParametricBand {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            filter_type: FilterType::Peaking,
+            freq: 1000.0,
+            gain_db: 0.0,
+            q: 1.414,
+        }
+    }
+}
+
+impl ParametricBand {
+    pub fn new(filter_type: FilterType, freq: f32, gain_db: f32, q: f32) -> Self {
+        Self {
+            enabled: true,
+            filter_type,
+            freq,
+            gain_db,
+            q,
+        }
+    }
+
+    pub fn default_10_bands() -> Vec<Self> {
+        vec![
+            Self::new(FilterType::LowShelf, 31.0, 0.0, 0.707),
+            Self::new(FilterType::Peaking, 63.0, 0.0, 1.414),
+            Self::new(FilterType::Peaking, 125.0, 0.0, 1.414),
+            Self::new(FilterType::Peaking, 250.0, 0.0, 1.414),
+            Self::new(FilterType::Peaking, 500.0, 0.0, 1.414),
+            Self::new(FilterType::Peaking, 1000.0, 0.0, 1.414),
+            Self::new(FilterType::Peaking, 2000.0, 0.0, 1.414),
+            Self::new(FilterType::Peaking, 4000.0, 0.0, 1.414),
+            Self::new(FilterType::Peaking, 8000.0, 0.0, 1.414),
+            Self::new(FilterType::HighShelf, 16000.0, 0.0, 0.707),
+        ]
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default)]
+pub enum PreampMode {
+    #[default]
+    Auto,
+    Manual,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default)]
+pub enum DitherMode {
+    #[default]
+    None,
+    Tpdf,
+    NoiseShaped,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ParametricEqPreset {
+    pub name: String,
+    pub bands: Vec<ParametricBand>,
+    pub preamp_mode: PreampMode,
+    pub manual_preamp_db: f32,
+    pub limiter_enabled: bool,
+    pub dither_mode: DitherMode,
+}
+
+impl ParametricEqPreset {
+    pub fn default_presets() -> Vec<Self> {
+        vec![
+            Self {
+                name: "Flat (Netral)".to_string(),
+                bands: ParametricBand::default_10_bands(),
+                preamp_mode: PreampMode::Auto,
+                manual_preamp_db: 0.0,
+                limiter_enabled: false,
+                dither_mode: DitherMode::None,
+            },
+            Self {
+                name: "Bass Boost & Warmth".to_string(),
+                bands: vec![
+                    ParametricBand::new(FilterType::LowShelf, 45.0, 5.5, 0.707),
+                    ParametricBand::new(FilterType::Peaking, 90.0, 3.5, 1.2),
+                    ParametricBand::new(FilterType::Peaking, 200.0, 1.5, 1.414),
+                    ParametricBand::new(FilterType::Peaking, 500.0, 0.0, 1.414),
+                    ParametricBand::new(FilterType::Peaking, 1000.0, 0.0, 1.414),
+                    ParametricBand::new(FilterType::Peaking, 2000.0, 0.0, 1.414),
+                    ParametricBand::new(FilterType::Peaking, 4000.0, 0.5, 1.414),
+                    ParametricBand::new(FilterType::Peaking, 8000.0, 1.0, 1.414),
+                    ParametricBand::new(FilterType::HighShelf, 14000.0, 1.5, 0.707),
+                ],
+                preamp_mode: PreampMode::Auto,
+                manual_preamp_db: -5.5,
+                limiter_enabled: false,
+                dither_mode: DitherMode::None,
+            },
+            Self {
+                name: "Audiophile Harman Target".to_string(),
+                bands: vec![
+                    ParametricBand::new(FilterType::LowShelf, 105.0, 4.5, 0.707),
+                    ParametricBand::new(FilterType::Peaking, 200.0, 0.0, 1.414),
+                    ParametricBand::new(FilterType::Peaking, 500.0, -0.5, 1.414),
+                    ParametricBand::new(FilterType::Peaking, 1000.0, -0.5, 1.8),
+                    ParametricBand::new(FilterType::Peaking, 3000.0, 2.5, 1.414),
+                    ParametricBand::new(FilterType::Peaking, 6000.0, -1.5, 2.0),
+                    ParametricBand::new(FilterType::HighShelf, 10000.0, 1.0, 0.707),
+                ],
+                preamp_mode: PreampMode::Auto,
+                manual_preamp_db: -4.5,
+                limiter_enabled: false,
+                dither_mode: DitherMode::None,
+            },
+            Self {
+                name: "Vocal Clarity".to_string(),
+                bands: vec![
+                    ParametricBand::new(FilterType::HighPass, 75.0, 0.0, 0.707),
+                    ParametricBand::new(FilterType::Peaking, 250.0, -2.5, 1.8),
+                    ParametricBand::new(FilterType::Peaking, 1000.0, 1.0, 1.414),
+                    ParametricBand::new(FilterType::Peaking, 2500.0, 3.5, 1.414),
+                    ParametricBand::new(FilterType::Peaking, 5000.0, 2.0, 1.6),
+                    ParametricBand::new(FilterType::HighShelf, 10000.0, 1.5, 0.707),
+                ],
+                preamp_mode: PreampMode::Auto,
+                manual_preamp_db: -3.5,
+                limiter_enabled: false,
+                dither_mode: DitherMode::None,
+            },
+            Self {
+                name: "Warm Vinyl / Acoustic".to_string(),
+                bands: vec![
+                    ParametricBand::new(FilterType::LowShelf, 80.0, 2.0, 0.707),
+                    ParametricBand::new(FilterType::Peaking, 160.0, 1.5, 1.2),
+                    ParametricBand::new(FilterType::Peaking, 1000.0, 0.5, 1.4),
+                    ParametricBand::new(FilterType::Peaking, 8000.0, -1.0, 1.5),
+                    ParametricBand::new(FilterType::HighShelf, 14000.0, -1.5, 0.707),
+                ],
+                preamp_mode: PreampMode::Auto,
+                manual_preamp_db: -2.0,
+                limiter_enabled: false,
+                dither_mode: DitherMode::None,
+            },
+            Self {
+                name: "Air & Sparkle".to_string(),
+                bands: vec![
+                    ParametricBand::new(FilterType::LowShelf, 50.0, 0.5, 0.707),
+                    ParametricBand::new(FilterType::Peaking, 8000.0, 2.0, 1.5),
+                    ParametricBand::new(FilterType::HighShelf, 12000.0, 4.5, 0.707),
+                ],
+                preamp_mode: PreampMode::Auto,
+                manual_preamp_db: -4.5,
+                limiter_enabled: false,
+                dither_mode: DitherMode::None,
+            },
+        ]
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AppTab {
     NowPlaying,
@@ -172,6 +373,18 @@ pub struct SavedAppState {
     pub queue_cursor: Option<usize>,
     #[serde(default)]
     pub selected_output_device: Option<String>,
+    #[serde(default)]
+    pub parametric_bands: Option<Vec<ParametricBand>>,
+    #[serde(default)]
+    pub eq_preamp_mode: Option<PreampMode>,
+    #[serde(default)]
+    pub eq_manual_preamp_db: Option<f32>,
+    #[serde(default)]
+    pub eq_current_preset_name: Option<String>,
+    #[serde(default)]
+    pub eq_limiter_enabled: Option<bool>,
+    #[serde(default)]
+    pub eq_dither_mode: Option<DitherMode>,
 }
 
 impl From<TrackData> for Track {
