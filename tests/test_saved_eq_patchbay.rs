@@ -188,16 +188,16 @@ fn test_sidebar_saved_equalizers_plus_button_toggles_popup() {
     );
     out0.textures_delta.clear();
 
-    // Find the text "SAVED EQUALIZERS"
+    // Find the text "Equalizer Presets"
     let mut btn_pos = egui::Pos2::ZERO;
     for shape in out0.shapes {
         if let egui::epaint::Shape::Text(text_shape) = shape.shape {
-            if text_shape.galley.job.text.contains("SAVED EQUALIZERS") {
+            if text_shape.galley.job.text.contains("Equalizer Presets") {
                 btn_pos = text_shape.pos;
             }
         }
     }
-    assert_ne!(btn_pos, egui::Pos2::ZERO, "SAVED EQUALIZERS button/label must be rendered in sidebar!");
+    assert_ne!(btn_pos, egui::Pos2::ZERO, "Equalizer Presets card must be rendered in sidebar!");
 
     // Click it
     let mut out1 = ctx.run_ui(

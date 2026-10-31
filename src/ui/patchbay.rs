@@ -945,6 +945,7 @@ impl LunulaApp {
     // Right Sidebar Filter & FX Toolbox Palette
     pub fn render_fx_sidebar_palette(&mut self, ui: &mut egui::Ui) {
         let mut delete_filter_type: Option<NodeType> = None;
+        let mut delete_all_saved_eq_nodes = false;
 
         render_card_frame(ui, |ui| {
             ui.vertical(|ui| {
@@ -1092,41 +1093,90 @@ impl LunulaApp {
                     });
                     ui.add_space(8.0);
 
-                    // Filter 5: Saved Equalizer + (Clean row, opens floating window at cursor)
+                    // Filter 5: Equalizer Presets Card (Matches Filter 1-4 anatomy perfectly)
+                    let has_any_eq_node = self.nodes.iter().any(|n| matches!(n.node_type, NodeType::SavedEqPreset(_)));
+                    let is_open = self.show_saved_eq_palette_popup;
                     let sidebar_min_x = ui.max_rect().min.x;
-                    ui.horizontal(|ui| {
-                        let is_open = self.show_saved_eq_palette_popup;
-                        let lbl_resp = ui.selectable_label(
-                            is_open,
-                            egui::RichText::new("SAVED EQUALIZERS")
-                                .strong()
-                                .size(11.5)
-                                .color(if is_open { Color32::from_rgb(147, 51, 234) } else { Color32::from_rgb(100, 116, 139) }),
-                        ).on_hover_text("Buka semua equalizer & preset tersimpan");
 
-                        if lbl_resp.clicked() {
-                            self.show_saved_eq_palette_popup = !self.show_saved_eq_palette_popup;
-                            let click_y = ui.input(|i| i.pointer.interact_pos()).map(|p| p.y).unwrap_or(lbl_resp.rect.center().y);
-                            self.saved_eq_popup_anchor = Some(Pos2::new(sidebar_min_x, click_y));
-                        }
+                    let g5 = ui.group(|ui| {
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("🎛️ Equalizer Presets")
+                                        .strong()
+                                        .size(12.5)
+                                        .color(if is_open { Color32::from_rgb(147, 51, 234) } else { Color32::from_rgb(15, 23, 42) })
+                                );
 
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let btn_plus = egui::Button::new(
-                                egui::RichText::new("➕").strong().size(11.5).color(Color32::from_rgb(147, 51, 234))
-                            )
-                            .fill(if is_open { Color32::from_rgb(233, 213, 255) } else { Color32::from_rgb(243, 232, 255) })
-                            .stroke(Stroke::new(1.0, Color32::from_rgb(216, 180, 254)))
-                            .corner_radius(6.0);
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("{} Preset", self.eq_presets.len()))
+                                            .size(10.0)
+                                            .color(Color32::from_rgb(148, 163, 184))
+                                    );
+                                });
+                            });
 
-                            let resp = ui.add_sized([28.0, 24.0], btn_plus)
-                                .on_hover_text("Buka window daftar saved equalizer & preset");
+                            ui.label(
+                                egui::RichText::new("Koleksi kurva frekuensi parametrik (Harman, Bass, Vocal, atau custom).")
+                                    .size(10.5)
+                                    .color(Color32::from_rgb(100, 116, 139))
+                            );
 
-                            if resp.clicked() {
-                                self.show_saved_eq_palette_popup = !self.show_saved_eq_palette_popup;
-                                let click_y = ui.input(|i| i.pointer.interact_pos()).map(|p| p.y).unwrap_or(resp.rect.center().y);
-                                self.saved_eq_popup_anchor = Some(Pos2::new(sidebar_min_x, click_y));
-                            }
+                            ui.horizontal(|ui| {
+                                let btn_text = if is_open { "🎛️ Tutup Preset" } else { "➕ Tambah ke Chain" };
+                                let btn_preset = egui::Button::new(
+                                    egui::RichText::new(btn_text)
+                                        .strong()
+                                        .color(if is_open { Color32::from_rgb(147, 51, 234) } else { Color32::from_rgb(15, 23, 42) })
+                                )
+                                .fill(if is_open { Color32::from_rgb(243, 232, 255) } else { Color32::from_rgb(241, 245, 249) })
+                                .stroke(Stroke::new(1.0, if is_open { Color32::from_rgb(216, 180, 254) } else { Color32::from_rgb(203, 213, 225) }))
+                                .corner_radius(6.0);
+
+                                let btn_resp = ui.add(btn_preset)
+                                    .on_hover_text("Buka koleksi preset equalizer untuk dipasang ke canvas");
+
+                                if btn_resp.clicked() {
+                                    self.show_saved_eq_palette_popup = !self.show_saved_eq_palette_popup;
+                                    let click_y = ui.input(|i| i.pointer.interact_pos()).map(|p| p.y).unwrap_or(btn_resp.rect.center().y);
+                                    self.saved_eq_popup_anchor = Some(Pos2::new(sidebar_min_x, click_y));
+                                }
+
+                                if has_any_eq_node {
+                                    if ui.button(egui::RichText::new("🗑️").size(11.0).color(Color32::from_rgb(239, 68, 68)))
+                                        .on_hover_text("Hapus semua modul EQ Preset dari canvas")
+                                        .clicked()
+                                    {
+                                        delete_all_saved_eq_nodes = true;
+                                    }
+                                }
+                            });
                         });
+                    });
+
+                    let card_resp = ui.interact(g5.response.rect, ui.scope_id().with("card_eq_presets_click"), egui::Sense::click());
+                    if card_resp.clicked() && !is_open {
+                        self.show_saved_eq_palette_popup = true;
+                        let click_y = ui.input(|i| i.pointer.interact_pos()).map(|p| p.y).unwrap_or(g5.response.rect.center().y);
+                        self.saved_eq_popup_anchor = Some(Pos2::new(sidebar_min_x, click_y));
+                    }
+
+                    g5.response.context_menu(|ui| {
+                        ui.label(egui::RichText::new("🎛️ Equalizer Presets").strong());
+                        ui.separator();
+                        if ui.button("🎛️ Buka / Tutup Koleksi Preset").clicked() {
+                            self.show_saved_eq_palette_popup = !self.show_saved_eq_palette_popup;
+                            let click_y = ui.input(|i| i.pointer.interact_pos()).map(|p| p.y).unwrap_or(g5.response.rect.center().y);
+                            self.saved_eq_popup_anchor = Some(Pos2::new(sidebar_min_x, click_y));
+                            ui.close();
+                        }
+                        if has_any_eq_node {
+                            if ui.button("🗑️ Hapus Semua EQ Preset dari Canvas").clicked() {
+                                delete_all_saved_eq_nodes = true;
+                                ui.close();
+                            }
+                        }
                     });
                 });
             });
@@ -1135,6 +1185,17 @@ impl LunulaApp {
         // Execute batch filter deletion
         if let Some(nt) = delete_filter_type {
             let ids: Vec<usize> = self.nodes.iter().filter(|n| n.node_type == nt && n.is_removable).map(|n| n.id).collect();
+            self.nodes.retain(|n| !ids.contains(&n.id));
+            self.connections.retain(|c| !ids.contains(&c.from_node) && !ids.contains(&c.to_node));
+            if let Some(sel) = self.selected_node {
+                if ids.contains(&sel) {
+                    self.selected_node = None;
+                }
+            }
+        }
+
+        if delete_all_saved_eq_nodes {
+            let ids: Vec<usize> = self.nodes.iter().filter(|n| matches!(n.node_type, NodeType::SavedEqPreset(_)) && n.is_removable).map(|n| n.id).collect();
             self.nodes.retain(|n| !ids.contains(&n.id));
             self.connections.retain(|c| !ids.contains(&c.from_node) && !ids.contains(&c.to_node));
             if let Some(sel) = self.selected_node {
