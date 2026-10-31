@@ -45,7 +45,7 @@ impl LunulaApp {
             NodeType::StereoWidener => ("STEREO WIDENER".to_string(), "Haas Effect 3D".to_string(), "+35% Soundstage".to_string()),
             NodeType::BassGuard => ("BASS GUARD".to_string(), "Sub-sonic Limiter".to_string(), "Protects Woofer".to_string()),
             NodeType::VolumeAttenuator => ("ATTENUATOR".to_string(), "Volume -6 dB".to_string(), "Passive Pad".to_string()),
-            NodeType::SavedEqPreset(name) => ("EQ PRESET".to_string(), name.clone(), "Biquad Peaking".to_string()),
+            NodeType::SavedEqPreset(name) => ("🎛️ EQ PRESET".to_string(), name.clone(), "Klik untuk Buka".to_string()),
             _ => ("AUDIO FILTER".to_string(), "DSP Unit".to_string(), "Active".to_string()),
         };
 
@@ -512,6 +512,9 @@ impl LunulaApp {
         }
 
         // 6. Render Nodes & Input/Output Patch Pins with Dynamic Outline Animation
+        let mut navigate_to_eq_preset: Option<String> = None;
+        let mut navigate_to_main_eq = false;
+
         for (i, node) in self.nodes.iter().enumerate() {
             let is_active = self.selected_node == Some(node.id);
             let is_dragging = self.dragging_node == Some(i);
@@ -536,10 +539,35 @@ impl LunulaApp {
 
             // Context menu on node
             let node_resp = ui.interact(node_rect, ui.scope_id().with(("patch_node_ctx", node.id)), egui::Sense::click());
+            if node_resp.clicked() {
+                match &node.node_type {
+                    NodeType::SavedEqPreset(name) => {
+                        navigate_to_eq_preset = Some(name.clone());
+                    }
+                    NodeType::Dsp => {
+                        navigate_to_main_eq = true;
+                    }
+                    _ => {}
+                }
+            }
+
             node_resp.context_menu(|ui| {
                 ui.label(egui::RichText::new(&node.title).strong().size(12.5).color(Color32::from_rgb(15, 23, 42)));
                 ui.label(egui::RichText::new(&node.sub1).size(10.5).color(Color32::from_rgb(100, 116, 139)));
                 ui.separator();
+                if let NodeType::SavedEqPreset(ref name) = node.node_type {
+                    if ui.button("🎛️ Buka & Edit di Tab Equalizer").clicked() {
+                        navigate_to_eq_preset = Some(name.clone());
+                        ui.close();
+                    }
+                    ui.separator();
+                } else if node.node_type == NodeType::Dsp {
+                    if ui.button("🎛️ Buka DSP di Tab Equalizer").clicked() {
+                        navigate_to_main_eq = true;
+                        ui.close();
+                    }
+                    ui.separator();
+                }
                 if node.is_removable {
                     if ui.button("🗑️ Hapus Filter / Modul Ini").clicked() {
                         node_to_delete = Some(node.id);
@@ -676,6 +704,8 @@ impl LunulaApp {
             let (sub1_txt, sub1_col, sub2_txt, sub2_col) = if is_bypassed_effect {
                 if node.node_type == NodeType::Dsp {
                     ("DILEWATI (Direct Wire)", Color32::from_rgb(148, 163, 184), "0.0 dB Pure Master", Color32::from_rgb(148, 163, 184))
+                } else if let NodeType::SavedEqPreset(_) = node.node_type {
+                    (&node.sub1[..], Color32::from_rgb(71, 85, 105), "DILEWATI (Bypass)", Color32::from_rgb(148, 163, 184))
                 } else {
                     ("DILEWATI (Bypassed)", Color32::from_rgb(148, 163, 184), "Nonaktif di Bit-Perfect", Color32::from_rgb(148, 163, 184))
                 }
@@ -685,10 +715,20 @@ impl LunulaApp {
                 ("NO SIGNAL", Color32::from_rgb(239, 68, 68), "Terputus", Color32::from_rgb(220, 38, 38))
             };
 
+            if is_hovered && matches!(node.node_type, NodeType::SavedEqPreset(_) | NodeType::Dsp) {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+
+            let display_sub1 = if sub1_txt.len() > 17 {
+                format!("{}...", &sub1_txt[..15])
+            } else {
+                sub1_txt.to_string()
+            };
+
             painter.text(
                 Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
                 egui::Align2::CENTER_CENTER,
-                sub1_txt,
+                &display_sub1,
                 egui::FontId::proportional(10.0),
                 sub1_col,
             );
@@ -769,6 +809,17 @@ impl LunulaApp {
                 painter.circle_filled(del_btn_center, 6.0, del_color);
                 painter.text(del_btn_center, egui::Align2::CENTER_CENTER, "✕", egui::FontId::proportional(8.0), Color32::WHITE);
             }
+        }
+
+        if let Some(ref name) = navigate_to_eq_preset {
+            if let Some(preset) = self.eq_presets.iter().find(|p| &p.name == name).cloned() {
+                self.active_eq = preset;
+                self.eq_is_dirty = false;
+                self.sync_parametric_to_legacy_eq();
+            }
+            self.current_tab = crate::models::AppTab::Equalizer;
+        } else if navigate_to_main_eq {
+            self.current_tab = crate::models::AppTab::Equalizer;
         }
 
         // 7. Interactive Bottom Status Pill
@@ -1041,44 +1092,42 @@ impl LunulaApp {
                     });
                     ui.add_space(8.0);
 
-                    // Filter 5: Saved EQ Presets
-                    ui.label(egui::RichText::new("SAVED EQUALIZERS").strong().size(12.0).color(Color32::from_rgb(100, 116, 139)));
-                    ui.add_space(4.0);
+                    // Filter 5: Saved Equalizer + (Clean row, opens floating window at cursor)
+                    let sidebar_min_x = ui.max_rect().min.x;
+                    ui.horizontal(|ui| {
+                        let is_open = self.show_saved_eq_palette_popup;
+                        let lbl_resp = ui.selectable_label(
+                            is_open,
+                            egui::RichText::new("SAVED EQUALIZERS")
+                                .strong()
+                                .size(11.5)
+                                .color(if is_open { Color32::from_rgb(147, 51, 234) } else { Color32::from_rgb(100, 116, 139) }),
+                        ).on_hover_text("Buka semua equalizer & preset tersimpan");
 
-                    let presets = ["Vocal Clarity EQ", "Bass Boost Matrix", "Air & Sparkle EQ"];
-                    for preset in presets {
-                        let preset_type = NodeType::SavedEqPreset(preset.to_string());
-                        let has_eq = self.nodes.iter().any(|n| n.node_type == preset_type);
+                        if lbl_resp.clicked() {
+                            self.show_saved_eq_palette_popup = !self.show_saved_eq_palette_popup;
+                            let click_y = ui.input(|i| i.pointer.interact_pos()).map(|p| p.y).unwrap_or(lbl_resp.rect.center().y);
+                            self.saved_eq_popup_anchor = Some(Pos2::new(sidebar_min_x, click_y));
+                        }
 
-                        let row = ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(preset).strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if has_eq {
-                                    if ui.button(egui::RichText::new("🗑️").size(11.0).color(Color32::from_rgb(239, 68, 68))).on_hover_text("Hapus preset ini dari canvas").clicked() {
-                                        delete_filter_type = Some(preset_type.clone());
-                                    }
-                                }
-                                if ui.button(egui::RichText::new("➕").strong()).on_hover_text("Pasang ke diagram").clicked() {
-                                    self.add_modular_filter(preset_type.clone());
-                                }
-                            });
-                        });
-                        row.response.context_menu(|ui| {
-                            ui.label(egui::RichText::new(preset).strong());
-                            ui.separator();
-                            if ui.button("➕ Pasang ke Diagram").clicked() {
-                                self.add_modular_filter(preset_type.clone());
-                                ui.close();
-                            }
-                            if has_eq {
-                                if ui.button("🗑️ Hapus dari Canvas").clicked() {
-                                    delete_filter_type = Some(preset_type.clone());
-                                    ui.close();
-                                }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let btn_plus = egui::Button::new(
+                                egui::RichText::new("➕").strong().size(11.5).color(Color32::from_rgb(147, 51, 234))
+                            )
+                            .fill(if is_open { Color32::from_rgb(233, 213, 255) } else { Color32::from_rgb(243, 232, 255) })
+                            .stroke(Stroke::new(1.0, Color32::from_rgb(216, 180, 254)))
+                            .corner_radius(6.0);
+
+                            let resp = ui.add_sized([28.0, 24.0], btn_plus)
+                                .on_hover_text("Buka window daftar saved equalizer & preset");
+
+                            if resp.clicked() {
+                                self.show_saved_eq_palette_popup = !self.show_saved_eq_palette_popup;
+                                let click_y = ui.input(|i| i.pointer.interact_pos()).map(|p| p.y).unwrap_or(resp.rect.center().y);
+                                self.saved_eq_popup_anchor = Some(Pos2::new(sidebar_min_x, click_y));
                             }
                         });
-                        ui.separator();
-                    }
+                    });
                 });
             });
         });
@@ -1093,6 +1142,287 @@ impl LunulaApp {
                     self.selected_node = None;
                 }
             }
+        }
+
+        self.render_saved_eq_floating_popup(ui);
+    }
+
+    /// Floating popup widget displaying all saved equalizers.
+    /// Positioned intelligently relative to cursor / anchor edge so it never overlaps or gets clipped.
+    pub fn render_saved_eq_floating_popup(&mut self, ui: &mut egui::Ui) {
+        if !self.show_saved_eq_palette_popup {
+            return;
+        }
+
+        let screen_rect = ui.ctx().input(|i| i.raw.screen_rect).unwrap_or_else(|| ui.clip_rect());
+        let popup_w = 400.0;
+        let popup_h = 440.0;
+
+        // Position calculation:
+        // Positioned cleanly to the LEFT of the sidebar palette with a 12px gap,
+        // so it NEVER overlaps or covers the sidebar, buttons, or any filter card!
+        let (sidebar_left, anchor_y) = if let Some(a) = self.saved_eq_popup_anchor {
+            (a.x, a.y)
+        } else {
+            (screen_rect.max.x - 300.0, screen_rect.center().y)
+        };
+
+        let mut x = sidebar_left - popup_w - 12.0;
+        if x < screen_rect.min.x + 12.0 {
+            x = screen_rect.min.x + 12.0;
+        }
+
+        // Align vertically around anchor_y, clamped to stay safely inside screen bounds
+        let min_y = screen_rect.min.y + 44.0;
+        let max_y = (screen_rect.max.y - popup_h - 16.0).max(min_y);
+        let ideal_y = anchor_y - popup_h * 0.5;
+        let y = ideal_y.clamp(min_y, max_y);
+
+        let popup_pos = Pos2::new(x, y);
+
+        let mut close_popup = false;
+        let mut open_preset: Option<String> = None;
+        let mut add_preset_to_canvas: Option<String> = None;
+        let mut delete_preset_name: Option<String> = None;
+
+        let popup_id = ui.scope_id().with("saved_eq_floating_popup_area");
+        let area_resp = egui::Area::new(popup_id)
+            .order(egui::Order::Foreground)
+            .fixed_pos(popup_pos)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::new()
+                    .fill(Color32::WHITE)
+                    .stroke(Stroke::new(1.5, Color32::from_rgb(147, 51, 234)))
+                    .corner_radius(12.0)
+                    .inner_margin(14.0)
+                    .show(ui, |ui| {
+                        ui.set_width(popup_w - 28.0);
+                        ui.set_max_height(popup_h - 28.0);
+
+                        // Header Bar
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("🎛️").size(15.0));
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    egui::RichText::new("Koleksi Preset Equalizer")
+                                        .strong()
+                                        .size(13.5)
+                                        .color(Color32::from_rgb(15, 23, 42))
+                                );
+                                ui.label(
+                                    egui::RichText::new("Pilih preset untuk dipasang ke canvas patchbay atau diedit di EQ.")
+                                        .size(10.5)
+                                        .color(Color32::from_rgb(100, 116, 139))
+                                );
+                            });
+
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let close_btn = egui::Button::new(
+                                    egui::RichText::new("✖").strong().size(11.0).color(Color32::from_rgb(100, 116, 139))
+                                )
+                                .fill(Color32::from_rgb(241, 245, 249))
+                                .stroke(Stroke::new(1.0, Color32::from_rgb(226, 232, 240)))
+                                .corner_radius(6.0);
+
+                                if ui.add_sized([24.0, 24.0], close_btn).on_hover_text("Tutup jendela preset").clicked() {
+                                    close_popup = true;
+                                }
+                            });
+                        });
+
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(6.0);
+
+                        egui::ScrollArea::vertical()
+                            .max_height(popup_h - 110.0)
+                            .show(ui, |ui| {
+                                for preset in &self.eq_presets {
+                                    let is_on_canvas = self.nodes.iter().any(|n| n.node_type == NodeType::SavedEqPreset(preset.name.clone()));
+                                    let is_active_in_eq = self.active_eq.name == preset.name;
+
+                                    let card_bg = if is_active_in_eq {
+                                        Color32::from_rgb(240, 249, 255)
+                                    } else {
+                                        Color32::from_rgb(255, 255, 255)
+                                    };
+
+                                    let border_stroke = if is_active_in_eq {
+                                        Stroke::new(1.2, Color32::from_rgb(14, 165, 233))
+                                    } else {
+                                        Stroke::new(1.0, Color32::from_rgb(226, 232, 240))
+                                    };
+
+                                    egui::Frame::new()
+                                        .fill(card_bg)
+                                        .stroke(border_stroke)
+                                        .corner_radius(10.0)
+                                        .inner_margin(egui::Margin::symmetric(12, 10))
+                                        .show(ui, |ui| {
+                                            ui.vertical(|ui| {
+                                                // ROW 1: Preset Name & Badges & Delete Button
+                                                ui.horizontal(|ui| {
+                                                    ui.label(
+                                                        egui::RichText::new(&preset.name)
+                                                            .strong()
+                                                            .size(12.5)
+                                                            .color(Color32::from_rgb(15, 23, 42))
+                                                    );
+
+                                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                        // Delete Button: safely tucked on far right, never overlaps title!
+                                                        let is_factory = matches!(
+                                                            preset.name.as_str(),
+                                                            "Flat (Netral)" | "Harman-style Tilt (Generik)" | "Bass Boost & Warmth (Punchy)" | "Vocal Clarity" | "Air & Sparkle"
+                                                        );
+                                                        if !is_factory && self.eq_presets.len() > 1 {
+                                                            let del_btn = egui::Button::new(
+                                                                egui::RichText::new("🗑").size(10.5).color(Color32::from_rgb(239, 68, 68))
+                                                            )
+                                                            .fill(Color32::from_rgb(254, 242, 242))
+                                                            .stroke(Stroke::new(0.8, Color32::from_rgb(254, 202, 202)))
+                                                            .corner_radius(5.0);
+
+                                                            if ui.add_sized([22.0, 20.0], del_btn).on_hover_text("Hapus preset tersimpan ini").clicked() {
+                                                                delete_preset_name = Some(preset.name.clone());
+                                                            }
+                                                        }
+
+                                                        // Badge: Di Canvas
+                                                        if is_on_canvas {
+                                                            egui::Frame::new()
+                                                                .fill(Color32::from_rgb(243, 232, 255))
+                                                                .corner_radius(4.0)
+                                                                .inner_margin(egui::Margin::symmetric(6, 2))
+                                                                .show(ui, |ui| {
+                                                                    ui.label(egui::RichText::new("✓ Canvas").size(9.5).strong().color(Color32::from_rgb(147, 51, 234)));
+                                                                });
+                                                        }
+
+                                                        // Badge: Aktif di EQ
+                                                        if is_active_in_eq {
+                                                            egui::Frame::new()
+                                                                .fill(Color32::from_rgb(224, 242, 254))
+                                                                .corner_radius(4.0)
+                                                                .inner_margin(egui::Margin::symmetric(6, 2))
+                                                                .show(ui, |ui| {
+                                                                    ui.label(egui::RichText::new("● Aktif").size(9.5).strong().color(Color32::from_rgb(2, 132, 199)));
+                                                                });
+                                                        }
+                                                    });
+                                                });
+
+                                                ui.add_space(3.0);
+
+                                                // ROW 2: Subtitle Info (Band Count, Preamp, Range)
+                                                let preamp_str = if preset.preamp_mode == crate::models::PreampMode::Auto {
+                                                    "Auto Preamp".to_string()
+                                                } else {
+                                                    format!("{:+.1} dB", preset.manual_preamp_db)
+                                                };
+                                                ui.label(
+                                                    egui::RichText::new(format!("{} Band Parametrik  •  {}  •  20 Hz – 20 kHz", preset.bands.len(), preamp_str))
+                                                        .size(10.5)
+                                                        .color(Color32::from_rgb(100, 116, 139))
+                                                );
+
+                                                ui.add_space(8.0);
+
+                                                // ROW 3: Dedicated Action Buttons (Full breathing room, never overlap!)
+                                                ui.horizontal(|ui| {
+                                                    // Button 1: Buka & Edit di Tab Equalizer
+                                                    let btn_open = egui::Button::new(
+                                                        egui::RichText::new("🎛️ Buka di EQ").size(11.0).strong().color(Color32::from_rgb(30, 41, 59))
+                                                    )
+                                                    .fill(Color32::from_rgb(241, 245, 249))
+                                                    .stroke(Stroke::new(1.0, Color32::from_rgb(203, 213, 225)))
+                                                    .corner_radius(6.0);
+
+                                                    if ui.add_sized([135.0, 24.0], btn_open)
+                                                        .on_hover_text("Buka preset ini di Tab Equalizer untuk melihat kurva respon frekuensi dan mengedit band")
+                                                        .clicked()
+                                                    {
+                                                        open_preset = Some(preset.name.clone());
+                                                    }
+
+                                                    ui.add_space(6.0);
+
+                                                    // Button 2: Pasang ke Canvas / Sudah di Canvas
+                                                    if !is_on_canvas {
+                                                        let btn_canvas = egui::Button::new(
+                                                            egui::RichText::new("➕ Pasang ke Canvas").size(11.0).strong().color(Color32::from_rgb(14, 165, 233))
+                                                        )
+                                                        .fill(Color32::from_rgb(240, 249, 255))
+                                                        .stroke(Stroke::new(1.0, Color32::from_rgb(186, 230, 253)))
+                                                        .corner_radius(6.0);
+
+                                                        if ui.add_sized([145.0, 24.0], btn_canvas)
+                                                            .on_hover_text("Pasang modul filter equalizer ini ke dalam diagram patchbay")
+                                                            .clicked()
+                                                        {
+                                                            add_preset_to_canvas = Some(preset.name.clone());
+                                                        }
+                                                    } else {
+                                                        let btn_canvas_on = egui::Button::new(
+                                                            egui::RichText::new("✓ Terpasang di Canvas").size(11.0).color(Color32::from_rgb(147, 51, 234))
+                                                        )
+                                                        .fill(Color32::from_rgb(250, 245, 255))
+                                                        .stroke(Stroke::new(1.0, Color32::from_rgb(233, 213, 255)))
+                                                        .corner_radius(6.0);
+
+                                                        ui.add_sized([145.0, 24.0], btn_canvas_on)
+                                                            .on_hover_text("Modul preset equalizer ini sudah aktif di kanvas Signal Chain Studio");
+                                                    }
+                                                });
+                                            });
+                                        });
+
+                                    ui.add_space(6.0);
+                                }
+                            });
+                    });
+            });
+
+        // Close on clicking outside the popup frame
+        if ui.input(|i| i.pointer.any_pressed()) {
+            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                let rect = area_resp.response.rect;
+                let is_inside_popup = rect.contains(pos);
+                // Also ignore if clicking near the sidebar trigger button so toggle works smoothly
+                let is_near_trigger = self.saved_eq_popup_anchor.map_or(false, |a| {
+                    (pos.x >= a.x && pos.x <= a.x + 350.0) && (pos.y - a.y).abs() <= 24.0
+                });
+                if !is_inside_popup && !is_near_trigger {
+                    close_popup = true;
+                }
+            }
+        }
+
+        if close_popup {
+            self.show_saved_eq_palette_popup = false;
+        }
+
+        if let Some(name) = add_preset_to_canvas {
+            self.add_modular_filter(NodeType::SavedEqPreset(name));
+        }
+
+        if let Some(name) = open_preset {
+            if let Some(p) = self.eq_presets.iter().find(|p| p.name == name).cloned() {
+                self.active_eq = p;
+                self.eq_is_dirty = false;
+                self.sync_parametric_to_legacy_eq();
+                self.current_tab = crate::models::AppTab::Equalizer;
+                self.show_saved_eq_palette_popup = false;
+            }
+        }
+
+        if let Some(name) = delete_preset_name {
+            self.eq_presets.retain(|p| p.name != name);
+            let nt = NodeType::SavedEqPreset(name);
+            let ids: Vec<usize> = self.nodes.iter().filter(|n| n.node_type == nt && n.is_removable).map(|n| n.id).collect();
+            self.nodes.retain(|n| !ids.contains(&n.id));
+            self.connections.retain(|c| !ids.contains(&c.from_node) && !ids.contains(&c.to_node));
+            self.save_library_state();
         }
     }
 }

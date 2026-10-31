@@ -3,6 +3,328 @@ use lunulaplayer::LunulaApp;
 use lunulaplayer::models::{LibraryCategory, Track};
 
 #[test]
+fn test_print_card_rects_for_grid() {
+    let ctx = egui::Context::default();
+    let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0)));
+
+    let mut app = LunulaApp::default();
+    let names = ["Black Soul", "Compass", "EEYUH!", "EEYUH! x Fluxxwave", "Encore", "Happy End", "INTERNET OVERDOSE", "INTERNET YAMERO", "Literature", "Mon coeur avait raison"];
+    for name in names {
+        app.playlist.push(Track {
+            title: format!("Title {}", name),
+            artist: "Artist".to_string(),
+            album: name.to_string(),
+            duration: 180.0,
+            format: "FLAC".to_string(),
+            sample_rate: 44100,
+            bit_depth: 16,
+            waveform: vec![0.5; 10],
+            waveform_bass: vec![0.5; 10],
+            waveform_mid: vec![0.5; 10],
+            waveform_treble: vec![0.5; 10],
+            file_path: Some(format!("C:/music/{}.flac", name)),
+            file_size_mb: 25.0,
+            bitrate_kbps: None,
+            is_favorite: false,
+        });
+    }
+    app.library_category = LibraryCategory::Albums;
+
+    let mut out0 = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: screen,
+            time: Some(0.0),
+            ..Default::default()
+        },
+        |ui| {
+            app.render_library_panel(ui);
+        },
+    );
+    out0.textures_delta.clear();
+
+    // Try clicking Putar on the second row (Encore)
+    let encore_btn_pos = egui::pos2(42.8, 704.5);
+    let mut out1 = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: screen,
+            time: Some(0.05),
+            events: vec![egui::Event::PointerMoved(encore_btn_pos)],
+            ..Default::default()
+        },
+        |ui| {
+            app.render_library_panel(ui);
+        },
+    );
+    out1.textures_delta.clear();
+
+    let mut out2 = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: screen,
+            time: Some(0.1),
+            events: vec![egui::Event::PointerButton {
+                pos: encore_btn_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        },
+        |ui| {
+            app.render_library_panel(ui);
+        },
+    );
+    out2.textures_delta.clear();
+
+    let mut out3 = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: screen,
+            time: Some(0.15),
+            events: vec![egui::Event::PointerButton {
+                pos: encore_btn_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        },
+        |ui| {
+            app.render_library_panel(ui);
+        },
+    );
+    out3.textures_delta.clear();
+
+    println!("After clicking Encore Putar:");
+    println!("app.current_track: {}", app.current_track.title);
+    println!("app.is_playing: {}", app.is_playing);
+    println!("app.library_category: {:?}", app.library_category);
+    println!("app.selected_album_filter: {:?}", app.selected_album_filter);
+
+    assert_eq!(app.current_track.album, "Encore", "Must play Encore!");
+}
+
+#[test]
+fn test_real_album_card_lihat_lagu_click_triggers_action() {
+    let ctx = egui::Context::default();
+    let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0)));
+
+    let mut app = LunulaApp::default();
+    app.playlist = vec![
+        Track {
+            title: "Song A".to_string(),
+            artist: "Artist A".to_string(),
+            album: "Album A".to_string(),
+            duration: 180.0,
+            format: "FLAC".to_string(),
+            sample_rate: 44100,
+            bit_depth: 16,
+            waveform: vec![0.5; 10],
+            waveform_bass: vec![0.5; 10],
+            waveform_mid: vec![0.5; 10],
+            waveform_treble: vec![0.5; 10],
+            file_path: Some("C:/music/song_a.flac".to_string()),
+            file_size_mb: 25.0,
+            bitrate_kbps: None,
+            is_favorite: false,
+        },
+    ];
+    app.library_category = LibraryCategory::Albums;
+
+    let mut btn_pos = egui::Pos2::ZERO;
+    let mut out0 = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: screen,
+            time: Some(0.0),
+            ..Default::default()
+        },
+        |ui| {
+            app.render_library_panel(ui);
+        },
+    );
+    out0.textures_delta.clear();
+
+    for shape in out0.shapes {
+        if let egui::epaint::Shape::Text(text_shape) = shape.shape {
+            if text_shape.galley.job.text.contains("Lihat Lagu") {
+                btn_pos = text_shape.pos;
+                println!("FOUND Lihat Lagu at pos: {:?}", btn_pos);
+            }
+        }
+    }
+
+    assert_ne!(btn_pos, egui::Pos2::ZERO, "Could not locate 'Lihat Lagu' button text!");
+
+    let mut out1 = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: screen,
+            time: Some(0.05),
+            events: vec![egui::Event::PointerMoved(btn_pos)],
+            ..Default::default()
+        },
+        |ui| {
+            app.render_library_panel(ui);
+        },
+    );
+    out1.textures_delta.clear();
+
+    let mut out2 = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: screen,
+            time: Some(0.1),
+            events: vec![egui::Event::PointerButton {
+                pos: btn_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        },
+        |ui| {
+            app.render_library_panel(ui);
+        },
+    );
+    out2.textures_delta.clear();
+
+    let mut out3 = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: screen,
+            time: Some(0.15),
+            events: vec![egui::Event::PointerButton {
+                pos: btn_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        },
+        |ui| {
+            app.render_library_panel(ui);
+        },
+    );
+    out3.textures_delta.clear();
+
+    println!("app.library_category: {:?}", app.library_category);
+    println!("app.selected_album_filter: {:?}", app.selected_album_filter);
+
+    assert_eq!(app.library_category, LibraryCategory::AllTracks, "Clicking 'Lihat Lagu' MUST switch to AllTracks!");
+    assert_eq!(app.selected_album_filter.as_deref(), Some("Album A"), "Album filter must be set!");
+}
+
+#[test]
+fn test_real_album_card_button_click_triggers_action() {
+    let ctx = egui::Context::default();
+    let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0)));
+
+    let mut app = LunulaApp::default();
+    app.playlist = vec![
+        Track {
+            title: "Song A".to_string(),
+            artist: "Artist A".to_string(),
+            album: "Album A".to_string(),
+            duration: 180.0,
+            format: "FLAC".to_string(),
+            sample_rate: 44100,
+            bit_depth: 16,
+            waveform: vec![0.5; 10],
+            waveform_bass: vec![0.5; 10],
+            waveform_mid: vec![0.5; 10],
+            waveform_treble: vec![0.5; 10],
+            file_path: Some("C:/music/song_a.flac".to_string()),
+            file_size_mb: 25.0,
+            bitrate_kbps: None,
+            is_favorite: false,
+        },
+    ];
+    app.library_category = LibraryCategory::Albums;
+
+    // First frame to layout and locate where the button was placed
+    let mut btn_pos = egui::Pos2::ZERO;
+    let mut out0 = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: screen,
+            time: Some(0.0),
+            ..Default::default()
+        },
+        |ui| {
+            app.render_library_panel(ui);
+        },
+    );
+    out0.textures_delta.clear();
+
+    // Find the text "▶ Putar" or button in painter shapes or primitives
+    // Let's inspect shapes to find the exact rect of "▶ Putar"
+    for shape in out0.shapes {
+        if let egui::epaint::Shape::Text(text_shape) = shape.shape {
+            if text_shape.galley.job.text.contains("Putar") {
+                btn_pos = text_shape.pos;
+                println!("FOUND Putar at pos: {:?}", btn_pos);
+            }
+        }
+    }
+
+    assert_ne!(btn_pos, egui::Pos2::ZERO, "Could not locate 'Putar' button text in render output!");
+
+    // Frame 1: Pointer hover over the button
+    let mut out1 = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: screen,
+            time: Some(0.05),
+            events: vec![egui::Event::PointerMoved(btn_pos)],
+            ..Default::default()
+        },
+        |ui| {
+            app.render_library_panel(ui);
+        },
+    );
+    out1.textures_delta.clear();
+
+    // Frame 2: Mouse down on the button
+    let mut out2 = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: screen,
+            time: Some(0.1),
+            events: vec![egui::Event::PointerButton {
+                pos: btn_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        },
+        |ui| {
+            app.render_library_panel(ui);
+        },
+    );
+    out2.textures_delta.clear();
+
+    // Frame 3: Mouse up on the button
+    let mut out3 = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: screen,
+            time: Some(0.15),
+            events: vec![egui::Event::PointerButton {
+                pos: btn_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        },
+        |ui| {
+            app.render_library_panel(ui);
+        },
+    );
+    out3.textures_delta.clear();
+
+    // Now check: did current_track change to Song A or is_playing become true?
+    println!("app.current_track: {}", app.current_track.title);
+    println!("app.is_playing: {}", app.is_playing);
+    println!("app.library_category: {:?}", app.library_category);
+    println!("app.selected_album_filter: {:?}", app.selected_album_filter);
+
+    assert_eq!(app.current_track.title, "Song A", "Clicking '▶ Putar' on Album card MUST play the track!");
+}
+
+#[test]
 fn test_real_library_panel_all_categories_render() {
     let ctx = egui::Context::default();
     let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0)));

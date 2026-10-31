@@ -51,6 +51,8 @@ pub struct LunulaApp {
     pub show_save_preset_dialog: bool,
     pub eq_preset_name_input: String,
     pub eq_show_spectrum_overlay: bool,
+    pub show_saved_eq_palette_popup: bool,
+    pub saved_eq_popup_anchor: Option<Pos2>,
 
     // Global Output Stage (Separated from EQ preset)
     pub eq_limiter_enabled: bool,
@@ -257,6 +259,8 @@ impl LunulaApp {
             show_save_preset_dialog: false,
             eq_preset_name_input: "Preset Kustom".to_string(),
             eq_show_spectrum_overlay: true,
+            show_saved_eq_palette_popup: false,
+            saved_eq_popup_anchor: None,
 
             eq_limiter_enabled: false,
             eq_dither_mode: DitherMode::None,

@@ -1381,6 +1381,7 @@ mod tests {
         let screen = Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0)));
 
         let mut app = LunulaApp::default();
+        app.active_eq = ParametricEqPreset::default_presets()[0].clone();
         assert_eq!(app.active_eq.bands.len(), 10);
         assert!(!app.eq_is_dirty);
 
