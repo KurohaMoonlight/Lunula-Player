@@ -460,6 +460,7 @@ impl Effect for PresetEqEffect {
 pub struct DspPipeline {
     sample_rate: f64,
     chain_complete: bool,
+    has_graph: bool,
     active_effects: Vec<Box<dyn Effect>>,
     eq_coeffs: [BiquadCoeffs; 10],
     eq_state_l: [BiquadState; 10],
@@ -475,6 +476,7 @@ impl DspPipeline {
         let mut dsp = Self {
             sample_rate: (sample_rate as f64).max(44100.0),
             chain_complete: true,
+            has_graph: false,
             active_effects: Vec::new(),
             eq_coeffs: [BiquadCoeffs::identity(); 10],
             eq_state_l: [BiquadState::default(); 10],
@@ -495,6 +497,7 @@ impl DspPipeline {
     pub fn set_signal_chain(&mut self, graph: SignalChainGraph) {
         self.chain_complete = graph.is_complete;
         self.active_effects = graph.effects;
+        self.has_graph = true;
         for effect in &mut self.active_effects {
             effect.set_sample_rate(self.sample_rate);
         }
@@ -588,21 +591,26 @@ impl DspPipeline {
                 fl = next_l;
                 fr = next_r;
             }
-        } else {
-            // Default standalone 10-band Graphic EQ fallback when no modular graph is present
+            // 4. Smooth soft-knee saturation limiter: prevents harsh clipping on transient inter-band resonance
+            let out_l = soft_limit(fl) as f32;
+            let out_r = soft_limit(fr) as f32;
+            (out_l.clamp(-1.0, 1.0), out_r.clamp(-1.0, 1.0))
+        } else if !self.has_graph {
+            // Standalone fallback ONLY when no graph has ever been supplied (e.g. standalone DSP tests or engine startup)
             fl *= self.auto_preamp;
             fr *= self.auto_preamp;
             for i in 0..10 {
                 fl = self.eq_state_l[i].process(fl, &self.eq_coeffs[i]);
                 fr = self.eq_state_r[i].process(fr, &self.eq_coeffs[i]);
             }
+            let out_l = soft_limit(fl) as f32;
+            let out_r = soft_limit(fr) as f32;
+            (out_l.clamp(-1.0, 1.0), out_r.clamp(-1.0, 1.0))
+        } else {
+            // Graph is active and explicitly bypasses effects (e.g. 2 -> 4 directly):
+            // 100% transparent passthrough matching the canvas visualization!
+            (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0))
         }
-
-        // 4. Smooth soft-knee saturation limiter: prevents harsh clipping on transient inter-band resonance
-        let out_l = soft_limit(fl) as f32;
-        let out_r = soft_limit(fr) as f32;
-
-        (out_l.clamp(-1.0, 1.0), out_r.clamp(-1.0, 1.0))
     }
 }
 

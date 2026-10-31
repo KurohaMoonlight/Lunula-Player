@@ -96,6 +96,50 @@ pub enum AudioCommand {
     SetSignalChainGraph(SignalChainGraph),
 }
 
+/// Fast lightweight Xorshift32 PRNG for TPDF Dithering (-1.0 to +1.0 LSB).
+#[inline(always)]
+pub fn tpdf_dither_val(state: &mut u32) -> f32 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    let r1 = (x as f32) / (u32::MAX as f32);
+
+    let mut y = x.wrapping_add(0xdeadbeef);
+    y ^= y << 13;
+    y ^= y >> 17;
+    y ^= y << 5;
+    let r2 = (y as f32) / (u32::MAX as f32);
+
+    r1 - r2
+}
+
+/// Lossless precision 32-bit integer PCM encoding.
+/// For 24-bit within 32-bit container (source_bit_depth <= 24), scales exactly by 8388608.0 and shifts << 8.
+/// For 32-bit integer, scales by 2147483648.0.
+#[inline(always)]
+pub fn encode_sample_i32(s: f32, source_bit_depth: u8) -> i32 {
+    if source_bit_depth <= 24 {
+        let scaled = (s as f64 * 8388608.0).round().clamp(-8388608.0, 8388607.0) as i32;
+        scaled << 8
+    } else {
+        (s as f64 * 2147483648.0).round().clamp(-2147483648.0, 2147483647.0) as i32
+    }
+}
+
+/// 16-bit integer PCM encoding with precision rounding and optional TPDF dither.
+#[inline(always)]
+pub fn encode_sample_i16(s: f32, should_dither: bool, dither_state: &mut u32) -> i16 {
+    if should_dither {
+        let dither = tpdf_dither_val(dither_state);
+        let sample_val = s as f64 * 32768.0 + dither as f64;
+        sample_val.round().clamp(-32768.0, 32767.0) as i16
+    } else {
+        (s as f64 * 32768.0).round().clamp(-32768.0, 32767.0) as i16
+    }
+}
+
 /// Pure function to calculate effective volume multiplier.
 /// - If muted: strictly 0.0 (silence on both Bit-Perfect and DSP modes).
 /// - If Bit-Perfect (and not muted): strictly 1.0 (software volume slider bypassed).

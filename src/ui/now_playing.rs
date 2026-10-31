@@ -733,11 +733,7 @@ impl LunulaApp {
                     } else if vol_res.clicked() || vol_res.dragged() {
                         if let Some(pos) = vol_res.interact_pointer_pos() {
                             let ratio = ((pos.x - vol_rect.min.x) / vol_rect.width()).clamp(0.0, 1.0);
-                            self.volume = ratio;
-                            self.is_muted = false;
-                            if let Some(ref engine) = self.audio_engine {
-                                engine.set_volume(self.volume);
-                            }
+                            self.set_app_volume(ratio);
                         }
                     }
 
@@ -783,10 +779,7 @@ impl LunulaApp {
                     );
 
                     if speaker_btn.clicked() {
-                        self.is_muted = !self.is_muted;
-                        if let Some(ref engine) = self.audio_engine {
-                            engine.set_volume(if self.is_muted { 0.0 } else { self.volume });
-                        }
+                        self.toggle_mute();
                     }
                 },
             );

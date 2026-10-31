@@ -652,15 +652,49 @@ mod tests {
     #[test]
     fn test_pcm_24bit_in_32bit_lossless_scaling() {
         // Test edge cases and step values across full 24-bit range (-8388608 to 8388607)
+        // using production pure function encode_sample_i32
         let test_vals = vec![
-            -8388608i32, -8388607, -4194304, -1, 0, 1, 4194303, 8388606, 8388607,
+            -8388608i32, -8388607, -4194304, -1000, -1, 0, 1, 1000, 4194303, 8388606, 8388607,
         ];
         for v in test_vals {
-            let float_sample = v as f64 / 8388608.0;
-            let encoded_i32 = ((float_sample * 8388608.0).round().clamp(-8388608.0, 8388607.0) as i32) << 8;
+            let float_sample = v as f32 / 8388608.0;
+            let encoded_i32 = crate::audio::types::encode_sample_i32(float_sample, 24);
             let recovered_24 = encoded_i32 >> 8;
             assert_eq!(v, recovered_24, "24-bit LSB mismatch for value {}", v);
         }
+
+        // Test 32-bit full-scale boundaries via production encode_sample_i32
+        assert_eq!(crate::audio::types::encode_sample_i32(1.0, 32), 2147483647);
+        assert_eq!(crate::audio::types::encode_sample_i32(-1.0, 32), -2147483648);
+        assert_eq!(crate::audio::types::encode_sample_i32(0.0, 32), 0);
+    }
+
+    #[test]
+    fn test_pcm_16bit_encoding_pure() {
+        let mut dither_state = 0x12345678;
+        // Direct without dither
+        assert_eq!(crate::audio::types::encode_sample_i16(1.0, false, &mut dither_state), 32767);
+        assert_eq!(crate::audio::types::encode_sample_i16(-1.0, false, &mut dither_state), -32768);
+        assert_eq!(crate::audio::types::encode_sample_i16(0.0, false, &mut dither_state), 0);
+
+        // With dither
+        let val = crate::audio::types::encode_sample_i16(0.0, true, &mut dither_state);
+        assert!(val.abs() <= 2, "TPDF dither at 0.0 must be bounded within +/- 2 LSB");
+    }
+
+    #[test]
+    fn test_dsp_empty_graph_passthrough() {
+        let mut dsp = DspPipeline::new(44100.0);
+        // Supply graph with complete chain but NO effects (user routed 2 -> 4)
+        dsp.set_signal_chain(crate::audio::types::SignalChainGraph {
+            is_complete: true,
+            effects: Vec::new(),
+        });
+        dsp.set_eq_bypass(false);
+
+        let (out_l, out_r) = dsp.process_frame(0.75, -0.75);
+        assert_eq!(out_l, 0.75, "Empty graph in DSP mode must pass through transparently without EQ");
+        assert_eq!(out_r, -0.75, "Empty graph in DSP mode must pass through transparently without EQ");
     }
 
     #[test]

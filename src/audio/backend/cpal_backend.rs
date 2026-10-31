@@ -15,6 +15,7 @@ pub struct CpalBackend {
     device_name: String,
     is_paused: Arc<AtomicBool>,
     flush_requested: Arc<AtomicBool>,
+    flush_ack: Arc<AtomicBool>,
     shared_volume: Arc<AtomicU32>,
 }
 
@@ -58,21 +59,17 @@ impl OutputBackend for CpalBackend {
     }
 
     fn flush(&self) {
+        self.flush_ack.store(false, Ordering::SeqCst);
         self.flush_requested.store(true, Ordering::SeqCst);
+        let start = std::time::Instant::now();
+        while !self.flush_ack.load(Ordering::SeqCst) {
+            if start.elapsed() >= std::time::Duration::from_millis(50) {
+                self.flush_requested.store(false, Ordering::SeqCst);
+                break;
+            }
+            std::thread::yield_now();
+        }
     }
-}
-
-// Fast lightweight Xorshift32 PRNG for TPDF Dithering
-fn tpdf_dither_val(state: &mut u32) -> f32 {
-    *state ^= *state << 13;
-    *state ^= *state >> 17;
-    *state ^= *state << 5;
-    let r1 = (*state as f32) / 4294967296.0 - 0.5;
-    *state ^= *state << 13;
-    *state ^= *state >> 17;
-    *state ^= *state << 5;
-    let r2 = (*state as f32) / 4294967296.0 - 0.5;
-    r1 + r2
 }
 
 impl CpalBackend {
@@ -120,6 +117,7 @@ impl CpalBackend {
 
         let is_paused = Arc::new(AtomicBool::new(false));
         let flush_requested = Arc::new(AtomicBool::new(false));
+        let flush_ack = Arc::new(AtomicBool::new(false));
 
         let (config, format) = matched_config.unwrap_or_else(|| {
             (default_supported.config(), default_supported.sample_format())
@@ -141,6 +139,7 @@ impl CpalBackend {
             consumer,
             Arc::clone(&is_paused),
             Arc::clone(&flush_requested),
+            Arc::clone(&flush_ack),
             Arc::clone(&bit_perfect),
             Arc::clone(&shared_muted),
             Arc::clone(&shared_volume),
@@ -162,6 +161,7 @@ impl CpalBackend {
                 device_name,
                 is_paused,
                 flush_requested,
+                flush_ack,
                 shared_volume,
             },
             producer,
@@ -175,20 +175,21 @@ impl CpalBackend {
         mut consumer: Consumer<f32>,
         is_paused: Arc<AtomicBool>,
         flush_requested: Arc<AtomicBool>,
+        flush_ack: Arc<AtomicBool>,
         bit_perfect: Arc<AtomicBool>,
         shared_muted: Arc<AtomicBool>,
         shared_volume: Arc<AtomicU32>,
         visualizer: Arc<VisualizerRingBuffer>,
         source_bit_depth: u8,
-        is_dsp_active: Arc<AtomicBool>,
+        _is_dsp_active: Arc<AtomicBool>,
     ) -> Result<Stream, Box<dyn std::error::Error + Send + Sync>> {
         let is_paused_cb = Arc::clone(&is_paused);
         let flush_cb = Arc::clone(&flush_requested);
+        let flush_ack_cb = Arc::clone(&flush_ack);
         let bp_cb = Arc::clone(&bit_perfect);
         let muted_cb = Arc::clone(&shared_muted);
         let volume_cb = Arc::clone(&shared_volume);
         let visualizer_cb = Arc::clone(&visualizer);
-        let dsp_active_cb = Arc::clone(&is_dsp_active);
         let channels_count = config.channels as usize;
         let err_fn = |err| eprintln!("Audio stream error: {}", err);
 
@@ -203,6 +204,7 @@ impl CpalBackend {
                             &mut consumer,
                             &is_paused_cb,
                             &flush_cb,
+                            &flush_ack_cb,
                             &bp_cb,
                             &muted_cb,
                             &volume_cb,
@@ -223,6 +225,7 @@ impl CpalBackend {
                             &mut consumer,
                             &is_paused_cb,
                             &flush_cb,
+                            &flush_ack_cb,
                             &bp_cb,
                             &muted_cb,
                             &volume_cb,
@@ -245,12 +248,12 @@ impl CpalBackend {
                             &mut consumer,
                             &is_paused_cb,
                             &flush_cb,
+                            &flush_ack_cb,
                             &bp_cb,
                             &muted_cb,
                             &volume_cb,
                             &visualizer_cb,
                             source_bit_depth,
-                            &dsp_active_cb,
                             &mut dither_state,
                         );
                     },
@@ -268,6 +271,7 @@ impl CpalBackend {
                             &mut consumer,
                             &is_paused_cb,
                             &flush_cb,
+                            &flush_ack_cb,
                             &bp_cb,
                             &muted_cb,
                             &volume_cb,
@@ -291,6 +295,7 @@ impl CpalBackend {
         consumer: &mut Consumer<f32>,
         is_paused: &AtomicBool,
         flush_requested: &AtomicBool,
+        flush_ack: &AtomicBool,
         bit_perfect: &AtomicBool,
         muted: &AtomicBool,
         volume: &AtomicU32,
@@ -299,6 +304,10 @@ impl CpalBackend {
         if flush_requested.swap(false, Ordering::SeqCst) {
             while consumer.pop().is_ok() {}
             data.fill(0.0);
+            for _ in 0..(data.len() / channels.max(1)) {
+                visualizer.push_sample(0.0);
+            }
+            flush_ack.store(true, Ordering::SeqCst);
             return;
         }
 
@@ -362,6 +371,7 @@ impl CpalBackend {
         consumer: &mut Consumer<f32>,
         is_paused: &AtomicBool,
         flush_requested: &AtomicBool,
+        flush_ack: &AtomicBool,
         bit_perfect: &AtomicBool,
         muted: &AtomicBool,
         volume: &AtomicU32,
@@ -371,6 +381,10 @@ impl CpalBackend {
         if flush_requested.swap(false, Ordering::SeqCst) {
             while consumer.pop().is_ok() {}
             data.fill(0);
+            for _ in 0..(data.len() / channels.max(1)) {
+                visualizer.push_sample(0.0);
+            }
+            flush_ack.store(true, Ordering::SeqCst);
             return;
         }
 
@@ -396,13 +410,7 @@ impl CpalBackend {
         }
 
         let to_i32 = |s: f32| -> i32 {
-            if source_bit_depth <= 24 {
-                let scaled = (s as f64 * 8388608.0).round().clamp(-8388608.0, 8388607.0) as i32;
-                scaled << 8
-            } else {
-                let scaled = (s as f64 * 2147483648.0).round().clamp(-2147483648.0, 2147483647.0);
-                scaled as i32
-            }
+            crate::audio::types::encode_sample_i32(s, source_bit_depth)
         };
 
         if channels == 2 {
@@ -444,17 +452,21 @@ impl CpalBackend {
         consumer: &mut Consumer<f32>,
         is_paused: &AtomicBool,
         flush_requested: &AtomicBool,
+        flush_ack: &AtomicBool,
         bit_perfect: &AtomicBool,
         muted: &AtomicBool,
         volume: &AtomicU32,
         visualizer: &VisualizerRingBuffer,
         source_bit_depth: u8,
-        is_dsp_active: &AtomicBool,
         dither_state: &mut u32,
     ) {
         if flush_requested.swap(false, Ordering::SeqCst) {
             while consumer.pop().is_ok() {}
             data.fill(0);
+            for _ in 0..(data.len() / channels.max(1)) {
+                visualizer.push_sample(0.0);
+            }
+            flush_ack.store(true, Ordering::SeqCst);
             return;
         }
 
@@ -481,15 +493,10 @@ impl CpalBackend {
 
         // Apply TPDF dither ONLY when converting higher bit depth (e.g. 24-bit) down to 16-bit
         // AND NEVER in Bit-Perfect mode (Bit-Perfect keeps pure unmodified bits)
-        let should_dither = source_bit_depth > 16 && !is_bp && is_dsp_active.load(Ordering::Relaxed);
+        let should_dither = source_bit_depth > 16 && !is_bp;
 
         let to_i16 = |s: f32, state: &mut u32| -> i16 {
-            let sample_val = if should_dither {
-                s * 32768.0 + tpdf_dither_val(state)
-            } else {
-                s * 32768.0
-            };
-            sample_val.round().clamp(-32768.0, 32767.0) as i16
+            crate::audio::types::encode_sample_i16(s, should_dither, state)
         };
 
         if channels == 2 {
@@ -531,6 +538,7 @@ impl CpalBackend {
         consumer: &mut Consumer<f32>,
         is_paused: &AtomicBool,
         flush_requested: &AtomicBool,
+        flush_ack: &AtomicBool,
         bit_perfect: &AtomicBool,
         muted: &AtomicBool,
         volume: &AtomicU32,
@@ -539,6 +547,10 @@ impl CpalBackend {
         if flush_requested.swap(false, Ordering::SeqCst) {
             while consumer.pop().is_ok() {}
             data.fill(32768);
+            for _ in 0..(data.len() / channels.max(1)) {
+                visualizer.push_sample(0.0);
+            }
+            flush_ack.store(true, Ordering::SeqCst);
             return;
         }
 

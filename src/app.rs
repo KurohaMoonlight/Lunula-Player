@@ -763,11 +763,36 @@ impl LunulaApp {
                 }
             }
         } else {
-            // Preserve user's modular custom canvas cabling layout
+            // When custom modular nodes exist on canvas:
             match mode {
-                ChainMode::BitPerfect => self.eq_bypass = true,
-                ChainMode::DspActive => self.eq_bypass = false,
-                ChainMode::OsResampled => self.eq_bypass = true,
+                ChainMode::BitPerfect => {
+                    self.eq_bypass = true;
+                    // In Bit-Perfect mode, bypass Node 3 if directly wired
+                    if self.connections.contains(&CableConnection { from_node: 2, to_node: 3 })
+                        && self.connections.contains(&CableConnection { from_node: 3, to_node: 4 })
+                    {
+                        self.connections.retain(|c| !(c.from_node == 2 && c.to_node == 3) && !(c.from_node == 3 && c.to_node == 4));
+                        if !self.connections.contains(&CableConnection { from_node: 2, to_node: 4 }) {
+                            self.connections.push(CableConnection { from_node: 2, to_node: 4 });
+                        }
+                    }
+                }
+                ChainMode::DspActive => {
+                    self.eq_bypass = false;
+                    // In DspActive mode, route through Node 3 if currently bypassed
+                    if self.connections.contains(&CableConnection { from_node: 2, to_node: 4 }) {
+                        self.connections.retain(|c| !(c.from_node == 2 && c.to_node == 4));
+                        if !self.connections.contains(&CableConnection { from_node: 2, to_node: 3 }) {
+                            self.connections.push(CableConnection { from_node: 2, to_node: 3 });
+                        }
+                        if !self.connections.contains(&CableConnection { from_node: 3, to_node: 4 }) {
+                            self.connections.push(CableConnection { from_node: 3, to_node: 4 });
+                        }
+                    }
+                }
+                ChainMode::OsResampled => {
+                    self.eq_bypass = true;
+                }
             }
         }
 

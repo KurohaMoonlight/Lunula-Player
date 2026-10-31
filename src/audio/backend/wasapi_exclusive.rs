@@ -23,6 +23,7 @@ pub struct WasapiExclusiveBackend {
     device_name: String,
     is_paused: Arc<AtomicBool>,
     flush_requested: Arc<AtomicBool>,
+    flush_ack: Arc<AtomicBool>,
     stop_signal: Arc<AtomicBool>,
     shared_volume: Arc<AtomicU32>,
     worker_handle: Option<JoinHandle<()>>,
@@ -66,7 +67,16 @@ impl OutputBackend for WasapiExclusiveBackend {
     }
 
     fn flush(&self) {
+        self.flush_ack.store(false, Ordering::SeqCst);
         self.flush_requested.store(true, Ordering::SeqCst);
+        let start = std::time::Instant::now();
+        while !self.flush_ack.load(Ordering::SeqCst) {
+            if start.elapsed() >= std::time::Duration::from_millis(50) {
+                self.flush_requested.store(false, Ordering::SeqCst);
+                break;
+            }
+            std::thread::yield_now();
+        }
     }
 }
 
@@ -150,10 +160,12 @@ impl WasapiExclusiveBackend {
         let render_client = client.get_audiorenderclient()?;
         let is_paused = Arc::new(AtomicBool::new(false));
         let flush_requested = Arc::new(AtomicBool::new(false));
+        let flush_ack = Arc::new(AtomicBool::new(false));
         let stop_signal = Arc::new(AtomicBool::new(false));
 
         let is_paused_worker = Arc::clone(&is_paused);
         let flush_worker = Arc::clone(&flush_requested);
+        let flush_ack_worker = Arc::clone(&flush_ack);
         let stop_worker = Arc::clone(&stop_signal);
         let bp_worker = Arc::clone(&bit_perfect);
         let muted_worker = Arc::clone(&shared_muted);
@@ -178,6 +190,7 @@ impl WasapiExclusiveBackend {
                 let bytes_per_frame = if store_bits == 16 { 4 } else { 8 };
                 let max_frames = client.get_buffer_size().unwrap_or(2048) as usize;
                 let mut raw_bytes: Vec<u8> = Vec::with_capacity(max_frames * bytes_per_frame);
+                let mut dither_state: u32 = 0x12345678;
                 let mut temp_l;
                 let mut temp_r;
 
@@ -198,6 +211,7 @@ impl WasapiExclusiveBackend {
                                 raw_bytes.resize(available_frames as usize * bytes_per_frame, 0);
                                 let _ = render_client.write_to_device(available_frames as usize, &raw_bytes, None);
                             }
+                            flush_ack_worker.store(true, Ordering::SeqCst);
                             continue;
                         }
 
@@ -228,13 +242,14 @@ impl WasapiExclusiveBackend {
                             raw_bytes.clear();
 
                             if store_bits == 16 {
+                                let should_dither = preferred_bit_depth > 16 && !is_bp;
                                 for _ in 0..frames_to_write {
                                     temp_l = consumer.pop().unwrap_or(0.0) * vol;
                                     temp_r = consumer.pop().unwrap_or(0.0) * vol;
                                     vis_worker.push_sample((temp_l + temp_r) * 0.5);
 
-                                    let i_l = (temp_l as f64 * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
-                                    let i_r = (temp_r as f64 * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
+                                    let i_l = crate::audio::types::encode_sample_i16(temp_l, should_dither, &mut dither_state);
+                                    let i_r = crate::audio::types::encode_sample_i16(temp_r, should_dither, &mut dither_state);
                                     raw_bytes.extend_from_slice(&i_l.to_le_bytes());
                                     raw_bytes.extend_from_slice(&i_r.to_le_bytes());
                                 }
@@ -245,15 +260,8 @@ impl WasapiExclusiveBackend {
                                     temp_r = consumer.pop().unwrap_or(0.0) * vol;
                                     vis_worker.push_sample((temp_l + temp_r) * 0.5);
 
-                                    let (scaled_l, scaled_r) = if valid_bits == 24 {
-                                        let l = ((temp_l as f64 * 8388608.0).round().clamp(-8388608.0, 8388607.0) as i32) << 8;
-                                        let r = ((temp_r as f64 * 8388608.0).round().clamp(-8388608.0, 8388607.0) as i32) << 8;
-                                        (l, r)
-                                    } else {
-                                        let l = (temp_l as f64 * 2147483648.0).round().clamp(-2147483648.0, 2147483647.0) as i32;
-                                        let r = (temp_r as f64 * 2147483648.0).round().clamp(-2147483648.0, 2147483647.0) as i32;
-                                        (l, r)
-                                    };
+                                    let scaled_l = crate::audio::types::encode_sample_i32(temp_l, valid_bits as u8);
+                                    let scaled_r = crate::audio::types::encode_sample_i32(temp_r, valid_bits as u8);
                                     raw_bytes.extend_from_slice(&scaled_l.to_le_bytes());
                                     raw_bytes.extend_from_slice(&scaled_r.to_le_bytes());
                                 }
@@ -289,6 +297,7 @@ impl WasapiExclusiveBackend {
                 device_name,
                 is_paused,
                 flush_requested,
+                flush_ack,
                 stop_signal,
                 shared_volume,
                 worker_handle: Some(worker_handle),

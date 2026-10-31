@@ -105,11 +105,11 @@ impl AudioOutput {
         self.backend.set_volume(vol);
     }
 
-    // Zero-stream atomic ring buffer flush on Seek & track transition
-    // Brief sleep yields to audio callback thread to drain residual buffer before new audio starts
+    // Zero-stream atomic ring buffer flush on Seek & track transition.
+    // Backend flush synchronizes with the audio callback thread via ACK, ensuring
+    // zero discarded initial samples of new tracks without arbitrary sleep.
     pub fn flush(&self) {
         self.backend.flush();
-        std::thread::sleep(std::time::Duration::from_millis(4));
     }
 }
 
