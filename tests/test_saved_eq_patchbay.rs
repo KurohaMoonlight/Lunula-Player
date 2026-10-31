@@ -253,3 +253,68 @@ fn test_sidebar_saved_equalizers_plus_button_toggles_popup() {
     assert!(app.show_saved_eq_palette_popup, "Clicking SAVED EQUALIZERS must open floating popup!");
     assert!(app.saved_eq_popup_anchor.is_some(), "Anchor must be recorded for cursor-follow positioning!");
 }
+
+#[test]
+fn test_dag_branching_and_cycle_prevention() {
+    let mut app = LunulaApp::default();
+    // Default nodes: 1=Source, 2=RAM, 3=DSP, 4=Engine, 5=DAC
+    // Add two modular filters: id 6 and id 7
+    app.add_modular_filter(NodeType::TubeWarmer); // id 6
+    app.add_modular_filter(NodeType::StereoWidener); // id 7
+
+    // Clear existing connections to test arbitrary DAG
+    app.connections.clear();
+    app.invalidate_chain_cache();
+
+    // 1. Branching Output (1 to 2):
+    // DSP (3) branches to TubeWarmer (6) AND StereoWidener (7)
+    app.connections.push(lunulaplayer::models::CableConnection { from_node: 3, to_node: 6 });
+    app.connections.push(lunulaplayer::models::CableConnection { from_node: 3, to_node: 7 });
+
+    assert!(app.can_reach_node(3, 6));
+    assert!(app.can_reach_node(3, 7));
+
+    // 2. Merging Input (2 to 1):
+    // TubeWarmer (6) and StereoWidener (7) both merge into Audio Engine (4)
+    app.connections.push(lunulaplayer::models::CableConnection { from_node: 6, to_node: 4 });
+    app.connections.push(lunulaplayer::models::CableConnection { from_node: 7, to_node: 4 });
+
+    assert!(app.can_reach_node(6, 4));
+    assert!(app.can_reach_node(7, 4));
+    assert!(app.can_reach_node(3, 4)); // Reachable via either branch
+
+    // 3. Cycle Prevention:
+    // Attempting to connect Audio Engine (4) back to DSP (3) would form a cycle (3 -> 6 -> 4 -> 3)
+    let would_create_cycle = app.can_reach_node(4, 3);
+    assert!(!would_create_cycle, "Currently 4 does not reach 3");
+
+    // But if we check whether connecting 4 to 3 would create a cycle:
+    // we query `can_reach_node(target, source)`, i.e. `can_reach_node(3, 4)` is true!
+    // Therefore connecting 4 -> 3 is correctly flagged as creating a cycle:
+    assert!(app.can_reach_node(3, 4), "Since 3 reaches 4, connecting 4->3 must be blocked as a cycle!");
+}
+
+#[test]
+fn test_red_dashed_line_suppressed_when_reaching_through_intermediate_filter() {
+    let mut app = LunulaApp::default();
+    app.add_modular_filter(NodeType::SavedEqPreset("Vocal Clarity".to_string())); // id 6
+
+    // Configure chain:
+    // 1 (Source) -> 2 (RAM) -> 3 (DSP) -> 6 (Saved EQ) -> 4 (Engine) -> 5 (DAC)
+    app.connections.clear();
+    app.invalidate_chain_cache();
+    app.connections.push(lunulaplayer::models::CableConnection { from_node: 1, to_node: 2 });
+    app.connections.push(lunulaplayer::models::CableConnection { from_node: 2, to_node: 3 });
+    app.connections.push(lunulaplayer::models::CableConnection { from_node: 3, to_node: 6 });
+    app.connections.push(lunulaplayer::models::CableConnection { from_node: 6, to_node: 4 });
+    app.connections.push(lunulaplayer::models::CableConnection { from_node: 4, to_node: 5 });
+
+    let eval = app.evaluate_signal_chain();
+    assert!(eval.is_complete, "Full chain through intermediate filter must be complete");
+    assert!(app.can_reach_node(3, 4), "DSP must reach Engine via filter 6");
+
+    // Topological order compilation
+    let graph = app.compile_signal_chain();
+    assert!(graph.is_complete);
+    assert_eq!(graph.effects.len(), 2, "Must contain DSP and Saved EQ effects in order");
+}

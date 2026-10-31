@@ -494,6 +494,32 @@ impl DspPipeline {
         self.chain_complete
     }
 
+    // =========================================================================================
+    //  ARSITEKTUR AUDIO DSP: EKSEKUSI DAG & PERCABANGAN SINYAL (ROADMAP MENDATANG)
+    // =========================================================================================
+    //
+    //  [IDE C] URUTAN SERIAL & PENCEGAHAN FEEDBACK LOOP:
+    //  ----------------------------------------------------------------------------------------
+    //  - Efek dieksekusi secara topologis (Kahn's topological sort) dalam alur DAG tanpa cycle.
+    //  - Loop feedback (A -> C -> A) dilarang pada level graf karena dalam domain digital real-time
+    //    tanpa unit delay (z^-1 buffer circular) akan terjadi infinite recursion / crash.
+    //  - Pemrosesan ulang efek dilakukan via multiple card instance (A1 -> C -> A2).
+    //
+    //  [IDE B] PERCABANGAN PARALEL & SUMMING MIXER:
+    //  ----------------------------------------------------------------------------------------
+    //  - GUI saat ini sudah mendukung percabangan kabel (Branching Output & Merging Input).
+    //  - Rencana Implementasi DSP untuk Percabangan Paralel:
+    //    1. SPLIT BUFFER: Ketika sebuah output pin mencabang ke N modul terpisah, frame buffer audio
+    //       di-clone/didistribusikan ke input masing-masing modul.
+    //    2. PARALLEL PROCESSING: Tiap modul berjalan secara mandiri (misal: Tube Warmer dan Haas Delay
+    //       bekerja bersamaan pada frame audio yang sama).
+    //    3. SUMMING BUS (MIXER): Di node tempat kedua cabang bertemu (converge), sinyal dijumlahkan:
+    //          y(t) = w1 * x1(t) + w2 * x2(t) + ...
+    //       dengan automatic headroom attenuation (misal: 1/N atau -3 dB/-6 dB gain compensation)
+    //       dan soft-limiting agar tidak timbul inter-sample clipping (+6 dB peak).
+    //    4. PHASE COHERENCY: Kompensasi latensi (delay line) jika salah satu cabang memiliki latency.
+    // =========================================================================================
+
     pub fn set_signal_chain(&mut self, graph: SignalChainGraph) {
         self.chain_complete = graph.is_complete;
         self.active_effects = graph.effects;

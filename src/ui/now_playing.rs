@@ -189,7 +189,9 @@ impl LunulaApp {
 
                 if duration > 0.0 && !samples.is_empty() {
                     let px_step = 2.0;
+                    let half_step = px_step * 0.5;
                     let count = (wave_width / px_step) as usize;
+                    let mut wave_mesh = egui::Mesh::default();
 
                     for i in 0..count {
                         let screen_x = wave_rect.min.x + (i as f32 * px_step);
@@ -211,7 +213,11 @@ impl LunulaApp {
                                 } else {
                                     Color32::from_rgb(203, 213, 225)
                                 };
-                                painter.line_segment([Pos2::new(screen_x, base_y), Pos2::new(screen_x, base_y + 1.2)], Stroke::new(px_step, flat_col));
+                                wave_mesh.add_rect_with_uv(
+                                    Rect::from_min_max(Pos2::new(screen_x - half_step, base_y), Pos2::new(screen_x + half_step, base_y + 1.2)),
+                                    Rect::ZERO,
+                                    flat_col,
+                                );
                                 continue;
                             }
 
@@ -232,8 +238,16 @@ impl LunulaApp {
                                             Color32::from_rgba_unmultiplied(217, 70, 239, 100),
                                         )
                                     };
-                                    painter.line_segment([Pos2::new(screen_x, bass_top), Pos2::new(screen_x, base_y)], Stroke::new(px_step, bass_fill));
-                                    painter.line_segment([Pos2::new(screen_x, bass_top), Pos2::new(screen_x, bass_top + 1.8)], Stroke::new(px_step, bass_stroke));
+                                    wave_mesh.add_rect_with_uv(
+                                        Rect::from_min_max(Pos2::new(screen_x - half_step, bass_top), Pos2::new(screen_x + half_step, base_y)),
+                                        Rect::ZERO,
+                                        bass_fill,
+                                    );
+                                    wave_mesh.add_rect_with_uv(
+                                        Rect::from_min_max(Pos2::new(screen_x - half_step, bass_top), Pos2::new(screen_x + half_step, bass_top + 1.8)),
+                                        Rect::ZERO,
+                                        bass_stroke,
+                                    );
 
                                     // Mid (Vocals / Harmonics 250Hz-4kHz in Cyan #0EA5E9) modulated with live Mid energy
                                     let h_mid = (m_amp * max_wave_height * 0.85 * mid_boost * effective_scale).clamp(1.0, max_wave_height * 0.92);
@@ -249,8 +263,16 @@ impl LunulaApp {
                                             Color32::from_rgba_unmultiplied(14, 165, 233, 100),
                                         )
                                     };
-                                    painter.line_segment([Pos2::new(screen_x, mid_top), Pos2::new(screen_x, base_y)], Stroke::new(px_step, mid_fill));
-                                    painter.line_segment([Pos2::new(screen_x, mid_top), Pos2::new(screen_x, mid_top + 1.8)], Stroke::new(px_step, mid_stroke));
+                                    wave_mesh.add_rect_with_uv(
+                                        Rect::from_min_max(Pos2::new(screen_x - half_step, mid_top), Pos2::new(screen_x + half_step, base_y)),
+                                        Rect::ZERO,
+                                        mid_fill,
+                                    );
+                                    wave_mesh.add_rect_with_uv(
+                                        Rect::from_min_max(Pos2::new(screen_x - half_step, mid_top), Pos2::new(screen_x + half_step, mid_top + 1.8)),
+                                        Rect::ZERO,
+                                        mid_stroke,
+                                    );
 
                                     // Treble (Hi-hats / Air >4kHz in Amber #F59E0B) modulated with live Treble energy
                                     let h_treble = (tr_amp * max_wave_height * 0.60 * treble_boost * effective_scale).clamp(1.0, max_wave_height * 0.88);
@@ -266,8 +288,16 @@ impl LunulaApp {
                                             Color32::from_rgba_unmultiplied(245, 158, 11, 110),
                                         )
                                     };
-                                    painter.line_segment([Pos2::new(screen_x, treble_top), Pos2::new(screen_x, base_y)], Stroke::new(px_step, treble_fill));
-                                    painter.line_segment([Pos2::new(screen_x, treble_top), Pos2::new(screen_x, treble_top + 1.8)], Stroke::new(px_step, treble_stroke));
+                                    wave_mesh.add_rect_with_uv(
+                                        Rect::from_min_max(Pos2::new(screen_x - half_step, treble_top), Pos2::new(screen_x + half_step, base_y)),
+                                        Rect::ZERO,
+                                        treble_fill,
+                                    );
+                                    wave_mesh.add_rect_with_uv(
+                                        Rect::from_min_max(Pos2::new(screen_x - half_step, treble_top), Pos2::new(screen_x + half_step, treble_top + 1.8)),
+                                        Rect::ZERO,
+                                        treble_stroke,
+                                    );
                                 }
                                 WaveformMode::SpectralBlend => {
                                     // Spectral Color Blending dynamically weighted by live Bass, Mid, and Treble
@@ -300,12 +330,23 @@ impl LunulaApp {
                                         )
                                     };
 
-                                    painter.line_segment([Pos2::new(screen_x, top_y), Pos2::new(screen_x, base_y)], Stroke::new(px_step, fill_col));
-                                    painter.line_segment([Pos2::new(screen_x, top_y), Pos2::new(screen_x, top_y + 2.0)], Stroke::new(px_step, top_stroke_col));
+                                    wave_mesh.add_rect_with_uv(
+                                        Rect::from_min_max(Pos2::new(screen_x - half_step, top_y), Pos2::new(screen_x + half_step, base_y)),
+                                        Rect::ZERO,
+                                        fill_col,
+                                    );
+                                    wave_mesh.add_rect_with_uv(
+                                        Rect::from_min_max(Pos2::new(screen_x - half_step, top_y), Pos2::new(screen_x + half_step, top_y + 2.0)),
+                                        Rect::ZERO,
+                                        top_stroke_col,
+                                    );
                                 }
                             }
                         }
                     }
+
+                    // Submit entire waveform in 1 single GPU mesh call!
+                    painter.add(egui::Shape::Mesh(std::sync::Arc::new(wave_mesh)));
 
                     // Center Playhead
                     painter.line_segment(

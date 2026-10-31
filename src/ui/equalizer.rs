@@ -1,7 +1,7 @@
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 use crate::app::LunulaApp;
-use crate::models::{ChainMode, DitherMode, FilterSlope, FilterType, ParametricBand, ParametricEqPreset, PreampMode, SignalNodeStatus};
+use crate::models::{ChainMode, DitherMode, FilterSlope, FilterType, NodeType, ParametricBand, ParametricEqPreset, PreampMode, SignalNodeStatus};
 use crate::ui::components::render_card_frame;
 
 // Precise f64 Biquad Filter Magnitude Response Calculation (Robert Bristow-Johnson Audio EQ Cookbook)
@@ -412,20 +412,49 @@ impl LunulaApp {
             ui.label(egui::RichText::new(preset_title).strong().size(12.5).color(pill_color));
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Per-card EQ Bypass Switch
-                let bypass_btn_text = if self.eq_bypass {
-                    egui::RichText::new("⚡ BYPASS EQ (Pure Direct)").strong().color(Color32::from_rgb(217, 119, 6))
+                // Connection status in Signal Chain Studio
+                let chain_eval = self.evaluate_signal_chain();
+                let is_preset_flowing = self.nodes.iter().any(|n| {
+                    n.node_type == NodeType::SavedEqPreset(preset.name.clone()) && chain_eval.node_status(n.id) == SignalNodeStatus::Flowing
+                });
+                let is_dsp_flowing = chain_eval.node_status(3) == SignalNodeStatus::Flowing;
+                let is_eq_flowing = self.chain_mode == ChainMode::DspActive && (is_preset_flowing || is_dsp_flowing);
+                let is_preset_on_canvas = self.nodes.iter().any(|n| n.node_type == NodeType::SavedEqPreset(preset.name.clone()));
+
+                if is_eq_flowing {
+                    egui::Frame::new()
+                        .fill(Color32::from_rgb(236, 253, 245))
+                        .stroke(Stroke::new(1.0, Color32::from_rgb(167, 243, 208)))
+                        .corner_radius(6.0)
+                        .inner_margin(egui::Margin::symmetric(10, 4))
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new("⚡ Terhubung di Signal Chain").strong().size(11.5).color(Color32::from_rgb(16, 185, 129)));
+                        });
                 } else {
-                    egui::RichText::new("🎛️ EQ AKTIF").strong().color(Color32::from_rgb(16, 185, 129))
-                };
-                if ui.button(bypass_btn_text).clicked() {
-                    self.eq_bypass = !self.eq_bypass;
-                    if self.eq_bypass {
-                        self.set_chain_mode(ChainMode::BitPerfect);
-                    } else {
-                        self.set_chain_mode(ChainMode::DspActive);
+                    if !is_preset_on_canvas {
+                        if ui.button(egui::RichText::new("➕ Pasang ke Canvas").size(11.0).strong().color(Color32::from_rgb(14, 165, 233)))
+                            .on_hover_text("Pasang preset ini langsung ke diagram Signal Chain Studio")
+                            .clicked()
+                        {
+                            self.add_modular_filter(NodeType::SavedEqPreset(preset.name.clone()));
+                        }
                     }
-                    self.sync_parametric_to_legacy_eq();
+
+                    egui::Frame::new()
+                        .fill(Color32::from_rgb(248, 250, 252))
+                        .stroke(Stroke::new(1.0, Color32::from_rgb(226, 232, 240)))
+                        .corner_radius(6.0)
+                        .inner_margin(egui::Margin::symmetric(10, 4))
+                        .show(ui, |ui| {
+                            let status_text = if self.chain_mode == ChainMode::BitPerfect {
+                                "⚪ Dilewati (Bit-Perfect)"
+                            } else if is_preset_on_canvas {
+                                "⚠️ Terputus di Canvas"
+                            } else {
+                                "⚪ Belum Ada di Canvas"
+                            };
+                            ui.label(egui::RichText::new(status_text).size(11.5).color(Color32::from_rgb(100, 116, 139)));
+                        });
                 }
 
                 // Spectrum Overlay Toggle Button
@@ -553,17 +582,7 @@ impl LunulaApp {
                 .corner_radius(6.0)
                 .inner_margin(egui::Margin::symmetric(12, 6))
                 .show(ui, |ui| {
-                    ui.label(egui::RichText::new("⚡ Tidak Aktif: Mode Bit-Perfect Aktif. Rantai biquad dilewati murni untuk menjaga keutuhan bit audio asli. Klik '🎛️ EQ AKTIF' untuk mengaktifkan pemrosesan DSP.").size(11.5).color(Color32::from_rgb(6, 95, 70)));
-                });
-            ui.add_space(6.0);
-        } else if self.eq_bypass {
-            egui::Frame::new()
-                .fill(Color32::from_rgba_premultiplied(254, 243, 199, 230))
-                .stroke(Stroke::new(1.0, Color32::from_rgb(253, 230, 138)))
-                .corner_radius(6.0)
-                .inner_margin(egui::Margin::symmetric(12, 6))
-                .show(ui, |ui| {
-                    ui.label(egui::RichText::new("⚡ Tidak Aktif: Equalizer di-bypass manual (Pure Direct Passthrough).").size(11.5).color(Color32::from_rgb(146, 64, 14)));
+                    ui.label(egui::RichText::new("⚡ Mode Bit-Perfect Aktif: Rantai equalizer dilewati murni (Bit-Perfect Passthrough) untuk menjaga keutuhan bit audio asli.").size(11.5).color(Color32::from_rgb(6, 95, 70)));
                 });
             ui.add_space(6.0);
         } else if !is_node3_active {
@@ -573,7 +592,7 @@ impl LunulaApp {
                 .corner_radius(6.0)
                 .inner_margin(egui::Margin::symmetric(12, 6))
                 .show(ui, |ui| {
-                    ui.label(egui::RichText::new("⚠️ Tidak Aktif: Node DSP (3) di Signal Chain Studio terputus atau tidak tersambung ke Endpoint audio.").size(11.5).color(Color32::from_rgb(185, 28, 28)));
+                    ui.label(egui::RichText::new("⚠️ Equalizer Terputus: Modul DSP (3) di Signal Chain Studio terputus atau belum tersambung ke Endpoint audio.").size(11.5).color(Color32::from_rgb(185, 28, 28)));
                 });
             ui.add_space(6.0);
         }
@@ -655,7 +674,7 @@ impl LunulaApp {
             }
         }
 
-        // 4. Calculate Combined Peak Boost & Response Curve Points
+        // 4. Calculate Combined Peak Boost & Response Curve Points (Optimized with Hash Caching & Single-Mesh Batching)
         let max_boost = calculate_combined_peak_boost(&preset.bands, 44100.0);
         let effective_preamp = if preset.preamp_mode == PreampMode::Auto {
             if max_boost > 0.0 { -max_boost } else { 0.0 }
@@ -663,28 +682,75 @@ impl LunulaApp {
             preset.manual_preamp_db
         };
 
-        let sample_rate = 44100.0_f64;
-        let points_count = 280;
-        let mut curve_points: Vec<Pos2> = Vec::with_capacity(points_count);
-
-        for i in 0..points_count {
-            let t = i as f32 / (points_count - 1) as f32;
-            let f = 20.0 * (1000.0_f32).powf(t);
-            let total_db = compute_total_curve_db(
-                &preset.bands,
-                f as f64,
-                sample_rate,
-                effective_preamp as f64,
-                self.eq_bypass,
-            );
-            let x = freq_to_x(f, rect);
-            let y = gain_to_y(total_db as f32, rect);
-            curve_points.push(Pos2::new(x, y));
+        // Cache curve points to eliminate 2,800 trigonometric calculations on static frames
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        use std::hash::{Hash, Hasher};
+        preset.bands.len().hash(&mut hasher);
+        for b in &preset.bands {
+            (b.freq as u32).hash(&mut hasher);
+            ((b.gain_db * 100.0) as i32).hash(&mut hasher);
+            ((b.q * 100.0) as u32).hash(&mut hasher);
+            (b.filter_type as u8).hash(&mut hasher);
+            b.enabled.hash(&mut hasher);
         }
+        ((effective_preamp * 100.0) as i32).hash(&mut hasher);
+        self.eq_bypass.hash(&mut hasher);
+        (rect.min.x as i32).hash(&mut hasher);
+        (rect.min.y as i32).hash(&mut hasher);
+        (rect.width() as i32).hash(&mut hasher);
+        (rect.height() as i32).hash(&mut hasher);
+        let curve_hash = hasher.finish();
 
-        // Draw Filled Area between response curve and 0 dB baseline
+        let curve_points: Vec<Pos2> = if let Some((h, ref cached_pts)) = *self.eq_curve_cache.borrow() {
+            if h == curve_hash {
+                cached_pts.clone()
+            } else {
+                let sample_rate = 44100.0_f64;
+                let points_count = 280;
+                let mut pts = Vec::with_capacity(points_count);
+                for i in 0..points_count {
+                    let t = i as f32 / (points_count - 1) as f32;
+                    let f = 20.0 * (1000.0_f32).powf(t);
+                    let total_db = compute_total_curve_db(
+                        &preset.bands,
+                        f as f64,
+                        sample_rate,
+                        effective_preamp as f64,
+                        self.eq_bypass,
+                    );
+                    let x = freq_to_x(f, rect);
+                    let y = gain_to_y(total_db as f32, rect);
+                    pts.push(Pos2::new(x, y));
+                }
+                *self.eq_curve_cache.borrow_mut() = Some((curve_hash, pts.clone()));
+                pts
+            }
+        } else {
+            let sample_rate = 44100.0_f64;
+            let points_count = 280;
+            let mut pts = Vec::with_capacity(points_count);
+            for i in 0..points_count {
+                let t = i as f32 / (points_count - 1) as f32;
+                let f = 20.0 * (1000.0_f32).powf(t);
+                let total_db = compute_total_curve_db(
+                    &preset.bands,
+                    f as f64,
+                    sample_rate,
+                    effective_preamp as f64,
+                    self.eq_bypass,
+                );
+                let x = freq_to_x(f, rect);
+                let y = gain_to_y(total_db as f32, rect);
+                pts.push(Pos2::new(x, y));
+            }
+            *self.eq_curve_cache.borrow_mut() = Some((curve_hash, pts.clone()));
+            pts
+        };
+
+        // Draw Filled Area between response curve and 0 dB baseline (1 Single Mesh instead of 279 separate shapes)
         let zero_y = gain_to_y(0.0, rect);
         if curve_points.len() >= 2 && !self.eq_bypass {
+            let mut fill_mesh = egui::Mesh::default();
             for i in 0..(curve_points.len() - 1) {
                 let p1 = curve_points[i];
                 let p2 = curve_points[i + 1];
@@ -694,25 +760,28 @@ impl LunulaApp {
                 } else {
                     Color32::from_rgba_unmultiplied(244, 63, 94, 20)  // Subtle rose for cut
                 };
-                let quad = [
-                    Pos2::new(p1.x, zero_y),
-                    p1,
-                    p2,
-                    Pos2::new(p2.x, zero_y),
-                ];
-                painter.add(egui::epaint::Shape::convex_polygon(quad.to_vec(), fill_col, Stroke::NONE));
+                let base_idx = fill_mesh.vertices.len() as u32;
+                fill_mesh.vertices.push(egui::epaint::Vertex { pos: Pos2::new(p1.x, zero_y), uv: Pos2::ZERO, color: fill_col });
+                fill_mesh.vertices.push(egui::epaint::Vertex { pos: p1, uv: Pos2::ZERO, color: fill_col });
+                fill_mesh.vertices.push(egui::epaint::Vertex { pos: p2, uv: Pos2::ZERO, color: fill_col });
+                fill_mesh.vertices.push(egui::epaint::Vertex { pos: Pos2::new(p2.x, zero_y), uv: Pos2::ZERO, color: fill_col });
+                fill_mesh.indices.extend_from_slice(&[
+                    base_idx, base_idx + 1, base_idx + 2,
+                    base_idx, base_idx + 2, base_idx + 3,
+                ]);
             }
+            painter.add(egui::Shape::Mesh(std::sync::Arc::new(fill_mesh)));
         }
 
-        // Draw Response Curve Stroke
+        // Draw Response Curve Stroke (1 Single Vectorized Polyline instead of 279 line segments)
         let curve_stroke = if self.eq_bypass {
             Stroke::new(1.8, Color32::from_rgba_unmultiplied(148, 163, 184, 160)) // Muted dashed
         } else {
             Stroke::new(2.4, Color32::from_rgb(56, 189, 248)) // Glowing sky cyan
         };
 
-        for i in 0..(curve_points.len() - 1) {
-            painter.line_segment([curve_points[i], curve_points[i + 1]], curve_stroke);
+        if curve_points.len() >= 2 {
+            painter.add(egui::Shape::line(curve_points.clone(), curve_stroke));
         }
 
         // 5. Interactive Draggable Control Nodes

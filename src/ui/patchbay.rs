@@ -64,6 +64,7 @@ impl LunulaApp {
 
         self.nodes.push(new_node);
         self.selected_node = Some(id);
+        self.invalidate_chain_cache();
         self.sync_signal_chain_to_engine();
     }
 
@@ -205,11 +206,15 @@ impl LunulaApp {
             }
         }
 
-        // 3. Handle Cable Connection Release on an Input Pin
+        // 3. Handle Cable Connection Release on an Input Pin (Supports DAG Branching & Prevents Cycles)
         if response.drag_stopped() {
             if let (Some(from_id), Some(pos)) = (self.connecting_from_node, mouse_pos) {
                 for node in &self.nodes {
-                    if node.id != from_id {
+                    // Valid connection target:
+                    // 1. Not connecting to itself (node.id != from_id)
+                    // 2. Source node cannot receive input (Source has no input pin)
+                    // 3. DAG cycle prevention: node cannot already reach from_id (would create feedback loop)
+                    if node.id != from_id && node.node_type != NodeType::Source {
                         let world_rect = Rect::from_min_size(
                             Pos2::new(
                                 canvas_rect.min.x + self.patchbay_pan.x + node.pos.x,
@@ -218,10 +223,11 @@ impl LunulaApp {
                             Vec2::new(node_width, node_height),
                         );
                         let in_pin_pos = Pos2::new(world_rect.min.x, world_rect.center().y);
-                        if pos.distance(in_pin_pos) <= 16.0 {
-                            // Check if connection already exists
+                        if pos.distance(in_pin_pos) <= 18.0 {
                             let already_connected = self.connections.iter().any(|c| c.from_node == from_id && c.to_node == node.id);
-                            if !already_connected {
+                            let would_create_cycle = self.can_reach_node(node.id, from_id);
+
+                            if !already_connected && !would_create_cycle {
                                 self.connections.push(CableConnection {
                                     from_node: from_id,
                                     to_node: node.id,
@@ -340,12 +346,11 @@ impl LunulaApp {
                     Color32::from_rgb(239, 68, 68) // Red when severed/dead end
                 };
 
-                // Drop shadow
-                for seg in points.windows(2) {
-                    painter.line_segment([seg[0] + Vec2::new(0.0, 1.5), seg[1] + Vec2::new(0.0, 1.5)], Stroke::new(3.0, Color32::from_black_alpha(18)));
-                }
+                // Drop shadow (single batched polyline)
+                let shadow_pts: Vec<Pos2> = points.iter().map(|p| *p + Vec2::new(0.0, 1.5)).collect();
+                painter.add(egui::Shape::line(shadow_pts, Stroke::new(3.0, Color32::from_black_alpha(18))));
 
-                // Cable path: draw dashed line if connected to a bypassed effect
+                // Cable path: draw dashed line if connected to a bypassed effect, or single batched polyline
                 let stroke_w = if is_hover_cable { 2.8 } else if is_flowing_cable { 2.3 } else { 1.8 };
                 if is_effect_cable {
                     for (i, seg) in points.windows(2).enumerate() {
@@ -354,9 +359,7 @@ impl LunulaApp {
                         }
                     }
                 } else {
-                    for seg in points.windows(2) {
-                        painter.line_segment([seg[0], seg[1]], Stroke::new(stroke_w, cable_color));
-                    }
+                    painter.add(egui::Shape::line(points.clone(), Stroke::new(stroke_w, cable_color)));
                 }
 
                 // If flowing and song is playing: draw live animated audio data particles traveling along the cable!
@@ -409,67 +412,77 @@ impl LunulaApp {
         }
 
         // 4b. Render Broken Gaps between Standard Default Nodes with Click-to-Connect
-        let standard_pairs: Vec<(usize, usize)> = match self.chain_mode {
-            ChainMode::BitPerfect | ChainMode::OsResampled => vec![(1, 2), (2, 4), (4, 5)],
-            ChainMode::DspActive => vec![(1, 2), (2, 3), (3, 4), (4, 5)],
-        };
-        for (from_id, to_id) in standard_pairs {
-            let has_conn = self.connections.iter().any(|c| c.from_node == from_id && c.to_node == to_id);
-            if !has_conn {
-                let from_node = self.nodes.iter().find(|n| n.id == from_id);
-                let to_node = self.nodes.iter().find(|n| n.id == to_id);
-                if let (Some(from_n), Some(to_n)) = (from_node, to_node) {
-                    let p_start = Pos2::new(
-                        canvas_rect.min.x + self.patchbay_pan.x + from_n.pos.x + node_width,
-                        canvas_rect.min.y + self.patchbay_pan.y + from_n.pos.y + node_height * 0.5,
-                    );
-                    let p_end = Pos2::new(
-                        canvas_rect.min.x + self.patchbay_pan.x + to_n.pos.x,
-                        canvas_rect.min.y + self.patchbay_pan.y + to_n.pos.y + node_height * 0.5,
-                    );
+        // Only rendered if the signal chain is incomplete AND no alternative path exists!
+        // If from_id can already reach to_id (e.g. through an EQ preset or modular filter),
+        // the connection is fully satisfied and NO red dashed line is drawn!
+        if !chain_eval.is_complete {
+            let standard_pairs: Vec<(usize, usize)> = match self.chain_mode {
+                ChainMode::BitPerfect | ChainMode::OsResampled => vec![(1, 2), (2, 4), (4, 5)],
+                ChainMode::DspActive => vec![(1, 2), (2, 3), (3, 4), (4, 5)],
+            };
+            for (from_id, to_id) in standard_pairs {
+                // If from_id can already reach to_id through modular filters, it is NOT broken!
+                if self.can_reach_node(from_id, to_id) {
+                    continue;
+                }
 
-                    let is_jumper_gap = from_id == 2 && to_id == 4;
-                    let (cp1, cp2) = if is_jumper_gap {
-                        let node3_top = self.nodes.iter().find(|n| n.id == 3).map(|n| n.pos.y).unwrap_or(from_n.pos.y);
-                        let top_y = p_start.y.min(p_end.y).min(canvas_rect.min.y + self.patchbay_pan.y + node3_top);
-                        let arch_cp_y = top_y - 20.0;
-                        let dx = (p_end.x - p_start.x).abs() * 0.5;
-                        (Pos2::new(p_start.x + dx * 0.45, arch_cp_y), Pos2::new(p_end.x - dx * 0.45, arch_cp_y))
-                    } else {
-                        let dx = (p_end.x - p_start.x).abs() * 0.5;
-                        (Pos2::new(p_start.x + dx, p_start.y), Pos2::new(p_end.x - dx, p_end.y))
-                    };
+                let has_conn = self.connections.iter().any(|c| c.from_node == from_id && c.to_node == to_id);
+                if !has_conn {
+                    let from_node = self.nodes.iter().find(|n| n.id == from_id);
+                    let to_node = self.nodes.iter().find(|n| n.id == to_id);
+                    if let (Some(from_n), Some(to_n)) = (from_node, to_node) {
+                        let p_start = Pos2::new(
+                            canvas_rect.min.x + self.patchbay_pan.x + from_n.pos.x + node_width,
+                            canvas_rect.min.y + self.patchbay_pan.y + from_n.pos.y + node_height * 0.5,
+                        );
+                        let p_end = Pos2::new(
+                            canvas_rect.min.x + self.patchbay_pan.x + to_n.pos.x,
+                            canvas_rect.min.y + self.patchbay_pan.y + to_n.pos.y + node_height * 0.5,
+                        );
 
-                    let steps = 18;
-                    let mut points = Vec::with_capacity(steps + 1);
-                    for step in 0..=steps {
-                        let t = step as f32 / steps as f32;
-                        let u = 1.0 - t;
-                        let x = u * u * u * p_start.x + 3.0 * u * u * t * cp1.x + 3.0 * u * t * t * cp2.x + t * t * t * p_end.x;
-                        let y = u * u * u * p_start.y + 3.0 * u * u * t * cp1.y + 3.0 * u * t * t * cp2.y + t * t * t * p_end.y;
-                        points.push(Pos2::new(x, y));
-                    }
+                        let is_jumper_gap = from_id == 2 && to_id == 4;
+                        let (cp1, cp2) = if is_jumper_gap {
+                            let node3_top = self.nodes.iter().find(|n| n.id == 3).map(|n| n.pos.y).unwrap_or(from_n.pos.y);
+                            let top_y = p_start.y.min(p_end.y).min(canvas_rect.min.y + self.patchbay_pan.y + node3_top);
+                            let arch_cp_y = top_y - 20.0;
+                            let dx = (p_end.x - p_start.x).abs() * 0.5;
+                            (Pos2::new(p_start.x + dx * 0.45, arch_cp_y), Pos2::new(p_end.x - dx * 0.45, arch_cp_y))
+                        } else {
+                            let dx = (p_end.x - p_start.x).abs() * 0.5;
+                            (Pos2::new(p_start.x + dx, p_start.y), Pos2::new(p_end.x - dx, p_end.y))
+                        };
 
-                    // Red dashed line
-                    for (idx, seg) in points.windows(2).enumerate() {
-                        if idx % 2 == 0 {
-                            painter.line_segment([seg[0], seg[1]], Stroke::new(1.8, Color32::from_rgb(239, 68, 68)));
+                        let steps = 18;
+                        let mut points = Vec::with_capacity(steps + 1);
+                        for step in 0..=steps {
+                            let t = step as f32 / steps as f32;
+                            let u = 1.0 - t;
+                            let x = u * u * u * p_start.x + 3.0 * u * u * t * cp1.x + 3.0 * u * t * t * cp2.x + t * t * t * p_end.x;
+                            let y = u * u * u * p_start.y + 3.0 * u * u * t * cp1.y + 3.0 * u * t * t * cp2.y + t * t * t * p_end.y;
+                            points.push(Pos2::new(x, y));
                         }
-                    }
 
-                    let mid_p = points[steps / 2];
-                    let is_hover_gap = mouse_pos.map_or(false, |p| p.distance(mid_p) <= 13.0);
-                    if is_hover_gap {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                        if response.clicked() {
-                            connection_to_add = Some((from_id, to_id));
+                        // Red dashed line
+                        for (idx, seg) in points.windows(2).enumerate() {
+                            if idx % 2 == 0 {
+                                painter.line_segment([seg[0], seg[1]], Stroke::new(1.8, Color32::from_rgb(239, 68, 68)));
+                            }
                         }
-                    }
 
-                    let btn_rad = if is_hover_gap { 10.0 } else { 8.5 };
-                    painter.circle_filled(mid_p, btn_rad, Color32::from_rgb(239, 68, 68));
-                    painter.circle_stroke(mid_p, btn_rad, Stroke::new(1.5, Color32::WHITE));
-                    painter.text(mid_p, egui::Align2::CENTER_CENTER, "✕", egui::FontId::proportional(9.5), Color32::WHITE);
+                        let mid_p = points[steps / 2];
+                        let is_hover_gap = mouse_pos.map_or(false, |p| p.distance(mid_p) <= 13.0);
+                        if is_hover_gap {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            if response.clicked() {
+                                connection_to_add = Some((from_id, to_id));
+                            }
+                        }
+
+                        let btn_rad = if is_hover_gap { 10.0 } else { 8.5 };
+                        painter.circle_filled(mid_p, btn_rad, Color32::from_rgb(239, 68, 68));
+                        painter.circle_stroke(mid_p, btn_rad, Stroke::new(1.5, Color32::WHITE));
+                        painter.text(mid_p, egui::Align2::CENTER_CENTER, "✕", egui::FontId::proportional(9.5), Color32::WHITE);
+                    }
                 }
             }
         }
@@ -503,9 +516,7 @@ impl LunulaApp {
                     points.push(Pos2::new(x, y));
                 }
 
-                for seg in points.windows(2) {
-                    painter.line_segment([seg[0], seg[1]], Stroke::new(2.5, Color32::from_rgb(14, 165, 233)));
-                }
+                painter.add(egui::Shape::line(points, Stroke::new(2.5, Color32::from_rgb(14, 165, 233))));
 
                 painter.circle_filled(p_end, 5.0, Color32::from_rgb(14, 165, 233));
             }
@@ -938,6 +949,7 @@ impl LunulaApp {
         }
 
         if topology_changed {
+            self.invalidate_chain_cache();
             self.sync_signal_chain_to_engine();
         }
     }
@@ -1098,56 +1110,22 @@ impl LunulaApp {
                     let is_open = self.show_saved_eq_palette_popup;
                     let sidebar_min_x = ui.max_rect().min.x;
 
+                    let mut btn_clicked = false;
                     let g5 = ui.group(|ui| {
                         ui.vertical(|ui| {
+                            ui.label(egui::RichText::new("🎛️ Equalizer Presets").strong().size(12.5).color(Color32::from_rgb(15, 23, 42)));
+                            ui.label(egui::RichText::new("Koleksi kurva frekuensi siap pakai untuk vokal, bass, dan akustik.").size(10.5).color(Color32::from_rgb(100, 116, 139)));
                             ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new("🎛️ Equalizer Presets")
-                                        .strong()
-                                        .size(12.5)
-                                        .color(if is_open { Color32::from_rgb(147, 51, 234) } else { Color32::from_rgb(15, 23, 42) })
-                                );
-
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.label(
-                                        egui::RichText::new(format!("{} Preset", self.eq_presets.len()))
-                                            .size(10.0)
-                                            .color(Color32::from_rgb(148, 163, 184))
-                                    );
-                                });
-                            });
-
-                            ui.label(
-                                egui::RichText::new("Koleksi kurva frekuensi parametrik (Harman, Bass, Vocal, atau custom).")
-                                    .size(10.5)
-                                    .color(Color32::from_rgb(100, 116, 139))
-                            );
-
-                            ui.horizontal(|ui| {
-                                let btn_text = if is_open { "🎛️ Tutup Preset" } else { "➕ Tambah ke Chain" };
-                                let btn_preset = egui::Button::new(
-                                    egui::RichText::new(btn_text)
-                                        .strong()
-                                        .color(if is_open { Color32::from_rgb(147, 51, 234) } else { Color32::from_rgb(15, 23, 42) })
-                                )
-                                .fill(if is_open { Color32::from_rgb(243, 232, 255) } else { Color32::from_rgb(241, 245, 249) })
-                                .stroke(Stroke::new(1.0, if is_open { Color32::from_rgb(216, 180, 254) } else { Color32::from_rgb(203, 213, 225) }))
-                                .corner_radius(6.0);
-
-                                let btn_resp = ui.add(btn_preset)
-                                    .on_hover_text("Buka koleksi preset equalizer untuk dipasang ke canvas");
-
+                                let btn_label = if is_open { "🎛️ Tutup Preset" } else { "➕ Tambah ke Chain" };
+                                let btn_resp = ui.button(egui::RichText::new(btn_label).strong());
                                 if btn_resp.clicked() {
+                                    btn_clicked = true;
                                     self.show_saved_eq_palette_popup = !self.show_saved_eq_palette_popup;
                                     let click_y = ui.input(|i| i.pointer.interact_pos()).map(|p| p.y).unwrap_or(btn_resp.rect.center().y);
                                     self.saved_eq_popup_anchor = Some(Pos2::new(sidebar_min_x, click_y));
                                 }
-
                                 if has_any_eq_node {
-                                    if ui.button(egui::RichText::new("🗑️").size(11.0).color(Color32::from_rgb(239, 68, 68)))
-                                        .on_hover_text("Hapus semua modul EQ Preset dari canvas")
-                                        .clicked()
-                                    {
+                                    if ui.button(egui::RichText::new("🗑️").size(11.0).color(Color32::from_rgb(239, 68, 68))).on_hover_text("Hapus semua modul EQ Preset dari canvas").clicked() {
                                         delete_all_saved_eq_nodes = true;
                                     }
                                 }
@@ -1156,8 +1134,8 @@ impl LunulaApp {
                     });
 
                     let card_resp = ui.interact(g5.response.rect, ui.scope_id().with("card_eq_presets_click"), egui::Sense::click());
-                    if card_resp.clicked() && !is_open {
-                        self.show_saved_eq_palette_popup = true;
+                    if card_resp.clicked() && !btn_clicked {
+                        self.show_saved_eq_palette_popup = !self.show_saved_eq_palette_popup;
                         let click_y = ui.input(|i| i.pointer.interact_pos()).map(|p| p.y).unwrap_or(g5.response.rect.center().y);
                         self.saved_eq_popup_anchor = Some(Pos2::new(sidebar_min_x, click_y));
                     }
@@ -1300,16 +1278,19 @@ impl LunulaApp {
                             .show(ui, |ui| {
                                 for preset in &self.eq_presets {
                                     let is_on_canvas = self.nodes.iter().any(|n| n.node_type == NodeType::SavedEqPreset(preset.name.clone()));
-                                    let is_active_in_eq = self.active_eq.name == preset.name;
+                                    let chain_eval = self.evaluate_signal_chain();
+                                    let is_flowing_in_chain = self.chain_mode == ChainMode::DspActive && is_on_canvas && self.nodes.iter().any(|n| {
+                                        n.node_type == NodeType::SavedEqPreset(preset.name.clone()) && chain_eval.node_status(n.id) == SignalNodeStatus::Flowing
+                                    });
 
-                                    let card_bg = if is_active_in_eq {
-                                        Color32::from_rgb(240, 249, 255)
+                                    let card_bg = if is_flowing_in_chain {
+                                        Color32::from_rgb(240, 253, 244)
                                     } else {
                                         Color32::from_rgb(255, 255, 255)
                                     };
 
-                                    let border_stroke = if is_active_in_eq {
-                                        Stroke::new(1.2, Color32::from_rgb(14, 165, 233))
+                                    let border_stroke = if is_flowing_in_chain {
+                                        Stroke::new(1.2, Color32::from_rgb(34, 197, 94))
                                     } else {
                                         Stroke::new(1.0, Color32::from_rgb(226, 232, 240))
                                     };
@@ -1331,11 +1312,8 @@ impl LunulaApp {
                                                     );
 
                                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                        // Delete Button: safely tucked on far right, never overlaps title!
-                                                        let is_factory = matches!(
-                                                            preset.name.as_str(),
-                                                            "Flat (Netral)" | "Harman-style Tilt (Generik)" | "Bass Boost & Warmth (Punchy)" | "Vocal Clarity" | "Air & Sparkle"
-                                                        );
+                                                        // Delete Button: only for custom user presets (factory presets are protected)
+                                                        let is_factory = crate::models::ParametricEqPreset::default_presets().iter().any(|dp| dp.name == preset.name);
                                                         if !is_factory && self.eq_presets.len() > 1 {
                                                             let del_btn = egui::Button::new(
                                                                 egui::RichText::new("🗑").size(10.5).color(Color32::from_rgb(239, 68, 68))
@@ -1344,30 +1322,27 @@ impl LunulaApp {
                                                             .stroke(Stroke::new(0.8, Color32::from_rgb(254, 202, 202)))
                                                             .corner_radius(5.0);
 
-                                                            if ui.add_sized([22.0, 20.0], del_btn).on_hover_text("Hapus preset tersimpan ini").clicked() {
+                                                            if ui.add_sized([22.0, 20.0], del_btn).on_hover_text("Hapus preset kustom ini").clicked() {
                                                                 delete_preset_name = Some(preset.name.clone());
                                                             }
                                                         }
 
-                                                        // Badge: Di Canvas
-                                                        if is_on_canvas {
+                                                        // Badges: ONLY displayed if actually on canvas
+                                                        if is_flowing_in_chain {
+                                                            egui::Frame::new()
+                                                                .fill(Color32::from_rgb(220, 252, 231))
+                                                                .corner_radius(4.0)
+                                                                .inner_margin(egui::Margin::symmetric(6, 2))
+                                                                .show(ui, |ui| {
+                                                                    ui.label(egui::RichText::new("⚡ Aktif di Chain").size(9.5).strong().color(Color32::from_rgb(22, 163, 74)));
+                                                                });
+                                                        } else if is_on_canvas {
                                                             egui::Frame::new()
                                                                 .fill(Color32::from_rgb(243, 232, 255))
                                                                 .corner_radius(4.0)
                                                                 .inner_margin(egui::Margin::symmetric(6, 2))
                                                                 .show(ui, |ui| {
-                                                                    ui.label(egui::RichText::new("✓ Canvas").size(9.5).strong().color(Color32::from_rgb(147, 51, 234)));
-                                                                });
-                                                        }
-
-                                                        // Badge: Aktif di EQ
-                                                        if is_active_in_eq {
-                                                            egui::Frame::new()
-                                                                .fill(Color32::from_rgb(224, 242, 254))
-                                                                .corner_radius(4.0)
-                                                                .inner_margin(egui::Margin::symmetric(6, 2))
-                                                                .show(ui, |ui| {
-                                                                    ui.label(egui::RichText::new("● Aktif").size(9.5).strong().color(Color32::from_rgb(2, 132, 199)));
+                                                                    ui.label(egui::RichText::new("✓ Di Canvas").size(9.5).strong().color(Color32::from_rgb(147, 51, 234)));
                                                                 });
                                                         }
                                                     });

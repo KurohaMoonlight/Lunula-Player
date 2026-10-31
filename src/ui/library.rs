@@ -6,6 +6,10 @@ use crate::ui::components::{draw_album_art, draw_artist_avatar, format_time, ler
 
 impl LunulaApp {
     pub fn compute_library_stats(&self) -> (usize, usize, usize, f32, usize) {
+        if let Some(stats) = self.cached_library_stats.get() {
+            return stats;
+        }
+
         let mut albums = std::collections::HashSet::new();
         let mut artists = std::collections::HashSet::new();
         let mut total_mb = 0.0;
@@ -23,7 +27,9 @@ impl LunulaApp {
                 hires += 1;
             }
         }
-        (self.playlist.len(), albums.len(), artists.len(), total_mb, hires)
+        let stats = (self.playlist.len(), albums.len(), artists.len(), total_mb, hires);
+        self.cached_library_stats.set(Some(stats));
+        stats
     }
 
 
@@ -1421,6 +1427,7 @@ impl LunulaApp {
         }
 
         if had_mutations {
+            self.invalidate_library_cache();
             self.save_library_state();
         }
     }

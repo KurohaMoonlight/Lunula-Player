@@ -102,6 +102,14 @@ pub struct LunulaApp {
     pub pending_cover_loads: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     pub selected_output_device: Option<String>,
     pub available_output_devices: Vec<crate::audio::backend::OutputDeviceInfo>,
+
+    // High-performance GUI caching (DAG topology, library stats, and EQ curves)
+    pub cached_chain_eval: std::cell::RefCell<Option<crate::models::ChainEvaluation>>,
+    pub chain_eval_dirty: std::cell::Cell<bool>,
+    pub cached_library_stats: std::cell::Cell<Option<(usize, usize, usize, f32, usize)>>,
+    pub cached_album_map: std::cell::RefCell<Option<std::collections::BTreeMap<String, Vec<usize>>>>,
+    pub cached_artist_map: std::cell::RefCell<Option<std::collections::BTreeMap<String, Vec<usize>>>>,
+    pub eq_curve_cache: std::cell::RefCell<Option<(u64, Vec<Pos2>)>>,
 }
 
 pub struct CoverLoadResult {
@@ -332,6 +340,13 @@ impl LunulaApp {
             pending_cover_loads,
             selected_output_device: None,
             available_output_devices: crate::audio::backend::enumerate_output_devices(),
+
+            cached_chain_eval: std::cell::RefCell::new(None),
+            chain_eval_dirty: std::cell::Cell::new(true),
+            cached_library_stats: std::cell::Cell::new(None),
+            cached_album_map: std::cell::RefCell::new(None),
+            cached_artist_map: std::cell::RefCell::new(None),
+            eq_curve_cache: std::cell::RefCell::new(None),
         };
 
         if let Some(state) = Self::load_library_state() {
@@ -926,6 +941,7 @@ impl LunulaApp {
             engine.set_chain_mode(mode);
         }
 
+        self.invalidate_chain_cache();
         self.sync_signal_chain_to_engine();
         self.save_library_state();
     }
@@ -968,7 +984,83 @@ impl LunulaApp {
         None
     }
 
+    // =========================================================================================
+    //  ARSITEKTUR PEMROSESAN SINYAL AUDIO: DIRECTED ACYCLIC GRAPH (DAG)
+    // =========================================================================================
+    //
+    //  [IDE C] URUTAN PEMROSESAN SERIAL & PENCEGAHAN FEEDBACK LOOP:
+    //  ----------------------------------------------------------------------------------------
+    //  - Graf patchbay adalah DAG (Directed Acyclic Graph) yang diurutkan secara topologis.
+    //  - Alur kabel dari Output -> Input menentukan urutan eksekusi efek (misal: A -> B -> C).
+    //  - FEEDBACK LOOP dicegah: sebuah kabel tidak boleh berputar kembali ke node yang sama
+    //    secara langsung maupun tidak langsung (A -> C -> A), karena dalam audio digital tanpa delay
+    //    akan menimbulkan rekursi tak berujung (buffer recursion) atau feedback screeching.
+    //  - Solusi "Proses A lalu C lalu A lagi":
+    //    Tambahkan instance modul A kedua di kanvas (A1 -> C -> A2). Dengan begitu, alur tetap
+    //    DAG yang bersih, aman, dan parameter A1 dan A2 dapat diatur independen!
+    //
+    //  [IDE B] PERCABANGAN PARALEL (SPLIT & SUMMING MIX DSP):
+    //  ----------------------------------------------------------------------------------------
+    //  - GUI mengizinkan percabangan: satu output pin bisa mencabang ke banyak node (Split),
+    //    dan satu input pin bisa menerima banyak kabel masuk (Merge/Join).
+    //  - Roadmap DSP Audio Engine untuk Percabangan Paralel:
+    //    1. SPLIT: Saat sebuah node mencabang ke N cabang, buffer audio difork/disalin ke tiap cabang.
+    //    2. PARALLEL PROCESS: Masing-masing cabang memproses filternya secara independen.
+    //    3. SUMMING MIXER: Pada node di mana cabang-cabang tersebut bertemu kembali (converge),
+    //       sinyal-sinyal dijumlahkan (y = x1 + x2 + ... + xn) dengan normalisasi gain / headroom
+    //       (misalnya pembagian 1/N atau attenuasi -6 dB) untuk mencegah digital clipping (+6 dB).
+    //    4. PHASE ALIGNMENT: Memperhatikan penundaan fase (delay) agar tidak timbul comb-filtering.
+    // =========================================================================================
+
+    /// Memeriksa apakah node `start` dapat mencapai node `target` melalui sambungan kabel yang ada.
+    pub fn can_reach_node(&self, start: usize, target: usize) -> bool {
+        use std::collections::{HashSet, VecDeque};
+        if start == target {
+            return true;
+        }
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        visited.insert(start);
+        queue.push_back(start);
+        while let Some(curr) = queue.pop_front() {
+            if curr == target {
+                return true;
+            }
+            for conn in &self.connections {
+                if conn.from_node == curr && visited.insert(conn.to_node) {
+                    queue.push_back(conn.to_node);
+                }
+            }
+        }
+        false
+    }
+
+    #[inline]
+    pub fn invalidate_chain_cache(&self) {
+        self.chain_eval_dirty.set(true);
+    }
+
+    #[inline]
+    pub fn invalidate_library_cache(&self) {
+        self.cached_library_stats.set(None);
+        *self.cached_album_map.borrow_mut() = None;
+        *self.cached_artist_map.borrow_mut() = None;
+    }
+
     pub fn evaluate_signal_chain(&self) -> crate::models::ChainEvaluation {
+        if !self.chain_eval_dirty.get() {
+            if let Some(ref eval) = *self.cached_chain_eval.borrow() {
+                return eval.clone();
+            }
+        }
+
+        let eval = self.compute_evaluate_signal_chain();
+        *self.cached_chain_eval.borrow_mut() = Some(eval.clone());
+        self.chain_eval_dirty.set(false);
+        eval
+    }
+
+    fn compute_evaluate_signal_chain(&self) -> crate::models::ChainEvaluation {
         use std::collections::{HashSet, VecDeque};
         use crate::models::{ChainEvaluation, NodeType};
 
@@ -1181,6 +1273,7 @@ impl eframe::App for LunulaApp {
                     ScanMsg::Finished(count) => {
                         self.is_scanning = false;
                         if count > 0 {
+                            self.invalidate_library_cache();
                             self.scan_status = format!("✓ Selesai. Berhasil memuat {} lagu.", count);
                             self.save_library_state();
                         } else {
