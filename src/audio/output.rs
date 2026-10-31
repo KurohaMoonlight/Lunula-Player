@@ -11,6 +11,7 @@ pub struct AudioOutput {
     channels: u16,
     device_name: String,
     is_paused: Arc<AtomicBool>,
+    bit_perfect: Arc<AtomicBool>,
     shared_volume: Arc<AtomicU32>,
     visualizer: Arc<VisualizerRingBuffer>,
 }
@@ -23,6 +24,7 @@ impl AudioOutput {
         buffer_capacity: usize,
         shared_volume: Arc<AtomicU32>,
         visualizer: Arc<VisualizerRingBuffer>,
+        bit_perfect: Arc<AtomicBool>,
     ) -> Result<(Self, Producer<f32>), Box<dyn std::error::Error + Send + Sync>> {
         let host = cpal::default_host();
         let device = host
@@ -60,6 +62,7 @@ impl AudioOutput {
                 format,
                 consumer,
                 Arc::clone(&is_paused),
+                Arc::clone(&bit_perfect),
                 Arc::clone(&shared_volume),
                 Arc::clone(&visualizer),
             ) {
@@ -73,6 +76,7 @@ impl AudioOutput {
                         channels,
                         device_name,
                         is_paused,
+                        bit_perfect,
                         shared_volume,
                         visualizer,
                     },
@@ -91,6 +95,7 @@ impl AudioOutput {
             format,
             consumer,
             Arc::clone(&is_paused),
+            Arc::clone(&bit_perfect),
             Arc::clone(&shared_volume),
             Arc::clone(&visualizer),
         )?;
@@ -106,6 +111,7 @@ impl AudioOutput {
                 channels,
                 device_name,
                 is_paused,
+                bit_perfect,
                 shared_volume,
                 visualizer,
             },
@@ -119,10 +125,12 @@ impl AudioOutput {
         sample_format: SampleFormat,
         mut consumer: Consumer<f32>,
         is_paused: Arc<AtomicBool>,
+        bit_perfect: Arc<AtomicBool>,
         shared_volume: Arc<AtomicU32>,
         visualizer: Arc<VisualizerRingBuffer>,
     ) -> Result<Stream, Box<dyn std::error::Error + Send + Sync>> {
         let is_paused_cb = Arc::clone(&is_paused);
+        let bp_cb = Arc::clone(&bit_perfect);
         let volume_cb = Arc::clone(&shared_volume);
         let visualizer_cb = Arc::clone(&visualizer);
         let channels_count = config.channels as usize;
@@ -133,27 +141,29 @@ impl AudioOutput {
                 device.build_output_stream(
                     config,
                     move |data: &mut [f32], _: &OutputCallbackInfo| {
-                        Self::render_samples_f32(data, channels_count, &mut consumer, &is_paused_cb, &volume_cb, &visualizer_cb);
+                        Self::render_samples_f32(data, channels_count, &mut consumer, &is_paused_cb, &bp_cb, &volume_cb, &visualizer_cb);
                     },
                     err_fn,
                     None,
                 )?
             }
             SampleFormat::I16 => {
+                let bp_cb2 = Arc::clone(&bit_perfect);
                 device.build_output_stream(
                     config,
                     move |data: &mut [i16], _: &OutputCallbackInfo| {
-                        Self::render_samples_i16(data, channels_count, &mut consumer, &is_paused_cb, &volume_cb, &visualizer_cb);
+                        Self::render_samples_i16(data, channels_count, &mut consumer, &is_paused_cb, &bp_cb2, &volume_cb, &visualizer_cb);
                     },
                     err_fn,
                     None,
                 )?
             }
             SampleFormat::U16 => {
+                let bp_cb3 = Arc::clone(&bit_perfect);
                 device.build_output_stream(
                     config,
                     move |data: &mut [u16], _: &OutputCallbackInfo| {
-                        Self::render_samples_u16(data, channels_count, &mut consumer, &is_paused_cb, &volume_cb, &visualizer_cb);
+                        Self::render_samples_u16(data, channels_count, &mut consumer, &is_paused_cb, &bp_cb3, &volume_cb, &visualizer_cb);
                     },
                     err_fn,
                     None,
@@ -193,6 +203,10 @@ impl AudioOutput {
         self.shared_volume.store(vol.clamp(0.0, 1.5).to_bits(), Ordering::Relaxed);
     }
 
+    pub fn set_bit_perfect(&self, bp: bool) {
+        self.bit_perfect.store(bp, Ordering::Relaxed);
+    }
+
     pub fn visualizer(&self) -> &Arc<VisualizerRingBuffer> {
         &self.visualizer
     }
@@ -203,6 +217,7 @@ impl AudioOutput {
         channels: usize,
         consumer: &mut Consumer<f32>,
         is_paused: &AtomicBool,
+        bit_perfect: &AtomicBool,
         volume: &AtomicU32,
         visualizer: &VisualizerRingBuffer,
     ) {
@@ -214,8 +229,13 @@ impl AudioOutput {
             return;
         }
 
-        let vol = f32::from_bits(volume.load(Ordering::Relaxed));
-        if vol <= 0.0001 {
+        let is_bp = bit_perfect.load(Ordering::Relaxed);
+        let vol = if is_bp {
+            1.0
+        } else {
+            f32::from_bits(volume.load(Ordering::Relaxed))
+        };
+        if vol <= 0.0001 && !is_bp {
             data.fill(0.0);
             for _ in 0..(data.len() / channels.max(1)) {
                 visualizer.push_sample(0.0);
@@ -261,6 +281,7 @@ impl AudioOutput {
         channels: usize,
         consumer: &mut Consumer<f32>,
         is_paused: &AtomicBool,
+        bit_perfect: &AtomicBool,
         volume: &AtomicU32,
         visualizer: &VisualizerRingBuffer,
     ) {
@@ -272,8 +293,13 @@ impl AudioOutput {
             return;
         }
 
-        let vol = f32::from_bits(volume.load(Ordering::Relaxed));
-        if vol <= 0.0001 {
+        let is_bp = bit_perfect.load(Ordering::Relaxed);
+        let vol = if is_bp {
+            1.0
+        } else {
+            f32::from_bits(volume.load(Ordering::Relaxed))
+        };
+        if vol <= 0.0001 && !is_bp {
             data.fill(0);
             for _ in 0..(data.len() / channels.max(1)) {
                 visualizer.push_sample(0.0);
@@ -323,6 +349,7 @@ impl AudioOutput {
         channels: usize,
         consumer: &mut Consumer<f32>,
         is_paused: &AtomicBool,
+        bit_perfect: &AtomicBool,
         volume: &AtomicU32,
         visualizer: &VisualizerRingBuffer,
     ) {
@@ -334,8 +361,13 @@ impl AudioOutput {
             return;
         }
 
-        let vol = f32::from_bits(volume.load(Ordering::Relaxed));
-        if vol <= 0.0001 {
+        let is_bp = bit_perfect.load(Ordering::Relaxed);
+        let vol = if is_bp {
+            1.0
+        } else {
+            f32::from_bits(volume.load(Ordering::Relaxed))
+        };
+        if vol <= 0.0001 && !is_bp {
             data.fill(32768);
             for _ in 0..(data.len() / channels.max(1)) {
                 visualizer.push_sample(0.0);

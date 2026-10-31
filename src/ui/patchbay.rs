@@ -256,10 +256,18 @@ impl LunulaApp {
         // Evaluate Signal Chain reachability
         let chain_eval = self.evaluate_signal_chain();
 
-        let _glow_color = match self.chain_mode {
-            ChainMode::BitPerfect => Color32::from_rgb(16, 185, 129),
-            ChainMode::DspActive => Color32::from_rgb(99, 102, 241),
-            ChainMode::OsResampled => Color32::from_rgb(245, 158, 11),
+        let is_fallback = self.signal_path_report.as_ref().map_or(false, |r| {
+            r.requested_mode == ChainMode::BitPerfect && r.actual_mode == ChainMode::OsResampled
+        });
+
+        let theme_color = if is_fallback {
+            Color32::from_rgb(245, 158, 11)
+        } else {
+            match self.chain_mode {
+                ChainMode::BitPerfect => Color32::from_rgb(16, 185, 129),
+                ChainMode::DspActive => Color32::from_rgb(99, 102, 241),
+                ChainMode::OsResampled => Color32::from_rgb(245, 158, 11),
+            }
         };
 
         // 4. Render Established Patchbay Cables (with click to disconnect)
@@ -316,12 +324,6 @@ impl LunulaApp {
                     connection_to_remove = Some(conn_idx);
                 }
 
-                let theme_color = match self.chain_mode {
-                    ChainMode::BitPerfect => Color32::from_rgb(16, 185, 129),
-                    ChainMode::DspActive => Color32::from_rgb(99, 102, 241),
-                    ChainMode::OsResampled => Color32::from_rgb(245, 158, 11),
-                };
-
                 let cable_color = if is_hover_cable {
                     Color32::from_rgb(239, 68, 68) // Red on hover to cut
                 } else if is_flowing_cable {
@@ -343,10 +345,14 @@ impl LunulaApp {
 
                 // If flowing and song is playing: draw live animated audio data particles traveling along the cable!
                 if is_flowing_cable && self.is_playing {
-                    let particle_glow = match self.chain_mode {
-                        ChainMode::BitPerfect => Color32::from_rgba_premultiplied(167, 243, 208, 200),
-                        ChainMode::DspActive => Color32::from_rgba_premultiplied(199, 210, 254, 200),
-                        ChainMode::OsResampled => Color32::from_rgba_premultiplied(253, 230, 138, 200),
+                    let particle_glow = if is_fallback {
+                        Color32::from_rgba_premultiplied(253, 230, 138, 200)
+                    } else {
+                        match self.chain_mode {
+                            ChainMode::BitPerfect => Color32::from_rgba_premultiplied(167, 243, 208, 200),
+                            ChainMode::DspActive => Color32::from_rgba_premultiplied(199, 210, 254, 200),
+                            ChainMode::OsResampled => Color32::from_rgba_premultiplied(253, 230, 138, 200),
+                        }
                     };
                     for k in 0..3 {
                         let t_part = ((self.visualizer_anim_phase * 0.75 + k as f32 * 0.33) % 1.0 + 1.0) % 1.0;
@@ -359,13 +365,15 @@ impl LunulaApp {
 
                 // Option B: DIRECT BYPASS badge on arching jumper wire
                 if is_bypass_jumper && is_flowing_cable {
-                    let badge_text = if self.chain_mode == ChainMode::OsResampled {
-                        "⚡ 48kHz OS MIXER"
+                    let (badge_text, badge_bg) = if is_fallback {
+                        ("⚠️ FALLBACK 48kHz", Color32::from_rgba_premultiplied(217, 119, 6, 240))
+                    } else if self.chain_mode == ChainMode::OsResampled {
+                        ("⚡ 48kHz OS MIXER", Color32::from_rgba_premultiplied(245, 158, 11, 235))
                     } else {
-                        "⚡ DIRECT BYPASS"
+                        ("⚡ DIRECT BYPASS", Color32::from_rgba_premultiplied(16, 185, 129, 235))
                     };
-                    let badge_rect = Rect::from_center_size(mid - Vec2::new(0.0, 9.0), Vec2::new(94.0, 15.0));
-                    painter.rect_filled(badge_rect, 4.0, Color32::from_rgba_premultiplied(16, 185, 129, 235));
+                    let badge_rect = Rect::from_center_size(mid - Vec2::new(0.0, 9.0), Vec2::new(104.0, 15.0));
+                    painter.rect_filled(badge_rect, 4.0, badge_bg);
                     painter.rect_stroke(badge_rect, 4.0, Stroke::new(1.0, Color32::WHITE), egui::StrokeKind::Outside);
                     painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER, badge_text, egui::FontId::proportional(8.5), Color32::WHITE);
                 }
@@ -540,10 +548,14 @@ impl LunulaApp {
             // Shadow
             painter.rect_filled(node_rect.translate(Vec2::new(0.0, 2.0 + hover_anim * 1.5)), 8.0, Color32::from_black_alpha(14));
 
-            let theme_color = match self.chain_mode {
-                ChainMode::BitPerfect => Color32::from_rgb(16, 185, 129),
-                ChainMode::DspActive => Color32::from_rgb(99, 102, 241),
-                ChainMode::OsResampled => Color32::from_rgb(245, 158, 11),
+            let theme_color = if is_fallback {
+                Color32::from_rgb(245, 158, 11)
+            } else {
+                match self.chain_mode {
+                    ChainMode::BitPerfect => Color32::from_rgb(16, 185, 129),
+                    ChainMode::DspActive => Color32::from_rgb(99, 102, 241),
+                    ChainMode::OsResampled => Color32::from_rgb(245, 158, 11),
+                }
             };
 
             let is_bypassed_dsp = node.node_type == NodeType::Dsp
@@ -738,28 +750,38 @@ impl LunulaApp {
         );
         let (pill_bg, pill_stroke, status_icon, status_msg, text_col) = if chain_eval.is_complete {
             if self.is_playing {
-                match self.chain_mode {
-                    ChainMode::BitPerfect => (
-                        Color32::from_rgba_premultiplied(236, 253, 245, 230),
-                        Stroke::new(1.0, Color32::from_rgb(167, 243, 208)),
-                        "🟢",
-                        "JALUR AUDIO AKTIF (BIT-PERFECT) — Melompati DSP, sinyal mengalir murni bit-per-bit ke DAC",
-                        Color32::from_rgb(6, 95, 70),
-                    ),
-                    ChainMode::DspActive => (
-                        Color32::from_rgba_premultiplied(238, 242, 255, 230),
-                        Stroke::new(1.0, Color32::from_rgb(199, 210, 254)),
-                        "🟣",
-                        "JALUR AUDIO AKTIF (DSP ACTIVE) — 10-Band Peaking EQ & FX aktif dalam presisi 32-bit Float",
-                        Color32::from_rgb(67, 56, 202),
-                    ),
-                    ChainMode::OsResampled => (
+                if is_fallback {
+                    (
                         Color32::from_rgba_premultiplied(254, 243, 199, 230),
                         Stroke::new(1.0, Color32::from_rgb(253, 230, 138)),
-                        "🟡",
-                        "JALUR AUDIO AKTIF (OS RESAMPLED) — Resampling ke 48.0 kHz via Windows Audio Mixer Shared",
+                        "⚠️",
+                        "FALLBACK KE OS RESAMPLED — Hardware tidak mendukung sample rate asli file, dialihkan ke 48.0 kHz",
                         Color32::from_rgb(146, 64, 14),
-                    ),
+                    )
+                } else {
+                    match self.chain_mode {
+                        ChainMode::BitPerfect => (
+                            Color32::from_rgba_premultiplied(236, 253, 245, 230),
+                            Stroke::new(1.0, Color32::from_rgb(167, 243, 208)),
+                            "🟢",
+                            "JALUR AUDIO AKTIF (BIT-PERFECT) — Melompati DSP, sinyal mengalir murni bit-per-bit ke DAC",
+                            Color32::from_rgb(6, 95, 70),
+                        ),
+                        ChainMode::DspActive => (
+                            Color32::from_rgba_premultiplied(238, 242, 255, 230),
+                            Stroke::new(1.0, Color32::from_rgb(199, 210, 254)),
+                            "🟣",
+                            "JALUR AUDIO AKTIF (DSP ACTIVE) — 10-Band Peaking EQ & FX aktif dalam presisi 32-bit Float",
+                            Color32::from_rgb(67, 56, 202),
+                        ),
+                        ChainMode::OsResampled => (
+                            Color32::from_rgba_premultiplied(254, 243, 199, 230),
+                            Stroke::new(1.0, Color32::from_rgb(253, 230, 138)),
+                            "🟡",
+                            "JALUR AUDIO AKTIF (OS RESAMPLED) — Resampling ke 48.0 kHz via Windows Audio Mixer Shared",
+                            Color32::from_rgb(146, 64, 14),
+                        ),
+                    }
                 }
             } else {
                 (

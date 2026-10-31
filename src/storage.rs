@@ -26,6 +26,7 @@ impl LunulaApp {
             volume: self.volume,
             eq_bands: self.eq_bands,
             eq_bypass: self.eq_bypass,
+            chain_mode: self.chain_mode,
             is_shuffled: self.is_shuffled,
             repeat_mode: self.repeat_mode,
             queue_cursor: self.queue_cursor,

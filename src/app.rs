@@ -73,6 +73,7 @@ pub struct LunulaApp {
     pub visualizer_anim_phase: f32,
     pub waveform_mode: WaveformMode,
     pub audio_engine: Option<crate::audio::AudioEngineController>,
+    pub signal_path_report: Option<crate::audio::SignalPathReport>,
     pub fft_analyzer: crate::audio::FftAnalyzer,
     pub spectrum_bars: [f32; 48],
     pub current_cover_bytes: Option<Vec<u8>>,
@@ -239,6 +240,7 @@ impl LunulaApp {
             visualizer_anim_phase: 0.0,
             waveform_mode: WaveformMode::StackedMultiBand,
             audio_engine: crate::audio::AudioEngineController::new().ok(),
+            signal_path_report: None,
             fft_analyzer: crate::audio::FftAnalyzer::new(48000.0),
             spectrum_bars: [0.0; 48],
             current_cover_bytes: None,
@@ -271,6 +273,7 @@ impl LunulaApp {
             app.is_shuffled = state.is_shuffled;
             app.repeat_mode = state.repeat_mode;
             app.queue_cursor = state.queue_cursor;
+            app.set_chain_mode(state.chain_mode);
         } else {
             app.eq_bands[0] = 3.0;
             app.eq_bands[1] = 1.5;
@@ -314,10 +317,9 @@ impl LunulaApp {
 
         if let Some(ref path_str) = self.current_track.file_path {
             if let Some(ref engine) = self.audio_engine {
+                engine.set_chain_mode(self.chain_mode);
                 engine.play(std::path::PathBuf::from(path_str));
                 engine.set_volume(if self.is_muted { 0.0 } else { self.volume });
-                engine.set_eq_bypass(self.chain_mode == ChainMode::BitPerfect || self.eq_bypass);
-                engine.set_force_resample_48k(self.chain_mode == ChainMode::OsResampled);
                 for (idx, &gain) in self.eq_bands.iter().enumerate() {
                     engine.set_eq_band(idx, gain);
                 }
@@ -654,10 +656,6 @@ impl LunulaApp {
                     }
                 }
                 self.eq_bypass = true;
-                if let Some(ref engine) = self.audio_engine {
-                    engine.set_eq_bypass(true);
-                    engine.set_force_resample_48k(false);
-                }
             }
             ChainMode::DspActive => {
                 // Cable goes through DSP: 1 -> 2 -> 3 -> 4 -> 5
@@ -684,10 +682,6 @@ impl LunulaApp {
                     }
                 }
                 self.eq_bypass = false;
-                if let Some(ref engine) = self.audio_engine {
-                    engine.set_eq_bypass(false);
-                    engine.set_force_resample_48k(false);
-                }
             }
             ChainMode::OsResampled => {
                 // Cable goes through Windows Audio Mixer (Shared Mode)
@@ -712,11 +706,14 @@ impl LunulaApp {
                         n.sub2 = "Fixed 48.0 kHz 24-bit".to_string();
                     }
                 }
-                if let Some(ref engine) = self.audio_engine {
-                    engine.set_force_resample_48k(true);
-                }
+                self.eq_bypass = true;
             }
         }
+
+        if let Some(ref engine) = self.audio_engine {
+            engine.set_chain_mode(mode);
+        }
+
         self.save_library_state();
     }
 
@@ -889,6 +886,36 @@ impl eframe::App for LunulaApp {
                         if duration > 0.0 {
                             new_duration = Some(duration);
                         }
+                    }
+                    crate::audio::AudioEvent::SignalPath(report) => {
+                        for node in &mut self.nodes {
+                            if node.id == 1 {
+                                node.sub2 = format!("{:.1} kHz", report.source_rate as f32 / 1000.0);
+                            } else if node.id == 4 {
+                                match report.actual_mode {
+                                    ChainMode::OsResampled => {
+                                        node.title = "WINDOWS AUDIO MIXER".to_string();
+                                        node.sub1 = "Shared Mode (WASAPI)".to_string();
+                                        node.sub2 = format!("SRC Resampled to {:.1} kHz", report.device_rate as f32 / 1000.0);
+                                    }
+                                    ChainMode::DspActive => {
+                                        node.title = "WASAPI ENGINE".to_string();
+                                        node.sub1 = report.device_name.clone();
+                                        node.sub2 = format!("Exclusive Mode • {:.1} kHz", report.device_rate as f32 / 1000.0);
+                                    }
+                                    ChainMode::BitPerfect => {
+                                        node.title = "WASAPI ENGINE".to_string();
+                                        node.sub1 = report.device_name.clone();
+                                        node.sub2 = format!("Direct Bitstream • {:.1} kHz", report.device_rate as f32 / 1000.0);
+                                    }
+                                }
+                            } else if node.id == 5 {
+                                node.title = "HARDWARE DAC".to_string();
+                                node.sub1 = "Output Endpoint".to_string();
+                                node.sub2 = format!("Native {:.1} kHz", report.device_rate as f32 / 1000.0);
+                            }
+                        }
+                        self.signal_path_report = Some(report);
                     }
                     _ => {}
                 }
@@ -1119,10 +1146,30 @@ impl eframe::App for LunulaApp {
                             ui.vertical(|ui| {
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new("⚡ MODULAR SIGNAL CHAIN").strong().size(13.5).color(Color32::from_rgb(15, 23, 42)));
-                                    if is_chain_ok {
-                                        ui.label(egui::RichText::new("✓ Sinyal Bit-Perfect Mengalir").size(11.5).color(Color32::from_rgb(16, 185, 129)).strong());
-                                    } else {
+                                    if !is_chain_ok {
                                         ui.label(egui::RichText::new("⚠️ Sinyal Terputus (Audio Dibisukan)").size(11.5).color(Color32::from_rgb(239, 68, 68)).strong());
+                                    } else if let Some(ref r) = self.signal_path_report {
+                                        if r.requested_mode == ChainMode::BitPerfect && r.actual_mode == ChainMode::OsResampled {
+                                            ui.label(egui::RichText::new(format!("⚠️ Fallback: OS Resampled {:.1} kHz", r.device_rate as f32 / 1000.0)).size(11.5).color(Color32::from_rgb(217, 119, 6)).strong());
+                                        } else if r.actual_mode == ChainMode::BitPerfect {
+                                            ui.label(egui::RichText::new(format!("✓ Sinyal Bit-Perfect Mengalir ({:.1} kHz Native)", r.device_rate as f32 / 1000.0)).size(11.5).color(Color32::from_rgb(16, 185, 129)).strong());
+                                        } else if r.actual_mode == ChainMode::DspActive {
+                                            ui.label(egui::RichText::new(format!("✓ DSP Engine Aktif (10-Band EQ • {:.1} kHz)", r.device_rate as f32 / 1000.0)).size(11.5).color(Color32::from_rgb(99, 102, 241)).strong());
+                                        } else {
+                                            ui.label(egui::RichText::new("✓ OS Resampled (48.0 kHz Shared)").size(11.5).color(Color32::from_rgb(217, 119, 6)).strong());
+                                        }
+                                    } else {
+                                        match self.chain_mode {
+                                            ChainMode::BitPerfect => {
+                                                ui.label(egui::RichText::new("✓ Sinyal Bit-Perfect Siap").size(11.5).color(Color32::from_rgb(16, 185, 129)).strong());
+                                            }
+                                            ChainMode::DspActive => {
+                                                ui.label(egui::RichText::new("✓ DSP Engine Siap").size(11.5).color(Color32::from_rgb(99, 102, 241)).strong());
+                                            }
+                                            ChainMode::OsResampled => {
+                                                ui.label(egui::RichText::new("✓ OS Resampled Siap (48 kHz)").size(11.5).color(Color32::from_rgb(217, 119, 6)).strong());
+                                            }
+                                        }
                                     }
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                         if ui.button(egui::RichText::new("Buka Studio Penuh ➔").strong()).clicked() {
@@ -1136,6 +1183,24 @@ impl eframe::App for LunulaApp {
                         });
 
                         ui.add_space(8.0);
+
+                        // If fallback to OS Resampled happened due to hardware rate mismatch, show honest banner
+                        if let Some(ref r) = self.signal_path_report {
+                            if is_chain_ok && r.requested_mode == ChainMode::BitPerfect && r.actual_mode == ChainMode::OsResampled {
+                                egui::Frame::new()
+                                    .fill(Color32::from_rgb(254, 243, 199))
+                                    .stroke(Stroke::new(1.0, Color32::from_rgb(253, 230, 138)))
+                                    .corner_radius(8.0)
+                                    .inner_margin(egui::Margin::symmetric(14, 8))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new("⚠️ PERINGATAN FALLBACK BIT-PERFECT:").strong().size(12.0).color(Color32::from_rgb(180, 83, 9)));
+                                            ui.label(egui::RichText::new(format!("Perangkat '{}' tidak mendukung sample rate {:.1} kHz file lagu ini secara native. Engine beralih jujur ke OS Resampling {:.1} kHz agar pemutaran tidak rusak.", r.device_name, r.source_rate as f32 / 1000.0, r.device_rate as f32 / 1000.0)).size(11.5).color(Color32::from_rgb(146, 64, 14)));
+                                        });
+                                    });
+                                ui.add_space(6.0);
+                            }
+                        }
 
                         // If signal chain is severed, display a warning card above transport
                         if !is_chain_ok {

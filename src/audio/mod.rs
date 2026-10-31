@@ -11,5 +11,5 @@ pub use dsp::{DspPipeline, EQ_FREQUENCIES};
 pub use engine::AudioEngineController;
 pub use output::AudioOutput;
 pub use resampler::StereoResampler;
-pub use types::{AudioCommand, AudioEvent, PlaybackState};
+pub use types::{AudioCommand, AudioEvent, ChainMode, PlaybackState, SignalPathReport};
 pub use visualizer::{FftAnalyzer, VisualizerRingBuffer, FFT_SIZE, NUM_BANDS};

@@ -703,21 +703,34 @@ impl LunulaApp {
 
                     ui.add_space(8.0);
 
-                    let vol_pct = (if self.is_muted { 0.0 } else { self.volume } * 100.0) as u32;
-                    ui.label(
-                        egui::RichText::new(format!("{:3}%", vol_pct))
-                            .strong()
-                            .size(13.0)
-                            .color(Color32::from_rgb(71, 85, 105)),
-                    );
+                    let is_bp = self.chain_mode == crate::models::ChainMode::BitPerfect;
+
+                    if is_bp {
+                        ui.label(
+                            egui::RichText::new("100% (Direct)")
+                                .strong()
+                                .size(11.5)
+                                .color(Color32::from_rgb(16, 185, 129)),
+                        ).on_hover_text("Volume dikunci pada 100% (Bit-Perfect Pure Direct) untuk menjaga integritas bit audio asli tanpa attenuasi digital. Gunakan knob hardware DAC / speaker.");
+                    } else {
+                        let vol_pct = (if self.is_muted { 0.0 } else { self.volume } * 100.0) as u32;
+                        ui.label(
+                            egui::RichText::new(format!("{:3}%", vol_pct))
+                                .strong()
+                                .size(13.0)
+                                .color(Color32::from_rgb(71, 85, 105)),
+                        );
+                    }
 
                     ui.add_space(8.0);
 
                     let vol_size = Vec2::new(100.0, 10.0);
-                    let (vol_rect, vol_res) = ui.allocate_exact_size(vol_size, egui::Sense::click_and_drag());
+                    let (vol_rect, vol_res) = ui.allocate_exact_size(vol_size, if is_bp { egui::Sense::hover() } else { egui::Sense::click_and_drag() });
                     let vol_hover = ui.ctx().animate_bool(ui.scope_id().with("vol_hover_anim"), vol_res.hovered() || vol_res.dragged());
 
-                    if vol_res.clicked() || vol_res.dragged() {
+                    if is_bp {
+                        vol_res.on_hover_text("Mode Bit-Perfect Aktif: Volume digital dikunci di 100% murni. Ubah ke mode 'DSP Active' di Patchbay untuk mengaktifkan pengaturan volume software.");
+                    } else if vol_res.clicked() || vol_res.dragged() {
                         if let Some(pos) = vol_res.interact_pointer_pos() {
                             let ratio = ((pos.x - vol_rect.min.x) / vol_rect.width()).clamp(0.0, 1.0);
                             self.volume = ratio;
@@ -731,20 +744,25 @@ impl LunulaApp {
                     let vol_painter = ui.painter_at(vol_rect);
                     vol_painter.rect_filled(vol_rect, 5.0, Color32::from_rgb(226, 232, 240));
 
-                    let cur_vol = if self.is_muted { 0.0 } else { self.volume };
-                    if cur_vol > 0.0 {
-                        let fill_w = vol_rect.width() * cur_vol;
-                        let fill_rect = Rect::from_min_size(vol_rect.min, Vec2::new(fill_w, vol_rect.height()));
-                        
-                        let fill_col = lerp_color(Color32::from_rgb(15, 23, 42), Color32::from_rgb(2, 132, 199), vol_hover);
-                        vol_painter.rect_filled(fill_rect, 5.0, fill_col);
+                    if is_bp {
+                        // Locked Bit-Perfect direct 100% pure bar
+                        vol_painter.rect_filled(vol_rect, 5.0, Color32::from_rgb(16, 185, 129));
+                    } else {
+                        let cur_vol = if self.is_muted { 0.0 } else { self.volume };
+                        if cur_vol > 0.0 {
+                            let fill_w = vol_rect.width() * cur_vol;
+                            let fill_rect = Rect::from_min_size(vol_rect.min, Vec2::new(fill_w, vol_rect.height()));
+                            
+                            let fill_col = lerp_color(Color32::from_rgb(15, 23, 42), Color32::from_rgb(2, 132, 199), vol_hover);
+                            vol_painter.rect_filled(fill_rect, 5.0, fill_col);
 
-                        let thumb_radius = 5.0 + vol_hover * 1.5;
-                        vol_painter.circle_filled(
-                            Pos2::new(vol_rect.min.x + fill_w, vol_rect.center().y),
-                            thumb_radius,
-                            fill_col,
-                        );
+                            let thumb_radius = 5.0 + vol_hover * 1.5;
+                            vol_painter.circle_filled(
+                                Pos2::new(vol_rect.min.x + fill_w, vol_rect.center().y),
+                                thumb_radius,
+                                fill_col,
+                            );
+                        }
                     }
 
                     ui.add_space(4.0);

@@ -91,57 +91,84 @@ impl LunulaApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let cb_res = ui.checkbox(&mut self.eq_bypass, egui::RichText::new("Bypass EQ (Pure Direct)").strong());
                         if cb_res.changed() {
-                            if let Some(ref engine) = self.audio_engine {
-                                engine.set_eq_bypass(self.eq_bypass);
+                            if self.eq_bypass {
+                                self.set_chain_mode(crate::models::ChainMode::BitPerfect);
+                            } else {
+                                self.set_chain_mode(crate::models::ChainMode::DspActive);
                             }
                         }
                     });
                 });
 
+                if self.chain_mode == crate::models::ChainMode::BitPerfect {
+                    egui::Frame::new()
+                        .fill(Color32::from_rgba_premultiplied(236, 253, 245, 230))
+                        .stroke(Stroke::new(1.0, Color32::from_rgb(167, 243, 208)))
+                        .corner_radius(6.0)
+                        .inner_margin(egui::Margin::symmetric(12, 6))
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new("⚡ Mode Bit-Perfect Aktif: 10-band filter biquad dilewati murni tanpa kalkulasi software untuk menjaga keutuhan bit audio asli. Hapus centang 'Bypass EQ' di atas untuk mengaktifkan Equalizer.").size(11.5).color(Color32::from_rgb(6, 95, 70)));
+                        });
+                    ui.add_space(6.0);
+                } else if self.chain_mode == crate::models::ChainMode::OsResampled {
+                    egui::Frame::new()
+                        .fill(Color32::from_rgba_premultiplied(254, 243, 199, 230))
+                        .stroke(Stroke::new(1.0, Color32::from_rgb(253, 230, 138)))
+                        .corner_radius(6.0)
+                        .inner_margin(egui::Margin::symmetric(12, 6))
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new("🟡 Mode OS Resampled Aktif: Sinyal dialirkan ke Windows Audio Mixer (48 kHz) dengan bypass filter EQ.").size(11.5).color(Color32::from_rgb(146, 64, 14)));
+                        });
+                    ui.add_space(6.0);
+                }
+
                 ui.label(egui::RichText::new("32-bit floating point precision biquad peaking filters.").strong().size(12.0).color(Color32::from_rgb(100, 116, 139)));
                 ui.add_space(10.0);
 
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Presets:").strong().size(12.5).color(Color32::from_rgb(100, 116, 139)));
-                    if ui.button(egui::RichText::new("Flat").strong()).clicked() {
-                        self.eq_bands = [0.0; 10];
-                        self.sync_eq_to_engine();
-                    }
-                    if ui.button(egui::RichText::new("Bass Boost").strong()).clicked() {
-                        self.eq_bands = [6.0, 5.0, 3.5, 1.5, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0];
-                        self.sync_eq_to_engine();
-                    }
-                    if ui.button(egui::RichText::new("Vocal Clarity").strong()).clicked() {
-                        self.eq_bands = [-2.0, -1.0, 0.0, 2.0, 4.0, 4.5, 3.0, 1.0, 0.5, 0.0];
-                        self.sync_eq_to_engine();
-                    }
-                    if ui.button(egui::RichText::new("Audiophile Treble").strong()).clicked() {
-                        self.eq_bands = [0.0, 0.0, 0.0, 0.5, 1.0, 2.0, 3.5, 5.0, 6.0, 6.5];
-                        self.sync_eq_to_engine();
-                    }
-                });
+                let is_dsp_enabled = self.chain_mode == crate::models::ChainMode::DspActive;
+                ui.add_enabled_ui(is_dsp_enabled, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Presets:").strong().size(12.5).color(Color32::from_rgb(100, 116, 139)));
+                        if ui.button(egui::RichText::new("Flat").strong()).clicked() {
+                            self.eq_bands = [0.0; 10];
+                            self.sync_eq_to_engine();
+                        }
+                        if ui.button(egui::RichText::new("Bass Boost").strong()).clicked() {
+                            self.eq_bands = [6.0, 5.0, 3.5, 1.5, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0];
+                            self.sync_eq_to_engine();
+                        }
+                        if ui.button(egui::RichText::new("Vocal Clarity").strong()).clicked() {
+                            self.eq_bands = [-2.0, -1.0, 0.0, 2.0, 4.0, 4.5, 3.0, 1.0, 0.5, 0.0];
+                            self.sync_eq_to_engine();
+                        }
+                        if ui.button(egui::RichText::new("Audiophile Treble").strong()).clicked() {
+                            self.eq_bands = [0.0, 0.0, 0.0, 0.5, 1.0, 2.0, 3.5, 5.0, 6.0, 6.5];
+                            self.sync_eq_to_engine();
+                        }
+                    });
 
-                ui.add_space(14.0);
+                    ui.add_space(14.0);
 
-                let freqs = ["31Hz", "62Hz", "125Hz", "250Hz", "500Hz", "1kHz", "2kHz", "4kHz", "8kHz", "16kHz"];
-                ui.horizontal(|ui| {
-                    for i in 0..10 {
-                        ui.vertical_centered(|ui| {
-                            ui.label(egui::RichText::new(format!("{:+0.1}", self.eq_bands[i])).strong().size(11.0).color(Color32::from_rgb(100, 116, 139)));
-                            let s_res = ui.add(
-                                egui::Slider::new(&mut self.eq_bands[i], -12.0..=12.0)
-                                    .vertical()
-                                    .show_value(false),
-                            );
-                            if s_res.changed() {
-                                if let Some(ref engine) = self.audio_engine {
-                                    engine.set_eq_band(i, self.eq_bands[i]);
+                    let freqs = ["31Hz", "62Hz", "125Hz", "250Hz", "500Hz", "1kHz", "2kHz", "4kHz", "8kHz", "16kHz"];
+                    ui.horizontal(|ui| {
+                        for i in 0..10 {
+                            ui.vertical_centered(|ui| {
+                                ui.label(egui::RichText::new(format!("{:+0.1}", self.eq_bands[i])).strong().size(11.0).color(Color32::from_rgb(100, 116, 139)));
+                                let s_res = ui.add(
+                                    egui::Slider::new(&mut self.eq_bands[i], -12.0..=12.0)
+                                        .vertical()
+                                        .show_value(false),
+                                );
+                                if s_res.changed() {
+                                    if let Some(ref engine) = self.audio_engine {
+                                        engine.set_eq_band(i, self.eq_bands[i]);
+                                    }
                                 }
-                            }
-                            ui.label(egui::RichText::new(freqs[i]).strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
-                        });
-                        ui.add_space(20.0);
-                    }
+                                ui.label(egui::RichText::new(freqs[i]).strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
+                            });
+                            ui.add_space(20.0);
+                        }
+                    });
                 });
             });
         });

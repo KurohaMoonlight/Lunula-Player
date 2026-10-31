@@ -9,12 +9,7 @@ pub enum AppTab {
     Equalizer,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ChainMode {
-    BitPerfect,
-    DspActive,
-    OsResampled,
-}
+pub use crate::audio::ChainMode;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum NodeType {
@@ -153,6 +148,8 @@ pub struct SavedAppState {
     pub volume: f32,
     pub eq_bands: [f32; 10],
     pub eq_bypass: bool,
+    #[serde(default)]
+    pub chain_mode: ChainMode,
     #[serde(default)]
     pub is_shuffled: bool,
     #[serde(default)]
