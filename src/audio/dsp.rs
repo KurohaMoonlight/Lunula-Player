@@ -114,6 +114,7 @@ pub struct GraphicEqEffect {
     eq_state_r: [BiquadState; 10],
     eq_gains: [f64; 10],
     auto_preamp: f64,
+    is_flat: bool,
 }
 
 impl GraphicEqEffect {
@@ -125,6 +126,7 @@ impl GraphicEqEffect {
             eq_state_r: [BiquadState::default(); 10],
             eq_gains: [0.0; 10],
             auto_preamp: 1.0,
+            is_flat: true,
         };
         for (i, &g) in gains.iter().enumerate() {
             eq.eq_gains[i] = g.clamp(-12.0, 12.0) as f64;
@@ -150,6 +152,7 @@ impl GraphicEqEffect {
 
     fn recompute_all(&mut self) {
         self.update_auto_preamp();
+        self.is_flat = self.eq_gains.iter().all(|&g| g.abs() < 0.05);
         for i in 0..10 {
             self.recompute_band(i);
         }
@@ -157,7 +160,12 @@ impl GraphicEqEffect {
 }
 
 impl Effect for GraphicEqEffect {
+    #[inline(always)]
     fn process_frame(&mut self, l: f64, r: f64) -> (f64, f64) {
+        // Zero-Cost Fast Short-Circuit: bypass 10-band biquad cascade completely when EQ is flat (0.0 dB)
+        if self.is_flat {
+            return (l * self.auto_preamp, r * self.auto_preamp);
+        }
         let mut fl = l * self.auto_preamp;
         let mut fr = r * self.auto_preamp;
         for i in 0..10 {
@@ -191,6 +199,7 @@ impl Effect for GraphicEqEffect {
         if index < 10 {
             self.eq_gains[index] = val.clamp(-12.0, 12.0);
             self.update_auto_preamp();
+            self.is_flat = self.eq_gains.iter().all(|&g| g.abs() < 0.05);
             self.recompute_band(index);
         }
     }
@@ -468,6 +477,7 @@ pub struct DspPipeline {
     eq_gains: [f64; 10],
     auto_preamp: f64,
     eq_bypass: bool,
+    is_flat: bool,
     volume: f32,
 }
 
@@ -484,6 +494,7 @@ impl DspPipeline {
             eq_gains: [0.0; 10],
             auto_preamp: 1.0,
             eq_bypass: true,
+            is_flat: true,
             volume: 0.80,
         };
         dsp.recompute_all_eq_coeffs();
@@ -549,6 +560,7 @@ impl DspPipeline {
         if band_idx < 10 {
             self.eq_gains[band_idx] = gain_db.clamp(-12.0, 12.0) as f64;
             self.update_auto_preamp();
+            self.is_flat = self.eq_gains.iter().all(|&g| g.abs() < 0.05);
             self.recompute_band_coeffs(band_idx);
             for effect in &mut self.active_effects {
                 effect.set_param(band_idx, self.eq_gains[band_idx]);
@@ -580,6 +592,7 @@ impl DspPipeline {
 
     fn recompute_all_eq_coeffs(&mut self) {
         self.update_auto_preamp();
+        self.is_flat = self.eq_gains.iter().all(|&g| g.abs() < 0.05);
         for i in 0..10 {
             self.recompute_band_coeffs(i);
         }
@@ -623,6 +636,12 @@ impl DspPipeline {
             (out_l.clamp(-1.0, 1.0), out_r.clamp(-1.0, 1.0))
         } else if !self.has_graph {
             // Standalone fallback ONLY when no graph has ever been supplied (e.g. standalone DSP tests or engine startup)
+            // Zero-Cost Fast Short-Circuit: skip 10-band biquad cascade when gains are 0.0 dB
+            if self.is_flat {
+                let out_l = soft_limit(fl * self.auto_preamp) as f32;
+                let out_r = soft_limit(fr * self.auto_preamp) as f32;
+                return (out_l.clamp(-1.0, 1.0), out_r.clamp(-1.0, 1.0));
+            }
             fl *= self.auto_preamp;
             fr *= self.auto_preamp;
             for i in 0..10 {
@@ -808,5 +827,44 @@ mod tests {
         }
         // At 10 Hz with 24 Hz 2nd order HPF (-12 dB/oct), attenuation is > 14 dB (< 0.20 amplitude)
         assert!(max_10hz < 0.25, "10 Hz subsonic rumble must be strongly attenuated: got {}", max_10hz);
+    }
+
+    #[test]
+    fn test_graphic_eq_zero_cost_flat_bypass() {
+        // Initial flat EQ: all gains 0.0 dB
+        let mut eq = GraphicEqEffect::new([0.0; 10], 48000.0);
+        assert!(eq.is_flat);
+
+        // Frame process on flat EQ should pass through samples identically
+        let (out_l, out_r) = eq.process_frame(0.42, -0.73);
+        assert!((out_l - 0.42).abs() < 1e-9);
+        assert!((out_r - (-0.73)).abs() < 1e-9);
+
+        // Modify a band: is_flat becomes false
+        eq.set_param(5, 3.0); // +3 dB at 1000 Hz
+        assert!(!eq.is_flat);
+
+        // Reset all bands to 0: is_flat becomes true again
+        eq.set_param(5, 0.0);
+        assert!(eq.is_flat);
+    }
+
+    #[test]
+    fn test_dsp_pipeline_zero_cost_flat_bypass() {
+        let mut dsp = DspPipeline::new(48000.0);
+        dsp.set_eq_bypass(false);
+        assert!(dsp.is_flat);
+
+        let (out_l, out_r) = dsp.process_frame(0.5, -0.5);
+        assert!((out_l - 0.5).abs() < 1e-4);
+        assert!((out_r - (-0.5)).abs() < 1e-4);
+
+        // Boost a band: is_flat becomes false
+        dsp.set_eq_band(3, 4.0);
+        assert!(!dsp.is_flat);
+
+        // Revert band: is_flat becomes true
+        dsp.set_eq_band(3, 0.0);
+        assert!(dsp.is_flat);
     }
 }

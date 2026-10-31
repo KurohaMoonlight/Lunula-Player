@@ -701,30 +701,21 @@ impl LunulaApp {
         (rect.height() as i32).hash(&mut hasher);
         let curve_hash = hasher.finish();
 
-        let curve_points: Vec<Pos2> = if let Some((h, ref cached_pts)) = *self.eq_curve_cache.borrow() {
-            if h == curve_hash {
-                cached_pts.clone()
-            } else {
-                let sample_rate = 44100.0_f64;
-                let points_count = 280;
-                let mut pts = Vec::with_capacity(points_count);
-                for i in 0..points_count {
-                    let t = i as f32 / (points_count - 1) as f32;
-                    let f = 20.0 * (1000.0_f32).powf(t);
-                    let total_db = compute_total_curve_db(
-                        &preset.bands,
-                        f as f64,
-                        sample_rate,
-                        effective_preamp as f64,
-                        self.eq_bypass,
-                    );
-                    let x = freq_to_x(f, rect);
-                    let y = gain_to_y(total_db as f32, rect);
-                    pts.push(Pos2::new(x, y));
+        let cached_points = {
+            let borrow = self.eq_curve_cache.borrow();
+            if let Some((h, ref pts)) = *borrow {
+                if h == curve_hash {
+                    Some(pts.clone())
+                } else {
+                    None
                 }
-                *self.eq_curve_cache.borrow_mut() = Some((curve_hash, pts.clone()));
-                pts
+            } else {
+                None
             }
+        };
+
+        let curve_points: Vec<Pos2> = if let Some(pts) = cached_points {
+            pts
         } else {
             let sample_rate = 44100.0_f64;
             let points_count = 280;
@@ -761,10 +752,10 @@ impl LunulaApp {
                     Color32::from_rgba_unmultiplied(244, 63, 94, 20)  // Subtle rose for cut
                 };
                 let base_idx = fill_mesh.vertices.len() as u32;
-                fill_mesh.vertices.push(egui::epaint::Vertex { pos: Pos2::new(p1.x, zero_y), uv: Pos2::ZERO, color: fill_col });
-                fill_mesh.vertices.push(egui::epaint::Vertex { pos: p1, uv: Pos2::ZERO, color: fill_col });
-                fill_mesh.vertices.push(egui::epaint::Vertex { pos: p2, uv: Pos2::ZERO, color: fill_col });
-                fill_mesh.vertices.push(egui::epaint::Vertex { pos: Pos2::new(p2.x, zero_y), uv: Pos2::ZERO, color: fill_col });
+                fill_mesh.vertices.push(egui::epaint::Vertex { pos: Pos2::new(p1.x, zero_y), uv: egui::epaint::WHITE_UV, color: fill_col });
+                fill_mesh.vertices.push(egui::epaint::Vertex { pos: p1, uv: egui::epaint::WHITE_UV, color: fill_col });
+                fill_mesh.vertices.push(egui::epaint::Vertex { pos: p2, uv: egui::epaint::WHITE_UV, color: fill_col });
+                fill_mesh.vertices.push(egui::epaint::Vertex { pos: Pos2::new(p2.x, zero_y), uv: egui::epaint::WHITE_UV, color: fill_col });
                 fill_mesh.indices.extend_from_slice(&[
                     base_idx, base_idx + 1, base_idx + 2,
                     base_idx, base_idx + 2, base_idx + 3,
@@ -1447,16 +1438,18 @@ mod tests {
     #[test]
     fn test_equalizer_panel_headless_render() {
         let ctx = egui::Context::default();
-        let screen = Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0)));
+        let screen1 = Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0)));
+        let screen2 = Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1024.0, 768.0)));
 
         let mut app = LunulaApp::default();
         app.active_eq = ParametricEqPreset::default_presets()[0].clone();
         assert_eq!(app.active_eq.bands.len(), 10);
         assert!(!app.eq_is_dirty);
 
+        // Frame 1: Initial render
         let mut out = ctx.run_ui(
             egui::RawInput {
-                screen_rect: screen,
+                screen_rect: screen1,
                 time: Some(0.1),
                 ..Default::default()
             },
@@ -1467,5 +1460,37 @@ mod tests {
             },
         );
         out.textures_delta.clear();
+
+        // Frame 2: Resize screen and modify band gain (guarantees hash change and verifies no RefCell borrow panics)
+        app.active_eq.bands[0].gain_db = 4.5;
+        let mut out2 = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: screen2,
+                time: Some(0.2),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    app.render_equalizer_panel(ui);
+                });
+            },
+        );
+        out2.textures_delta.clear();
+
+        // Frame 3: Toggle bypass
+        app.eq_bypass = true;
+        let mut out3 = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: screen2,
+                time: Some(0.3),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    app.render_equalizer_panel(ui);
+                });
+            },
+        );
+        out3.textures_delta.clear();
     }
 }

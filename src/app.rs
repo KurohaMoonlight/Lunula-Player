@@ -1049,8 +1049,9 @@ impl LunulaApp {
 
     pub fn evaluate_signal_chain(&self) -> crate::models::ChainEvaluation {
         if !self.chain_eval_dirty.get() {
-            if let Some(ref eval) = *self.cached_chain_eval.borrow() {
-                return eval.clone();
+            let cached = self.cached_chain_eval.borrow().as_ref().cloned();
+            if let Some(eval) = cached {
+                return eval;
             }
         }
 

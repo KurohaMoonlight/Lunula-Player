@@ -318,3 +318,52 @@ fn test_red_dashed_line_suppressed_when_reaching_through_intermediate_filter() {
     assert!(graph.is_complete);
     assert_eq!(graph.effects.len(), 2, "Must contain DSP and Saved EQ effects in order");
 }
+
+#[test]
+fn test_equalizer_tab_switching_multi_frame_resilience() {
+    let ctx = egui::Context::default();
+    let screen1 = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 800.0)));
+    let screen2 = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1024.0, 768.0)));
+
+    let mut app = LunulaApp::default();
+
+    // 1. Start in NowPlaying tab
+    app.current_tab = AppTab::NowPlaying;
+    let mut out1 = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: screen1,
+            time: Some(0.0),
+            ..Default::default()
+        },
+        |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                app.render_equalizer_panel(ui);
+            });
+        },
+    );
+    out1.textures_delta.clear();
+
+    // 2. Switch to Equalizer tab
+    app.current_tab = AppTab::Equalizer;
+
+    // Render 5 consecutive frames with resizing and preset switching
+    for frame in 1..=5 {
+        if frame % 2 == 0 {
+            app.active_eq.bands[0].gain_db = (frame as f32) * 1.5;
+        }
+        let screen = if frame % 2 == 0 { screen2 } else { screen1 };
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: screen,
+                time: Some(frame as f64 * 0.016),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    app.render_equalizer_panel(ui);
+                });
+            },
+        );
+        out.textures_delta.clear();
+    }
+}

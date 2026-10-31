@@ -4,7 +4,7 @@ use symphonia::core::audio::{AudioBufferRef, SampleBuffer, SignalSpec};
 use symphonia::core::codecs::{Decoder, DecoderOptions, CODEC_TYPE_NULL};
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
-use symphonia::core::io::MediaSourceStream;
+use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use symphonia::core::units::{Time, TimeBase};
@@ -29,7 +29,11 @@ impl AudioDecoder {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let path_ref = path.as_ref();
         let file = File::open(path_ref)?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+        // High-throughput 256 KB buffered I/O: prevents fine-grained disk syscall overhead during high-res FLAC playback
+        let mss_opts = MediaSourceStreamOptions {
+            buffer_len: 256 * 1024,
+        };
+        let mss = MediaSourceStream::new(Box::new(file), mss_opts);
 
         let mut hint = Hint::new();
         if let Some(ext) = path_ref.extension().and_then(|e| e.to_str()) {

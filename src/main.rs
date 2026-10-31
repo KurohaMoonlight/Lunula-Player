@@ -2,12 +2,33 @@ use eframe::egui;
 use egui::{Color32, Stroke};
 use lunulaplayer::app::LunulaApp;
 
+fn load_app_icon() -> Option<egui::IconData> {
+    let icon_bytes = include_bytes!("../assets/icon_256.png");
+    if let Ok(img) = image::load_from_memory(icon_bytes) {
+        let rgba = img.to_rgba8();
+        let (width, height) = rgba.dimensions();
+        Some(egui::IconData {
+            rgba: rgba.into_raw(),
+            width,
+            height,
+        })
+    } else {
+        None
+    }
+}
+
 fn main() -> eframe::Result {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1240.0, 820.0])
+        .with_min_inner_size([1040.0, 680.0])
+        .with_title("LunulaPlayer 🌙 - Audiophile Music Player");
+
+    if let Some(icon) = load_app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1240.0, 820.0])
-            .with_min_inner_size([1040.0, 680.0])
-            .with_title("LunulaPlayer 🌙 - Audiophile Music Player"),
+        viewport,
         ..Default::default()
     };
 
