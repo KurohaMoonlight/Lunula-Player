@@ -545,6 +545,8 @@ fn run_audio_worker(
                 if free_slots >= 512 {
                     let frames_to_generate = (free_slots / 2).min(512);
                     let mut generated_frames = 0;
+                    let mut batch_buf = [0.0f32; 1024];
+                    let mut batch_samples = 0;
 
                     for _ in 0..frames_to_generate {
                         let frame = resampler.next_frame(|| {
@@ -572,14 +574,19 @@ fn run_audio_worker(
                                     r,
                                     &mut dsp,
                                 );
-                                let _ = prod.push(out_l);
-                                let _ = prod.push(out_r);
+                                batch_buf[batch_samples] = out_l;
+                                batch_buf[batch_samples + 1] = out_r;
+                                batch_samples += 2;
                                 generated_frames += 1;
                             }
                             None => {
                                 break;
                             }
                         }
+                    }
+
+                    if batch_samples > 0 {
+                        let _ = prod.push_partial_slice(&batch_buf[..batch_samples]);
                     }
 
                     if generated_frames > 0 {

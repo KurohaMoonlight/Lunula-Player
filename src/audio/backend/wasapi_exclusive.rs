@@ -192,8 +192,7 @@ impl WasapiExclusiveBackend {
                 let max_frames = client.get_buffer_size().unwrap_or(2048) as usize;
                 let mut raw_bytes: Vec<u8> = Vec::with_capacity(max_frames * bytes_per_frame);
                 let mut dither_state: u32 = 0x12345678;
-                let mut temp_l;
-                let mut temp_r;
+                let mut batch_f32 = [0.0f32; 1024];
 
                 while !stop_worker.load(Ordering::Relaxed) {
                     if let Ok(()) = h_event.wait_for_event(100) {
@@ -242,40 +241,75 @@ impl WasapiExclusiveBackend {
 
                             raw_bytes.clear();
 
+                            // High-Performance Batch Pop: drains hardware buffer in 512-frame chunks with 1 atomic operation per chunk
+                            let mut frames_remaining = frames_to_write;
                             if store_bits == 16 {
                                 let should_dither = preferred_bit_depth > 16 && !is_bp;
-                                for _ in 0..frames_to_write {
-                                    temp_l = consumer.pop().unwrap_or(0.0) * vol;
-                                    temp_r = consumer.pop().unwrap_or(0.0) * vol;
-                                    vis_worker.push_sample((temp_l + temp_r) * 0.5);
+                                while frames_remaining > 0 {
+                                    let chunk_frames = frames_remaining.min(512);
+                                    let chunk_samples = chunk_frames * 2;
+                                    let (popped, _) = consumer.pop_partial_slice(&mut batch_f32[..chunk_samples]);
+                                    let popped_len = popped.len();
+                                    if popped_len < chunk_samples {
+                                        batch_f32[popped_len..chunk_samples].fill(0.0);
+                                    }
 
-                                    let i_l = crate::audio::types::encode_sample_i16(temp_l, should_dither, &mut dither_state);
-                                    let i_r = crate::audio::types::encode_sample_i16(temp_r, should_dither, &mut dither_state);
-                                    raw_bytes.extend_from_slice(&i_l.to_le_bytes());
-                                    raw_bytes.extend_from_slice(&i_r.to_le_bytes());
+                                    for pair in batch_f32[..chunk_samples].chunks_exact(2) {
+                                        let l = pair[0] * vol;
+                                        let r = pair[1] * vol;
+                                        vis_worker.push_sample((l + r) * 0.5);
+
+                                        let i_l = crate::audio::types::encode_sample_i16(l, should_dither, &mut dither_state);
+                                        let i_r = crate::audio::types::encode_sample_i16(r, should_dither, &mut dither_state);
+                                        raw_bytes.extend_from_slice(&i_l.to_le_bytes());
+                                        raw_bytes.extend_from_slice(&i_r.to_le_bytes());
+                                    }
+                                    frames_remaining -= chunk_frames;
                                 }
                                 let _ = render_client.write_to_device(frames_to_write, &raw_bytes, None);
                             } else if store_bits == 32 && sample_type == SampleType::Int {
-                                for _ in 0..frames_to_write {
-                                    temp_l = consumer.pop().unwrap_or(0.0) * vol;
-                                    temp_r = consumer.pop().unwrap_or(0.0) * vol;
-                                    vis_worker.push_sample((temp_l + temp_r) * 0.5);
+                                while frames_remaining > 0 {
+                                    let chunk_frames = frames_remaining.min(512);
+                                    let chunk_samples = chunk_frames * 2;
+                                    let (popped, _) = consumer.pop_partial_slice(&mut batch_f32[..chunk_samples]);
+                                    let popped_len = popped.len();
+                                    if popped_len < chunk_samples {
+                                        batch_f32[popped_len..chunk_samples].fill(0.0);
+                                    }
 
-                                    let scaled_l = crate::audio::types::encode_sample_i32(temp_l, valid_bits as u8);
-                                    let scaled_r = crate::audio::types::encode_sample_i32(temp_r, valid_bits as u8);
-                                    raw_bytes.extend_from_slice(&scaled_l.to_le_bytes());
-                                    raw_bytes.extend_from_slice(&scaled_r.to_le_bytes());
+                                    for pair in batch_f32[..chunk_samples].chunks_exact(2) {
+                                        let l = pair[0] * vol;
+                                        let r = pair[1] * vol;
+                                        vis_worker.push_sample((l + r) * 0.5);
+
+                                        let scaled_l = crate::audio::types::encode_sample_i32(l, valid_bits as u8);
+                                        let scaled_r = crate::audio::types::encode_sample_i32(r, valid_bits as u8);
+                                        raw_bytes.extend_from_slice(&scaled_l.to_le_bytes());
+                                        raw_bytes.extend_from_slice(&scaled_r.to_le_bytes());
+                                    }
+                                    frames_remaining -= chunk_frames;
                                 }
                                 let _ = render_client.write_to_device(frames_to_write, &raw_bytes, None);
                             } else {
                                 // 32-bit Float
-                                for _ in 0..frames_to_write {
-                                    temp_l = consumer.pop().unwrap_or(0.0) * vol;
-                                    temp_r = consumer.pop().unwrap_or(0.0) * vol;
-                                    vis_worker.push_sample((temp_l + temp_r) * 0.5);
+                                while frames_remaining > 0 {
+                                    let chunk_frames = frames_remaining.min(512);
+                                    let chunk_samples = chunk_frames * 2;
+                                    let (popped, _) = consumer.pop_partial_slice(&mut batch_f32[..chunk_samples]);
+                                    let popped_len = popped.len();
+                                    if popped_len < chunk_samples {
+                                        batch_f32[popped_len..chunk_samples].fill(0.0);
+                                    }
 
-                                    raw_bytes.extend_from_slice(&temp_l.to_le_bytes());
-                                    raw_bytes.extend_from_slice(&temp_r.to_le_bytes());
+                                    for pair in batch_f32[..chunk_samples].chunks_exact(2) {
+                                        let l = pair[0] * vol;
+                                        let r = pair[1] * vol;
+                                        vis_worker.push_sample((l + r) * 0.5);
+
+                                        raw_bytes.extend_from_slice(&l.to_le_bytes());
+                                        raw_bytes.extend_from_slice(&r.to_le_bytes());
+                                    }
+                                    frames_remaining -= chunk_frames;
                                 }
                                 let _ = render_client.write_to_device(frames_to_write, &raw_bytes, None);
                             }

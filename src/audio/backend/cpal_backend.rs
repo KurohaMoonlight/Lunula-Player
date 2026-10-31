@@ -334,12 +334,19 @@ impl CpalBackend {
         }
 
         if channels == 2 {
-            for frame in data.chunks_exact_mut(2) {
-                let l = consumer.pop().unwrap_or(0.0) * vol;
-                let r = consumer.pop().unwrap_or(0.0) * vol;
-                frame[0] = l;
-                frame[1] = r;
-                visualizer.push_sample((l + r) * 0.5);
+            // High-Performance Batch Pop: drains hardware buffer in 1 atomic operation
+            let (popped, _) = consumer.pop_partial_slice(data);
+            let popped_len = popped.len();
+            if popped_len < data.len() {
+                data[popped_len..].fill(0.0);
+            }
+            if (vol - 1.0).abs() > 0.0001 {
+                for s in data.iter_mut() {
+                    *s *= vol;
+                }
+            }
+            for frame in data.chunks_exact(2) {
+                visualizer.push_sample((frame[0] + frame[1]) * 0.5);
             }
         } else if channels == 1 {
             for out in data.iter_mut() {
@@ -415,12 +422,20 @@ impl CpalBackend {
         };
 
         if channels == 2 {
-            for frame in data.chunks_exact_mut(2) {
-                let l = consumer.pop().unwrap_or(0.0) * vol;
-                let r = consumer.pop().unwrap_or(0.0) * vol;
-                frame[0] = to_i32(l);
-                frame[1] = to_i32(r);
-                visualizer.push_sample((l + r) * 0.5);
+            let mut temp_buf = [0.0f32; 512];
+            for frame_chunk in data.chunks_mut(512) {
+                let needed = frame_chunk.len();
+                let (popped, _) = consumer.pop_partial_slice(&mut temp_buf[..needed]);
+                let popped_len = popped.len();
+                if popped_len < needed {
+                    temp_buf[popped_len..needed].fill(0.0);
+                }
+                for (dst, &src) in frame_chunk.iter_mut().zip(&temp_buf[..needed]) {
+                    *dst = to_i32(src * vol);
+                }
+                for pair in temp_buf[..needed].chunks_exact(2) {
+                    visualizer.push_sample((pair[0] + pair[1]) * 0.5 * vol);
+                }
             }
         } else if channels == 1 {
             for out in data.iter_mut() {
@@ -501,12 +516,20 @@ impl CpalBackend {
         };
 
         if channels == 2 {
-            for frame in data.chunks_exact_mut(2) {
-                let l = consumer.pop().unwrap_or(0.0) * vol;
-                let r = consumer.pop().unwrap_or(0.0) * vol;
-                frame[0] = to_i16(l, dither_state);
-                frame[1] = to_i16(r, dither_state);
-                visualizer.push_sample((l + r) * 0.5);
+            let mut temp_buf = [0.0f32; 512];
+            for frame_chunk in data.chunks_mut(512) {
+                let needed = frame_chunk.len();
+                let (popped, _) = consumer.pop_partial_slice(&mut temp_buf[..needed]);
+                let popped_len = popped.len();
+                if popped_len < needed {
+                    temp_buf[popped_len..needed].fill(0.0);
+                }
+                for (dst, &src) in frame_chunk.iter_mut().zip(&temp_buf[..needed]) {
+                    *dst = to_i16(src * vol, dither_state);
+                }
+                for pair in temp_buf[..needed].chunks_exact(2) {
+                    visualizer.push_sample((pair[0] + pair[1]) * 0.5 * vol);
+                }
             }
         } else if channels == 1 {
             for out in data.iter_mut() {
