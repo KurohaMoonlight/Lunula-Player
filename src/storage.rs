@@ -30,6 +30,7 @@ impl LunulaApp {
             is_shuffled: self.is_shuffled,
             repeat_mode: self.repeat_mode,
             queue_cursor: self.queue_cursor,
+            selected_output_device: self.selected_output_device.clone(),
         };
         if let Ok(json) = serde_json::to_string_pretty(&saved_state) {
             let path = get_storage_path();

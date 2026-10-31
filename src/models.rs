@@ -156,6 +156,8 @@ pub struct SavedAppState {
     pub repeat_mode: RepeatMode,
     #[serde(default)]
     pub queue_cursor: Option<usize>,
+    #[serde(default)]
+    pub selected_output_device: Option<String>,
 }
 
 impl From<TrackData> for Track {

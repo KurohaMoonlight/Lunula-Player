@@ -94,6 +94,10 @@ impl AudioEngineController {
         let _ = self.cmd_tx.send(AudioCommand::SetChainMode(mode));
     }
 
+    pub fn set_output_device(&self, device_name: Option<String>) {
+        let _ = self.cmd_tx.send(AudioCommand::SetOutputDevice(device_name));
+    }
+
     pub fn set_force_resample_48k(&self, force: bool) {
         let mode = if force {
             ChainMode::OsResampled
@@ -142,10 +146,13 @@ fn desired_device_rate(chain_mode: ChainMode, track_rate: u32) -> u32 {
 fn create_signal_path_report(
     out: &AudioOutput,
     track_rate: u32,
+    source_bit_depth: u8,
     chain_mode: ChainMode,
 ) -> SignalPathReport {
     let device_rate = out.sample_rate();
     let device_name = out.device_name().to_string();
+    let format_desc = out.format_desc();
+    let is_exclusive = out.is_exclusive();
     let is_resampling = track_rate != device_rate;
 
     let actual_mode = match chain_mode {
@@ -167,8 +174,11 @@ fn create_signal_path_report(
         device_name,
         source_rate: track_rate,
         device_rate,
+        source_bit_depth,
+        format_desc,
         requested_mode: chain_mode,
         actual_mode,
+        is_exclusive,
         is_resampling,
         is_dsp_active,
         is_volume_applied,
@@ -192,6 +202,8 @@ fn run_audio_worker(
     let mut resampler = StereoResampler::new(44100, 44100);
     let mut chain_mode = ChainMode::BitPerfect;
     let mut state = PlaybackState::Stopped;
+    let mut selected_device: Option<String> = None;
+    let is_dsp_active = Arc::new(AtomicBool::new(false));
 
     let mut raw_chunk = [0.0f32; 2048];
     let mut raw_pos = 0;
@@ -217,6 +229,7 @@ fn run_audio_worker(
                         match AudioDecoder::open(&path) {
                             Ok(dec) => {
                                 let track_sample_rate = dec.sample_rate();
+                                let track_bit_depth = dec.bits_per_sample();
                                 let duration = dec.duration();
                                 let channels = dec.source_channels() as u16;
 
@@ -226,17 +239,26 @@ fn run_audio_worker(
                                 let desired_rate = desired_device_rate(chain_mode, track_sample_rate);
 
                                 let need_recreate = match &output {
-                                    Some(out) => out.sample_rate() != desired_rate,
+                                    Some(out) => {
+                                        out.sample_rate() != desired_rate
+                                            || (chain_mode == ChainMode::BitPerfect && !out.is_exclusive())
+                                            || (chain_mode != ChainMode::BitPerfect && out.is_exclusive())
+                                            || (selected_device.is_some() && Some(out.device_name()) != selected_device.as_deref())
+                                    }
                                     None => true,
                                 };
 
                                 if need_recreate {
                                     match AudioOutput::new(
+                                        selected_device.as_deref(),
                                         desired_rate,
+                                        track_bit_depth,
+                                        chain_mode,
                                         96000,
                                         Arc::clone(&shared_volume),
                                         Arc::clone(&shared_visualizer),
                                         Arc::clone(&shared_bit_perfect),
+                                        Arc::clone(&is_dsp_active),
                                     ) {
                                         Ok((out, prod)) => {
                                             output = Some(out);
@@ -249,21 +271,9 @@ fn run_audio_worker(
                                             )));
                                         }
                                     }
-                                } else {
-                                    // Flush ring buffer by creating a fresh stream at the same sample rate
-                                    if let Some(out) = &output {
-                                        let current_sr = out.sample_rate();
-                                        if let Ok((new_out, new_prod)) = AudioOutput::new(
-                                            current_sr,
-                                            96000,
-                                            Arc::clone(&shared_volume),
-                                            Arc::clone(&shared_visualizer),
-                                            Arc::clone(&shared_bit_perfect),
-                                        ) {
-                                            output = Some(new_out);
-                                            producer = Some(new_prod);
-                                        }
-                                    }
+                                } else if let Some(out) = &output {
+                                    // Flush ring buffer without stream recreation: zero clicks, keeps exclusive mode lock
+                                    out.flush();
                                 }
 
                                 if let Some(out) = &output {
@@ -275,8 +285,9 @@ fn run_audio_worker(
                                     dsp.set_eq_bypass(chain_mode != ChainMode::DspActive);
                                     dsp.reset_states();
 
-                                    let report = create_signal_path_report(out, track_sample_rate, chain_mode);
+                                    let report = create_signal_path_report(out, track_sample_rate, track_bit_depth, chain_mode);
                                     shared_bit_perfect.store(report.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
+                                    is_dsp_active.store(report.is_dsp_active, Ordering::Relaxed);
                                     let _ = event_tx.send(AudioEvent::SignalPath(report));
                                 }
 
@@ -343,18 +354,9 @@ fn run_audio_worker(
                                 raw_len = 0;
 
                                 if let Some(out) = &output {
+                                    out.flush();
                                     let sr = out.sample_rate();
                                     resampler.reset(dec.sample_rate(), sr);
-                                    if let Ok((new_out, new_prod)) = AudioOutput::new(
-                                        sr,
-                                        96000,
-                                        Arc::clone(&shared_volume),
-                                        Arc::clone(&shared_visualizer),
-                                        Arc::clone(&shared_bit_perfect),
-                                    ) {
-                                        output = Some(new_out);
-                                        producer = Some(new_prod);
-                                    }
                                 }
                             }
                         }
@@ -368,24 +370,81 @@ fn run_audio_worker(
                     AudioCommand::SetEqBypass(bypass) => {
                         dsp.set_eq_bypass(bypass);
                     }
+                    AudioCommand::SetOutputDevice(dev) => {
+                        selected_device = dev;
+                        if let (Some(dec), Some(_)) = (&decoder, &output) {
+                            let track_sample_rate = dec.sample_rate();
+                            let track_bit_depth = dec.bits_per_sample();
+                            let desired_rate = desired_device_rate(chain_mode, track_sample_rate);
+                            match AudioOutput::new(
+                                selected_device.as_deref(),
+                                desired_rate,
+                                track_bit_depth,
+                                chain_mode,
+                                96000,
+                                Arc::clone(&shared_volume),
+                                Arc::clone(&shared_visualizer),
+                                Arc::clone(&shared_bit_perfect),
+                                Arc::clone(&is_dsp_active),
+                            ) {
+                                Ok((new_out, new_prod)) => {
+                                    if state == PlaybackState::Playing {
+                                        new_out.resume();
+                                    }
+                                    let device_rate = new_out.sample_rate();
+                                    resampler.reset(track_sample_rate, device_rate);
+                                    dsp.set_sample_rate(device_rate as f32);
+                                    dsp.set_eq_bypass(chain_mode != ChainMode::DspActive);
+                                    dsp.reset_states();
+
+                                    let report = create_signal_path_report(&new_out, track_sample_rate, track_bit_depth, chain_mode);
+                                    shared_bit_perfect.store(report.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
+                                    is_dsp_active.store(report.is_dsp_active, Ordering::Relaxed);
+                                    let _ = event_tx.send(AudioEvent::SignalPath(report));
+
+                                    output = Some(new_out);
+                                    producer = Some(new_prod);
+                                }
+                                Err(err) => {
+                                    let _ = event_tx.send(AudioEvent::Error(format!(
+                                        "Gagal beralih ke perangkat output: {}",
+                                        err
+                                    )));
+                                }
+                            }
+                        }
+                    }
                     AudioCommand::SetChainMode(mode) => {
                         chain_mode = mode;
+                        let dsp_active = mode == ChainMode::DspActive;
+                        is_dsp_active.store(dsp_active, Ordering::Relaxed);
+
                         if let Some(dec) = &decoder {
                             let track_sample_rate = dec.sample_rate();
+                            let track_bit_depth = dec.bits_per_sample();
                             let desired_rate = desired_device_rate(chain_mode, track_sample_rate);
 
                             let need_recreate = match &output {
-                                Some(out) => out.sample_rate() != desired_rate,
+                                Some(out) => {
+                                    out.sample_rate() != desired_rate
+                                        || (chain_mode == ChainMode::BitPerfect && !out.is_exclusive())
+                                        || (chain_mode != ChainMode::BitPerfect && out.is_exclusive())
+                                        || (selected_device.is_some() && Some(out.device_name()) != selected_device.as_deref())
+                                }
                                 None => true,
                             };
 
                             if need_recreate {
                                 if let Ok((new_out, new_prod)) = AudioOutput::new(
+                                    selected_device.as_deref(),
                                     desired_rate,
+                                    track_bit_depth,
+                                    chain_mode,
                                     96000,
                                     Arc::clone(&shared_volume),
                                     Arc::clone(&shared_visualizer),
                                     Arc::clone(&shared_bit_perfect),
+                                    Arc::clone(&is_dsp_active),
                                 ) {
                                     if state == PlaybackState::Playing {
                                         new_out.resume();
@@ -393,6 +452,8 @@ fn run_audio_worker(
                                     output = Some(new_out);
                                     producer = Some(new_prod);
                                 }
+                            } else if let Some(out) = &output {
+                                out.flush();
                             }
 
                             if let Some(out) = &output {
@@ -402,8 +463,9 @@ fn run_audio_worker(
                                 dsp.set_eq_bypass(chain_mode != ChainMode::DspActive);
                                 dsp.reset_states();
 
-                                let report = create_signal_path_report(out, track_sample_rate, chain_mode);
+                                let report = create_signal_path_report(out, track_sample_rate, track_bit_depth, chain_mode);
                                 shared_bit_perfect.store(report.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
+                                is_dsp_active.store(report.is_dsp_active, Ordering::Relaxed);
                                 let _ = event_tx.send(AudioEvent::SignalPath(report));
                             }
                         } else {

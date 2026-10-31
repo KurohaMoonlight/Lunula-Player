@@ -760,13 +760,21 @@ impl LunulaApp {
                     )
                 } else {
                     match self.chain_mode {
-                        ChainMode::BitPerfect => (
-                            Color32::from_rgba_premultiplied(236, 253, 245, 230),
-                            Stroke::new(1.0, Color32::from_rgb(167, 243, 208)),
-                            "🟢",
-                            "JALUR AUDIO AKTIF (BIT-PERFECT) — Melompati DSP, sinyal mengalir murni bit-per-bit ke DAC",
-                            Color32::from_rgb(6, 95, 70),
-                        ),
+                        ChainMode::BitPerfect => {
+                            let is_ex = self.signal_path_report.as_ref().map_or(false, |r| r.is_exclusive);
+                            let sub_text = if is_ex {
+                                "JALUR AUDIO AKTIF (BIT-PERFECT) — WASAPI Exclusive Mode (Direct Bitstream), bypass DSP & OS mixer"
+                            } else {
+                                "JALUR AUDIO AKTIF (BIT-PERFECT) — Shared Mode Passthrough (1:1 Native Rate), bypass DSP & Volume"
+                            };
+                            (
+                                Color32::from_rgba_premultiplied(236, 253, 245, 230),
+                                Stroke::new(1.0, Color32::from_rgb(167, 243, 208)),
+                                "🟢",
+                                sub_text,
+                                Color32::from_rgb(6, 95, 70),
+                            )
+                        }
                         ChainMode::DspActive => (
                             Color32::from_rgba_premultiplied(238, 242, 255, 230),
                             Stroke::new(1.0, Color32::from_rgb(199, 210, 254)),
@@ -778,7 +786,7 @@ impl LunulaApp {
                             Color32::from_rgba_premultiplied(254, 243, 199, 230),
                             Stroke::new(1.0, Color32::from_rgb(253, 230, 138)),
                             "🟡",
-                            "JALUR AUDIO AKTIF (OS RESAMPLED) — Resampling ke 48.0 kHz via Windows Audio Mixer Shared",
+                            "JALUR AUDIO AKTIF (OS RESAMPLED) — Resampling ke 48.0 kHz via App Linear SRC Shared Mode",
                             Color32::from_rgb(146, 64, 14),
                         ),
                     }

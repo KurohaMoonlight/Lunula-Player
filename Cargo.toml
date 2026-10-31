@@ -15,3 +15,7 @@ symphonia = { version = "0.5", features = ["all"] }
 rtrb = "0.3"
 crossbeam-channel = "0.5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rubato = "5.0.1"
+
+[target.'cfg(windows)'.dependencies]
+wasapi = "0.26"

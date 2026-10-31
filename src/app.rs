@@ -79,6 +79,8 @@ pub struct LunulaApp {
     pub current_cover_bytes: Option<Vec<u8>>,
     pub current_cover_texture: Option<eframe::egui::TextureHandle>,
     pub album_cover_cache: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Option<eframe::egui::TextureHandle>>>>,
+    pub selected_output_device: Option<String>,
+    pub available_output_devices: Vec<crate::audio::backend::OutputDeviceInfo>,
 }
 
 pub fn random_index(len: usize) -> usize {
@@ -133,8 +135,8 @@ impl LunulaApp {
             ModularNode {
                 id: 4,
                 node_type: NodeType::Driver,
-                title: "WASAPI ENGINE".to_string(),
-                sub1: "Exclusive Mode".to_string(),
+                title: "OUTPUT ENGINE".to_string(),
+                sub1: "System Audio Endpoint".to_string(),
                 sub2: "Direct Bitstream".to_string(),
                 pos: Pos2::new(488.0, 48.0),
                 is_removable: false,
@@ -142,9 +144,9 @@ impl LunulaApp {
             ModularNode {
                 id: 5,
                 node_type: NodeType::Endpoint,
-                title: "HARDWARE DAC".to_string(),
-                sub1: "USB Audio 2.0".to_string(),
-                sub2: "Direct Native Rate".to_string(),
+                title: "OUTPUT DAC".to_string(),
+                sub1: "Audio Endpoint".to_string(),
+                sub2: "Native Sample Rate".to_string(),
                 pos: Pos2::new(644.0, 48.0),
                 is_removable: false,
             },
@@ -246,6 +248,8 @@ impl LunulaApp {
             current_cover_bytes: None,
             current_cover_texture: None,
             album_cover_cache: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            selected_output_device: None,
+            available_output_devices: crate::audio::backend::enumerate_output_devices(),
         };
 
         if let Some(state) = Self::load_library_state() {
@@ -273,6 +277,7 @@ impl LunulaApp {
             app.is_shuffled = state.is_shuffled;
             app.repeat_mode = state.repeat_mode;
             app.queue_cursor = state.queue_cursor;
+            app.selected_output_device = state.selected_output_device;
             app.set_chain_mode(state.chain_mode);
         } else {
             app.eq_bands[0] = 3.0;
@@ -287,6 +292,9 @@ impl LunulaApp {
         }
 
         if let Some(ref engine) = app.audio_engine {
+            if let Some(ref dev) = app.selected_output_device {
+                engine.set_output_device(Some(dev.clone()));
+            }
             engine.set_volume(if app.is_muted { 0.0 } else { app.volume });
             engine.set_eq_bypass(app.eq_bypass);
             for (idx, &gain) in app.eq_bands.iter().enumerate() {
@@ -628,33 +636,70 @@ impl LunulaApp {
         }
     }
 
+    pub fn update_signal_nodes_from_report(&mut self, report: &crate::audio::SignalPathReport) {
+        for node in &mut self.nodes {
+            match node.id {
+                1 => {
+                    node.title = "FILE SOURCE".to_string();
+                    let bit_depth_str = if report.source_bit_depth > 0 {
+                        format!("{}-bit", report.source_bit_depth)
+                    } else {
+                        "Audio".to_string()
+                    };
+                    node.sub1 = format!("{} {}", self.current_track.format, bit_depth_str);
+                    node.sub2 = format!("{:.1} kHz", report.source_rate as f32 / 1000.0);
+                }
+                2 => {
+                    node.title = "RAM BUFFER".to_string();
+                    node.sub1 = "RingBuffer".to_string();
+                    node.sub2 = "100% Loaded".to_string();
+                }
+                3 => {
+                    node.title = "DSP ENGINE".to_string();
+                    if report.is_dsp_active {
+                        node.sub1 = "Active (32-bit Float)".to_string();
+                        node.sub2 = "10-Band EQ & FX Active".to_string();
+                    } else {
+                        node.sub1 = "BYPASSED (Direct Wire)".to_string();
+                        node.sub2 = "0.0 dB Pure Master".to_string();
+                    }
+                }
+                4 => {
+                    if report.is_exclusive {
+                        node.title = "WASAPI EXCLUSIVE".to_string();
+                        node.sub1 = report.device_name.clone();
+                        node.sub2 = format!("Direct Bitstream • {:.1} kHz", report.device_rate as f32 / 1000.0);
+                    } else if report.is_resampling {
+                        node.title = "APP RESAMPLER".to_string();
+                        node.sub1 = report.device_name.clone();
+                        node.sub2 = format!("Linear SRC • {:.1} kHz", report.device_rate as f32 / 1000.0);
+                    } else {
+                        node.title = "SHARED STREAM".to_string();
+                        node.sub1 = report.device_name.clone();
+                        node.sub2 = format!("1:1 Native Rate • {:.1} kHz", report.device_rate as f32 / 1000.0);
+                    }
+                }
+                5 => {
+                    node.title = "OUTPUT DAC".to_string();
+                    node.sub1 = report.device_name.clone();
+                    node.sub2 = format!("{} • {:.1} kHz", report.format_desc, report.device_rate as f32 / 1000.0);
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub fn set_chain_mode(&mut self, mode: ChainMode) {
         self.chain_mode = mode;
 
         match mode {
             ChainMode::BitPerfect => {
-                // Option B: Cable jumps directly from 2 (RAM Buffer) to 4 (WASAPI Engine), bypassing 3 (DSP Engine)
+                // Option B: Cable jumps directly from 2 (RAM Buffer) to 4 (Output Engine), bypassing 3 (DSP Engine)
                 self.connections = vec![
                     CableConnection { from_node: 1, to_node: 2 },
                     CableConnection { from_node: 2, to_node: 4 },
                     CableConnection { from_node: 4, to_node: 5 },
                 ];
-                // Update Node 3 (DSP Engine) to Bypassed direct jumper wire
-                for n in &mut self.nodes {
-                    if n.id == 3 {
-                        n.title = "DSP ENGINE".to_string();
-                        n.sub1 = "BYPASSED (Direct Wire)".to_string();
-                        n.sub2 = "0.0 dB Pure Master".to_string();
-                    } else if n.id == 4 {
-                        n.title = "WASAPI ENGINE".to_string();
-                        n.sub1 = "Exclusive Mode".to_string();
-                        n.sub2 = "Direct Bitstream".to_string();
-                    } else if n.id == 5 {
-                        n.title = "HARDWARE DAC".to_string();
-                        n.sub1 = "USB Audio 2.0".to_string();
-                        n.sub2 = "Direct Native Rate".to_string();
-                    }
-                }
                 self.eq_bypass = true;
             }
             ChainMode::DspActive => {
@@ -665,48 +710,75 @@ impl LunulaApp {
                     CableConnection { from_node: 3, to_node: 4 },
                     CableConnection { from_node: 4, to_node: 5 },
                 ];
-                // Update Node 3 (DSP Engine) to Active state
-                for n in &mut self.nodes {
-                    if n.id == 3 {
-                        n.title = "DSP ENGINE".to_string();
-                        n.sub1 = "Active (32-bit Float)".to_string();
-                        n.sub2 = "10-Band EQ & FX Active".to_string();
-                    } else if n.id == 4 {
-                        n.title = "WASAPI ENGINE".to_string();
-                        n.sub1 = "Exclusive Mode".to_string();
-                        n.sub2 = "High-Precision 32-bit".to_string();
-                    } else if n.id == 5 {
-                        n.title = "HARDWARE DAC".to_string();
-                        n.sub1 = "USB Audio 2.0".to_string();
-                        n.sub2 = "Enhanced Master".to_string();
-                    }
-                }
                 self.eq_bypass = false;
             }
             ChainMode::OsResampled => {
-                // Cable goes through Windows Audio Mixer (Shared Mode)
                 self.connections = vec![
                     CableConnection { from_node: 1, to_node: 2 },
                     CableConnection { from_node: 2, to_node: 4 },
                     CableConnection { from_node: 4, to_node: 5 },
                 ];
-                // Update Node 4 to Windows Audio Mixer
-                for n in &mut self.nodes {
-                    if n.id == 3 {
-                        n.title = "DSP ENGINE".to_string();
-                        n.sub1 = "BYPASSED".to_string();
-                        n.sub2 = "Bypass Mode".to_string();
-                    } else if n.id == 4 {
-                        n.title = "WINDOWS AUDIO MIXER".to_string();
-                        n.sub1 = "Shared Mode (WASAPI)".to_string();
-                        n.sub2 = "SRC Resampled to 48.0 kHz".to_string();
-                    } else if n.id == 5 {
-                        n.title = "HARDWARE DAC".to_string();
-                        n.sub1 = "Default Windows Endpoint".to_string();
-                        n.sub2 = "Fixed 48.0 kHz 24-bit".to_string();
+                self.eq_bypass = true;
+            }
+        }
+
+        if let Some(ref report) = self.signal_path_report {
+            let mut updated = report.clone();
+            updated.requested_mode = mode;
+            updated.actual_mode = match mode {
+                ChainMode::BitPerfect => {
+                    if updated.source_rate == updated.device_rate {
+                        ChainMode::BitPerfect
+                    } else {
+                        ChainMode::OsResampled
                     }
                 }
-                self.eq_bypass = true;
+                other => other,
+            };
+            updated.is_dsp_active = updated.actual_mode == ChainMode::DspActive;
+            self.update_signal_nodes_from_report(&updated);
+        } else {
+            let dev_name = self.selected_output_device.clone().unwrap_or_else(|| "Default Audio Endpoint".to_string());
+            for n in &mut self.nodes {
+                match n.id {
+                    3 => {
+                        if mode == ChainMode::DspActive {
+                            n.sub1 = "Active (32-bit Float)".to_string();
+                            n.sub2 = "10-Band EQ & FX Active".to_string();
+                        } else {
+                            n.sub1 = "BYPASSED (Direct Wire)".to_string();
+                            n.sub2 = "0.0 dB Pure Master".to_string();
+                        }
+                    }
+                    4 => {
+                        match mode {
+                            ChainMode::BitPerfect => {
+                                n.title = "AUDIO ENGINE".to_string();
+                                n.sub1 = dev_name.clone();
+                                n.sub2 = "Bit-Perfect Requested".to_string();
+                            }
+                            ChainMode::DspActive => {
+                                n.title = "AUDIO ENGINE".to_string();
+                                n.sub1 = dev_name.clone();
+                                n.sub2 = "DSP Stream Active".to_string();
+                            }
+                            ChainMode::OsResampled => {
+                                n.title = "APP RESAMPLER".to_string();
+                                n.sub1 = dev_name.clone();
+                                n.sub2 = "Resample to 48.0 kHz".to_string();
+                            }
+                        }
+                    }
+                    5 => {
+                        n.title = "OUTPUT DAC".to_string();
+                        n.sub1 = dev_name.clone();
+                        n.sub2 = match mode {
+                            ChainMode::OsResampled => "Fixed 48.0 kHz".to_string(),
+                            _ => "Native Sample Rate".to_string(),
+                        };
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -875,6 +947,7 @@ impl eframe::App for LunulaApp {
         // Synchronize with real Audio Engine
         let mut track_ended = false;
         let mut new_duration = None;
+        let mut new_signal_path = None;
 
         if let Some(ref engine) = self.audio_engine {
             while let Some(event) = engine.try_recv_event() {
@@ -888,38 +961,16 @@ impl eframe::App for LunulaApp {
                         }
                     }
                     crate::audio::AudioEvent::SignalPath(report) => {
-                        for node in &mut self.nodes {
-                            if node.id == 1 {
-                                node.sub2 = format!("{:.1} kHz", report.source_rate as f32 / 1000.0);
-                            } else if node.id == 4 {
-                                match report.actual_mode {
-                                    ChainMode::OsResampled => {
-                                        node.title = "WINDOWS AUDIO MIXER".to_string();
-                                        node.sub1 = "Shared Mode (WASAPI)".to_string();
-                                        node.sub2 = format!("SRC Resampled to {:.1} kHz", report.device_rate as f32 / 1000.0);
-                                    }
-                                    ChainMode::DspActive => {
-                                        node.title = "WASAPI ENGINE".to_string();
-                                        node.sub1 = report.device_name.clone();
-                                        node.sub2 = format!("Exclusive Mode • {:.1} kHz", report.device_rate as f32 / 1000.0);
-                                    }
-                                    ChainMode::BitPerfect => {
-                                        node.title = "WASAPI ENGINE".to_string();
-                                        node.sub1 = report.device_name.clone();
-                                        node.sub2 = format!("Direct Bitstream • {:.1} kHz", report.device_rate as f32 / 1000.0);
-                                    }
-                                }
-                            } else if node.id == 5 {
-                                node.title = "HARDWARE DAC".to_string();
-                                node.sub1 = "Output Endpoint".to_string();
-                                node.sub2 = format!("Native {:.1} kHz", report.device_rate as f32 / 1000.0);
-                            }
-                        }
-                        self.signal_path_report = Some(report);
+                        new_signal_path = Some(report);
                     }
                     _ => {}
                 }
             }
+        }
+
+        if let Some(report) = new_signal_path {
+            self.update_signal_nodes_from_report(&report);
+            self.signal_path_report = Some(report);
         }
 
         if let Some(d) = new_duration {
@@ -1254,6 +1305,46 @@ impl eframe::App for LunulaApp {
                                                 {
                                                     self.reset_patchbay_layout(ui.available_width(), ui.available_height());
                                                 }
+
+                                                let current_dev_label = self.selected_output_device.as_deref().unwrap_or("Default System Output");
+                                                let truncated_label = if current_dev_label.len() > 22 {
+                                                    format!("🔊 {}...", &current_dev_label[..19])
+                                                } else {
+                                                    format!("🔊 {}", current_dev_label)
+                                                };
+
+                                                egui::ComboBox::from_id_salt("patchbay_output_device_combo")
+                                                    .selected_text(egui::RichText::new(truncated_label).size(11.0).strong())
+                                                    .width(170.0)
+                                                    .show_ui(ui, |ui| {
+                                                        if ui.button("🔄 Pindai Ulang Device (Scan)").clicked() {
+                                                            self.available_output_devices = crate::audio::backend::enumerate_output_devices();
+                                                        }
+                                                        ui.separator();
+                                                        let is_default = self.selected_output_device.is_none();
+                                                        if ui.selectable_label(is_default, "🔊 Default System Output").clicked() {
+                                                            self.selected_output_device = None;
+                                                            if let Some(ref engine) = self.audio_engine {
+                                                                engine.set_output_device(None);
+                                                            }
+                                                            self.save_library_state();
+                                                        }
+                                                        for dev in &self.available_output_devices {
+                                                            let is_sel = self.selected_output_device.as_ref() == Some(&dev.name);
+                                                            let label = if dev.is_default {
+                                                                format!("🔊 {} [Default]", dev.name)
+                                                            } else {
+                                                                format!("🎧 {}", dev.name)
+                                                            };
+                                                            if ui.selectable_label(is_sel, label).clicked() {
+                                                                self.selected_output_device = Some(dev.name.clone());
+                                                                if let Some(ref engine) = self.audio_engine {
+                                                                    engine.set_output_device(Some(dev.name.clone()));
+                                                                }
+                                                                self.save_library_state();
+                                                            }
+                                                        }
+                                                    });
 
                                                 if ui.selectable_label(self.chain_mode == ChainMode::OsResampled, egui::RichText::new("OS Resampled").size(11.0).strong()).clicked() {
                                                     self.set_chain_mode(ChainMode::OsResampled);

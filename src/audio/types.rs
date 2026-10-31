@@ -39,17 +39,22 @@ pub enum AudioCommand {
     /// Atomically switch the entire signal chain mode.
     /// Replaces separate SetForceResample48k + SetEqBypass calls.
     SetChainMode(ChainMode),
+    /// Select specific audio hardware output device by friendly name (None = default OS endpoint)
+    SetOutputDevice(Option<String>),
 }
 
 /// Report of the actual signal path configuration determined by the engine.
 /// Sent after every Play and SetChainMode to let the UI display truthful info.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignalPathReport {
     pub device_name: String,
     pub source_rate: u32,
     pub device_rate: u32,
+    pub source_bit_depth: u8,
+    pub format_desc: String,
     pub requested_mode: ChainMode,
     pub actual_mode: ChainMode,
+    pub is_exclusive: bool,
     pub is_resampling: bool,
     pub is_dsp_active: bool,
     pub is_volume_applied: bool,
