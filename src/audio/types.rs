@@ -85,6 +85,7 @@ pub enum AudioCommand {
     Stop,
     Seek(f32),
     SetVolume(f32),
+    SetMute(bool),
     SetEqBand { index: usize, gain_db: f32 },
     SetEqBypass(bool),
     /// Atomically switch the entire signal chain mode.
@@ -93,6 +94,25 @@ pub enum AudioCommand {
     SetOutputDevice(Option<String>),
     /// Dynamic modular signal chain graph compiled from patchbay canvas
     SetSignalChainGraph(SignalChainGraph),
+}
+
+/// Pure function to calculate effective volume multiplier.
+/// - If muted: strictly 0.0 (silence on both Bit-Perfect and DSP modes).
+/// - If Bit-Perfect (and not muted): strictly 1.0 (software volume slider bypassed).
+/// - If DSP Active / OS Resampled (and not muted): software volume multiplier.
+#[inline(always)]
+pub fn calculate_effective_volume(
+    is_bit_perfect: bool,
+    is_muted: bool,
+    software_volume: f32,
+) -> f32 {
+    if is_muted {
+        0.0
+    } else if is_bit_perfect {
+        1.0
+    } else {
+        software_volume
+    }
 }
 
 /// Report of the actual signal path configuration determined by the engine.

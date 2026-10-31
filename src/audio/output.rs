@@ -24,6 +24,7 @@ impl AudioOutput {
         shared_volume: Arc<AtomicU32>,
         visualizer: Arc<VisualizerRingBuffer>,
         bit_perfect: Arc<AtomicBool>,
+        shared_muted: Arc<AtomicBool>,
         is_dsp_active: Arc<AtomicBool>,
     ) -> Result<(Self, Producer<f32>), Box<dyn std::error::Error + Send + Sync>> {
         #[cfg(target_os = "windows")]
@@ -36,6 +37,7 @@ impl AudioOutput {
                 Arc::clone(&shared_volume),
                 Arc::clone(&visualizer),
                 Arc::clone(&bit_perfect),
+                Arc::clone(&shared_muted),
             ) {
                 return Ok((
                     Self {
@@ -54,6 +56,7 @@ impl AudioOutput {
             shared_volume,
             visualizer,
             bit_perfect,
+            shared_muted,
             preferred_bit_depth,
             is_dsp_active,
         )?;
@@ -103,8 +106,10 @@ impl AudioOutput {
     }
 
     // Zero-stream atomic ring buffer flush on Seek & track transition
+    // Brief sleep yields to audio callback thread to drain residual buffer before new audio starts
     pub fn flush(&self) {
         self.backend.flush();
+        std::thread::sleep(std::time::Duration::from_millis(4));
     }
 }
 

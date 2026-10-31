@@ -88,6 +88,7 @@ impl WasapiExclusiveBackend {
         shared_volume: Arc<AtomicU32>,
         visualizer: Arc<VisualizerRingBuffer>,
         bit_perfect: Arc<AtomicBool>,
+        shared_muted: Arc<AtomicBool>,
     ) -> Result<(Self, Producer<f32>), Box<dyn std::error::Error + Send + Sync>> {
         let _ = initialize_mta();
 
@@ -155,6 +156,7 @@ impl WasapiExclusiveBackend {
         let flush_worker = Arc::clone(&flush_requested);
         let stop_worker = Arc::clone(&stop_signal);
         let bp_worker = Arc::clone(&bit_perfect);
+        let muted_worker = Arc::clone(&shared_muted);
         let vol_worker = Arc::clone(&shared_volume);
         let vis_worker = Arc::clone(&visualizer);
 
@@ -173,6 +175,9 @@ impl WasapiExclusiveBackend {
                 let client = client_wrap.into_inner();
                 let h_event = h_event_wrap.into_inner();
                 let render_client = render_client_wrap.into_inner();
+                let bytes_per_frame = if store_bits == 16 { 4 } else { 8 };
+                let max_frames = client.get_buffer_size().unwrap_or(2048) as usize;
+                let mut raw_bytes: Vec<u8> = Vec::with_capacity(max_frames * bytes_per_frame);
                 let mut temp_l;
                 let mut temp_r;
 
@@ -182,75 +187,91 @@ impl WasapiExclusiveBackend {
                             break;
                         }
 
-                        if flush_worker.swap(false, Ordering::SeqCst) {
-                            while consumer.pop().is_ok() {}
-                        }
-
-                        if is_paused_worker.load(Ordering::Relaxed) {
-                            continue;
-                        }
-
                         let padding = client.get_current_padding().unwrap_or(0);
                         let buffer_frame_count = client.get_buffer_size().unwrap_or(0);
                         let available_frames = buffer_frame_count.saturating_sub(padding);
 
-                    if available_frames > 0 {
-                        let frames_to_write = available_frames.min(512);
-                        let is_bp = bp_worker.load(Ordering::Relaxed);
-                        let vol = if is_bp {
-                            1.0
-                        } else {
-                            f32::from_bits(vol_worker.load(Ordering::Relaxed))
-                        };
-
-                        if store_bits == 16 {
-                            let mut raw_bytes = Vec::with_capacity(frames_to_write as usize * 4);
-                            for _ in 0..frames_to_write {
-                                temp_l = consumer.pop().unwrap_or(0.0) * vol;
-                                temp_r = consumer.pop().unwrap_or(0.0) * vol;
-                                vis_worker.push_sample((temp_l + temp_r) * 0.5);
-
-                                let i_l = (temp_l as f64 * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
-                                let i_r = (temp_r as f64 * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
-                                raw_bytes.extend_from_slice(&i_l.to_le_bytes());
-                                raw_bytes.extend_from_slice(&i_r.to_le_bytes());
+                        if flush_worker.swap(false, Ordering::SeqCst) {
+                            while consumer.pop().is_ok() {}
+                            if available_frames > 0 {
+                                raw_bytes.clear();
+                                raw_bytes.resize(available_frames as usize * bytes_per_frame, 0);
+                                let _ = render_client.write_to_device(available_frames as usize, &raw_bytes, None);
                             }
-                            let _ = render_client.write_to_device(frames_to_write as usize, &raw_bytes, None);
-                        } else if store_bits == 32 && sample_type == SampleType::Int {
-                            let mut raw_bytes = Vec::with_capacity(frames_to_write as usize * 8);
-                            for _ in 0..frames_to_write {
-                                temp_l = consumer.pop().unwrap_or(0.0) * vol;
-                                temp_r = consumer.pop().unwrap_or(0.0) * vol;
-                                vis_worker.push_sample((temp_l + temp_r) * 0.5);
-
-                                let (scaled_l, scaled_r) = if valid_bits == 24 {
-                                    let l = ((temp_l as f64 * 8388608.0).round().clamp(-8388608.0, 8388607.0) as i32) << 8;
-                                    let r = ((temp_r as f64 * 8388608.0).round().clamp(-8388608.0, 8388607.0) as i32) << 8;
-                                    (l, r)
-                                } else {
-                                    let l = (temp_l as f64 * 2147483648.0).round().clamp(-2147483648.0, 2147483647.0) as i32;
-                                    let r = (temp_r as f64 * 2147483648.0).round().clamp(-2147483648.0, 2147483647.0) as i32;
-                                    (l, r)
-                                };
-                                raw_bytes.extend_from_slice(&scaled_l.to_le_bytes());
-                                raw_bytes.extend_from_slice(&scaled_r.to_le_bytes());
-                            }
-                            let _ = render_client.write_to_device(frames_to_write as usize, &raw_bytes, None);
-                        } else {
-                            // 32-bit Float
-                            let mut raw_bytes = Vec::with_capacity(frames_to_write as usize * 8);
-                            for _ in 0..frames_to_write {
-                                temp_l = consumer.pop().unwrap_or(0.0) * vol;
-                                temp_r = consumer.pop().unwrap_or(0.0) * vol;
-                                vis_worker.push_sample((temp_l + temp_r) * 0.5);
-
-                                raw_bytes.extend_from_slice(&temp_l.to_le_bytes());
-                                raw_bytes.extend_from_slice(&temp_r.to_le_bytes());
-                            }
-                            let _ = render_client.write_to_device(frames_to_write as usize, &raw_bytes, None);
+                            continue;
                         }
+
+                        if is_paused_worker.load(Ordering::Relaxed) {
+                            // On pause in WASAPI exclusive mode, write silence to prevent circular hardware buffer looping
+                            if available_frames > 0 {
+                                raw_bytes.clear();
+                                raw_bytes.resize(available_frames as usize * bytes_per_frame, 0);
+                                let _ = render_client.write_to_device(available_frames as usize, &raw_bytes, None);
+                            }
+                            continue;
+                        }
+
+                        if available_frames > 0 {
+                            let frames_to_write = available_frames as usize;
+                            let is_bp = bp_worker.load(Ordering::Relaxed);
+                            let is_muted = muted_worker.load(Ordering::Relaxed);
+                            let vol_raw = f32::from_bits(vol_worker.load(Ordering::Relaxed));
+                            let vol = crate::audio::types::calculate_effective_volume(is_bp, is_muted, vol_raw);
+
+                            if vol <= 0.0001 {
+                                raw_bytes.clear();
+                                raw_bytes.resize(frames_to_write * bytes_per_frame, 0);
+                                let _ = render_client.write_to_device(frames_to_write, &raw_bytes, None);
+                                continue;
+                            }
+
+                            raw_bytes.clear();
+
+                            if store_bits == 16 {
+                                for _ in 0..frames_to_write {
+                                    temp_l = consumer.pop().unwrap_or(0.0) * vol;
+                                    temp_r = consumer.pop().unwrap_or(0.0) * vol;
+                                    vis_worker.push_sample((temp_l + temp_r) * 0.5);
+
+                                    let i_l = (temp_l as f64 * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
+                                    let i_r = (temp_r as f64 * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
+                                    raw_bytes.extend_from_slice(&i_l.to_le_bytes());
+                                    raw_bytes.extend_from_slice(&i_r.to_le_bytes());
+                                }
+                                let _ = render_client.write_to_device(frames_to_write, &raw_bytes, None);
+                            } else if store_bits == 32 && sample_type == SampleType::Int {
+                                for _ in 0..frames_to_write {
+                                    temp_l = consumer.pop().unwrap_or(0.0) * vol;
+                                    temp_r = consumer.pop().unwrap_or(0.0) * vol;
+                                    vis_worker.push_sample((temp_l + temp_r) * 0.5);
+
+                                    let (scaled_l, scaled_r) = if valid_bits == 24 {
+                                        let l = ((temp_l as f64 * 8388608.0).round().clamp(-8388608.0, 8388607.0) as i32) << 8;
+                                        let r = ((temp_r as f64 * 8388608.0).round().clamp(-8388608.0, 8388607.0) as i32) << 8;
+                                        (l, r)
+                                    } else {
+                                        let l = (temp_l as f64 * 2147483648.0).round().clamp(-2147483648.0, 2147483647.0) as i32;
+                                        let r = (temp_r as f64 * 2147483648.0).round().clamp(-2147483648.0, 2147483647.0) as i32;
+                                        (l, r)
+                                    };
+                                    raw_bytes.extend_from_slice(&scaled_l.to_le_bytes());
+                                    raw_bytes.extend_from_slice(&scaled_r.to_le_bytes());
+                                }
+                                let _ = render_client.write_to_device(frames_to_write, &raw_bytes, None);
+                            } else {
+                                // 32-bit Float
+                                for _ in 0..frames_to_write {
+                                    temp_l = consumer.pop().unwrap_or(0.0) * vol;
+                                    temp_r = consumer.pop().unwrap_or(0.0) * vol;
+                                    vis_worker.push_sample((temp_l + temp_r) * 0.5);
+
+                                    raw_bytes.extend_from_slice(&temp_l.to_le_bytes());
+                                    raw_bytes.extend_from_slice(&temp_r.to_le_bytes());
+                                }
+                                let _ = render_client.write_to_device(frames_to_write, &raw_bytes, None);
+                            }
                         } else {
-                            thread::sleep(Duration::from_millis(2));
+                            thread::sleep(Duration::from_millis(1));
                         }
                     } else {
                         thread::sleep(Duration::from_millis(2));

@@ -551,8 +551,9 @@ impl LunulaApp {
                                 });
                                 ui.add_space(6.0);
 
-                                egui::ScrollArea::vertical().show(ui, |ui| {
-                                    for (idx, song) in fav_tracks.iter().enumerate() {
+                                egui::ScrollArea::vertical().show_rows(ui, 48.0, fav_tracks.len(), |ui, row_range| {
+                                    for idx in row_range {
+                                        let song = fav_tracks[idx];
                                         let fav_row_id = ui.scope_id().with(("fav_row", idx));
                                         let row_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), 44.0));
                                         let is_hovered = ui.input(|i| i.pointer.hover_pos().map_or(false, |p| row_rect.contains(p)));
@@ -933,96 +934,104 @@ impl LunulaApp {
                                 });
                             ui.add_space(3.0);
 
-                            // Track Rows Virtual Scroll
-                            egui::ScrollArea::vertical().show(ui, |ui| {
-                                let query = self.search_query.trim().to_lowercase();
-                                let mut rendered_count = 0;
+                            // Filter Tracks
+                            let query = self.search_query.trim().to_lowercase();
+                            let matching_tracks: Vec<(usize, &Track)> = self.playlist.iter().enumerate().filter(|(_idx, song)| {
+                                // Search Filter
+                                if !query.is_empty() {
+                                    let match_title = song.title.to_lowercase().contains(&query);
+                                    let match_artist = song.artist.to_lowercase().contains(&query);
+                                    let match_album = song.album.to_lowercase().contains(&query);
+                                    let match_format = song.format.to_lowercase().contains(&query);
+                                    if !match_title && !match_artist && !match_album && !match_format {
+                                        return false;
+                                    }
+                                }
 
-                                for (idx, song) in self.playlist.iter().enumerate() {
-                                    // Search Filter
-                                    if !query.is_empty() {
-                                        let match_title = song.title.to_lowercase().contains(&query);
-                                        let match_artist = song.artist.to_lowercase().contains(&query);
-                                        let match_album = song.album.to_lowercase().contains(&query);
-                                        let match_format = song.format.to_lowercase().contains(&query);
-                                        if !match_title && !match_artist && !match_album && !match_format {
-                                            continue;
-                                        }
+                                // Category Filter
+                                if let Some(ref alb) = self.selected_album_filter {
+                                    if &song.album != alb {
+                                        return false;
                                     }
-
-                                    // Category Filter
-                                    if let Some(ref alb) = self.selected_album_filter {
-                                        if &song.album != alb {
-                                            continue;
-                                        }
+                                }
+                                if let Some(ref art) = self.selected_artist_filter {
+                                    if &song.artist != art {
+                                        return false;
                                     }
-                                    if let Some(ref art) = self.selected_artist_filter {
-                                        if &song.artist != art {
-                                            continue;
-                                        }
-                                    }
-                                    if let Some(ref q) = self.selected_quality_filter {
-                                        match q.as_str() {
-                                            "hires" => {
-                                                if song.sample_rate < 88200 && song.bit_depth < 24 {
-                                                    continue;
-                                                }
-                                            }
-                                            "lossless" => {
-                                                let fmt = song.format.to_uppercase();
-                                                if (fmt != "FLAC" && fmt != "ALAC") || song.bit_depth != 16 {
-                                                    continue;
-                                                }
-                                            }
-                                            "pcm" => {
-                                                let fmt = song.format.to_uppercase();
-                                                if fmt != "WAV" && fmt != "AIFF" && fmt != "DSD" {
-                                                    continue;
-                                                }
-                                            }
-                                            "compressed" => {
-                                                let fmt = song.format.to_uppercase();
-                                                if fmt == "FLAC" || fmt == "WAV" || fmt == "AIFF" || fmt == "ALAC" || fmt == "DSD" {
-                                                    continue;
-                                                }
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                    if let Some(ref pl_name) = self.selected_playlist_filter {
-                                        let pl = self.custom_playlists.iter().find(|p| &p.name == pl_name);
-                                        let track_id = song.file_path.clone().unwrap_or_else(|| format!("{} - {}", song.artist, song.title));
-                                        if let Some(p) = pl {
-                                            if !p.track_paths.contains(&track_id) {
-                                                continue;
+                                }
+                                if let Some(ref q) = self.selected_quality_filter {
+                                    match q.as_str() {
+                                        "hires" => {
+                                            if song.sample_rate < 88200 && song.bit_depth < 24 {
+                                                return false;
                                             }
                                         }
+                                        "lossless" => {
+                                            let fmt = song.format.to_uppercase();
+                                            if (fmt != "FLAC" && fmt != "ALAC") || song.bit_depth != 16 {
+                                                return false;
+                                            }
+                                        }
+                                        "pcm" => {
+                                            let fmt = song.format.to_uppercase();
+                                            if fmt != "WAV" && fmt != "AIFF" && fmt != "DSD" {
+                                                return false;
+                                            }
+                                        }
+                                        "compressed" => {
+                                            let fmt = song.format.to_uppercase();
+                                            if fmt == "FLAC" || fmt == "WAV" || fmt == "AIFF" || fmt == "ALAC" || fmt == "DSD" {
+                                                return false;
+                                            }
+                                        }
+                                        _ => {}
                                     }
+                                }
+                                if let Some(ref pl_name) = self.selected_playlist_filter {
+                                    let pl = self.custom_playlists.iter().find(|p| &p.name == pl_name);
+                                    let track_id = song.file_path.clone().unwrap_or_else(|| format!("{} - {}", song.artist, song.title));
+                                    if let Some(p) = pl {
+                                        if !p.track_paths.contains(&track_id) {
+                                            return false;
+                                        }
+                                    }
+                                }
+                                true
+                            }).collect();
 
-                                    rendered_count += 1;
-                                    let is_current = self.current_track.title == song.title && self.current_track.artist == song.artist;
+                            if matching_tracks.is_empty() {
+                                ui.add_space(24.0);
+                                ui.vertical_centered(|ui| {
+                                    ui.label(egui::RichText::new("Tidak ada lagu yang cocok dengan kriteria filter / pencarian.").size(12.5).color(Color32::from_rgb(148, 163, 184)));
+                                });
+                            } else {
+                                // Track Rows Virtual Scroll: Only renders visible rows for instant 0ms latency
+                                egui::ScrollArea::vertical().show_rows(ui, 48.0, matching_tracks.len(), |ui, row_range| {
+                                    for row_idx in row_range {
+                                        let (idx, song) = matching_tracks[row_idx];
+                                        let is_current = self.current_track.title == song.title && self.current_track.artist == song.artist;
 
-                                    let row_id = ui.scope_id().with(("track_row", idx));
-                                    let row_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), 44.0));
-                                    let is_hovered = ui.input(|i| i.pointer.hover_pos().map_or(false, |p| row_rect.contains(p)));
-                                    let hover_t = ui.ctx().animate_bool(row_id, is_hovered);
+                                        let row_id = ui.scope_id().with(("track_row", idx));
+                                        let row_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), 44.0));
+                                        let is_hovered = ui.input(|i| i.pointer.hover_pos().map_or(false, |p| row_rect.contains(p)));
+                                        let hover_t = ui.ctx().animate_bool(row_id, is_hovered);
 
-                                    let (base_bg, base_border) = if is_current {
-                                        (
-                                            Color32::from_rgb(236, 253, 245),
-                                            Color32::from_rgb(167, 243, 208),
-                                        )
-                                    } else if rendered_count % 2 == 1 {
-                                        (
-                                            Color32::from_rgb(248, 250, 252),
-                                            Color32::TRANSPARENT,
-                                        )
-                                    } else {
-                                        (
-                                            Color32::WHITE,
-                                            Color32::TRANSPARENT,
-                                        )
-                                    };
+                                        let (base_bg, base_border) = if is_current {
+                                            (
+                                                Color32::from_rgb(236, 253, 245),
+                                                Color32::from_rgb(167, 243, 208),
+                                            )
+                                        } else if row_idx % 2 == 1 {
+                                            (
+                                                Color32::from_rgb(248, 250, 252),
+                                                Color32::TRANSPARENT,
+                                            )
+                                        } else {
+                                            (
+                                                Color32::WHITE,
+                                                Color32::TRANSPARENT,
+                                            )
+                                        };
 
                                     let bg_color = if is_current {
                                         lerp_color(base_bg, Color32::from_rgb(209, 250, 229), hover_t)
@@ -1224,15 +1233,9 @@ impl LunulaApp {
                                     });
 
                                     ui.separator();
-                                }
-
-                                if rendered_count == 0 {
-                                    ui.add_space(24.0);
-                                    ui.vertical_centered(|ui| {
-                                        ui.label(egui::RichText::new("Tidak ada lagu yang cocok dengan kriteria filter / pencarian.").size(12.5).color(Color32::from_rgb(148, 163, 184)));
-                                    });
-                                }
-                            });
+                                    }
+                                });
+                            }
                         }
                     }
                 }

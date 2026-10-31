@@ -79,8 +79,16 @@ pub struct LunulaApp {
     pub current_cover_bytes: Option<Vec<u8>>,
     pub current_cover_texture: Option<eframe::egui::TextureHandle>,
     pub album_cover_cache: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Option<eframe::egui::TextureHandle>>>>,
+    pub cover_req_tx: std::sync::mpsc::Sender<(String, String)>,
+    pub cover_res_rx: std::sync::mpsc::Receiver<CoverLoadResult>,
+    pub pending_cover_loads: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     pub selected_output_device: Option<String>,
     pub available_output_devices: Vec<crate::audio::backend::OutputDeviceInfo>,
+}
+
+pub struct CoverLoadResult {
+    pub key: String,
+    pub image_data: Option<([usize; 2], Vec<u8>)>,
 }
 
 pub fn random_index(len: usize) -> usize {
@@ -158,6 +166,29 @@ impl LunulaApp {
             CableConnection { from_node: 2, to_node: 4 },
             CableConnection { from_node: 4, to_node: 5 },
         ];
+
+        let (cover_req_tx, cover_req_rx) = std::sync::mpsc::channel::<(String, String)>();
+        let (cover_res_tx, cover_res_rx) = std::sync::mpsc::channel::<CoverLoadResult>();
+        let pending_cover_loads = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+
+        let _ = std::thread::Builder::new()
+            .name("lunula-cover-loader".into())
+            .spawn(move || {
+                while let Ok((key, path)) = cover_req_rx.recv() {
+                    let image_data = if let Some(bytes) = crate::scanner::extract_album_art(&path) {
+                        if let Ok(img) = image::load_from_memory(&bytes) {
+                            let thumb = img.thumbnail(256, 256).to_rgba8();
+                            let size = [thumb.width() as usize, thumb.height() as usize];
+                            Some((size, thumb.into_raw()))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    let _ = cover_res_tx.send(CoverLoadResult { key, image_data });
+                }
+            });
 
         let mut app = Self {
             current_tab: AppTab::NowPlaying,
@@ -248,6 +279,9 @@ impl LunulaApp {
             current_cover_bytes: None,
             current_cover_texture: None,
             album_cover_cache: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            cover_req_tx,
+            cover_res_rx,
+            pending_cover_loads,
             selected_output_device: None,
             available_output_devices: crate::audio::backend::enumerate_output_devices(),
         };
@@ -627,6 +661,7 @@ impl LunulaApp {
         self.volume = vol.clamp(0.0, 1.2);
         self.is_muted = false;
         if let Some(ref engine) = self.audio_engine {
+            engine.set_muted(false);
             engine.set_volume(self.volume);
         }
         self.save_library_state();
@@ -635,6 +670,7 @@ impl LunulaApp {
     pub fn toggle_mute(&mut self) {
         self.is_muted = !self.is_muted;
         if let Some(ref engine) = self.audio_engine {
+            engine.set_muted(self.is_muted);
             engine.set_volume(if self.is_muted { 0.0 } else { self.volume });
         }
     }
@@ -695,33 +731,43 @@ impl LunulaApp {
     pub fn set_chain_mode(&mut self, mode: ChainMode) {
         self.chain_mode = mode;
 
-        match mode {
-            ChainMode::BitPerfect => {
-                // Option B: Cable jumps directly from 2 (RAM Buffer) to 4 (Output Engine), bypassing 3 (DSP Engine)
-                self.connections = vec![
-                    CableConnection { from_node: 1, to_node: 2 },
-                    CableConnection { from_node: 2, to_node: 4 },
-                    CableConnection { from_node: 4, to_node: 5 },
-                ];
-                self.eq_bypass = true;
+        let has_custom_nodes = self.nodes.iter().any(|n| n.is_removable);
+        if !has_custom_nodes {
+            match mode {
+                ChainMode::BitPerfect => {
+                    // Option B: Cable jumps directly from 2 (RAM Buffer) to 4 (Output Engine), bypassing 3 (DSP Engine)
+                    self.connections = vec![
+                        CableConnection { from_node: 1, to_node: 2 },
+                        CableConnection { from_node: 2, to_node: 4 },
+                        CableConnection { from_node: 4, to_node: 5 },
+                    ];
+                    self.eq_bypass = true;
+                }
+                ChainMode::DspActive => {
+                    // Cable goes through DSP: 1 -> 2 -> 3 -> 4 -> 5
+                    self.connections = vec![
+                        CableConnection { from_node: 1, to_node: 2 },
+                        CableConnection { from_node: 2, to_node: 3 },
+                        CableConnection { from_node: 3, to_node: 4 },
+                        CableConnection { from_node: 4, to_node: 5 },
+                    ];
+                    self.eq_bypass = false;
+                }
+                ChainMode::OsResampled => {
+                    self.connections = vec![
+                        CableConnection { from_node: 1, to_node: 2 },
+                        CableConnection { from_node: 2, to_node: 4 },
+                        CableConnection { from_node: 4, to_node: 5 },
+                    ];
+                    self.eq_bypass = true;
+                }
             }
-            ChainMode::DspActive => {
-                // Cable goes through DSP: 1 -> 2 -> 3 -> 4 -> 5
-                self.connections = vec![
-                    CableConnection { from_node: 1, to_node: 2 },
-                    CableConnection { from_node: 2, to_node: 3 },
-                    CableConnection { from_node: 3, to_node: 4 },
-                    CableConnection { from_node: 4, to_node: 5 },
-                ];
-                self.eq_bypass = false;
-            }
-            ChainMode::OsResampled => {
-                self.connections = vec![
-                    CableConnection { from_node: 1, to_node: 2 },
-                    CableConnection { from_node: 2, to_node: 4 },
-                    CableConnection { from_node: 4, to_node: 5 },
-                ];
-                self.eq_bypass = true;
+        } else {
+            // Preserve user's modular custom canvas cabling layout
+            match mode {
+                ChainMode::BitPerfect => self.eq_bypass = true,
+                ChainMode::DspActive => self.eq_bypass = false,
+                ChainMode::OsResampled => self.eq_bypass = true,
             }
         }
 
@@ -809,7 +855,7 @@ impl LunulaApp {
 
     pub fn get_album_cover_texture(
         &self,
-        ctx: &eframe::egui::Context,
+        _ctx: &eframe::egui::Context,
         key: &str,
         file_path: Option<&str>,
     ) -> Option<eframe::egui::TextureHandle> {
@@ -817,16 +863,18 @@ impl LunulaApp {
             if let Some(cached) = cache.get(key) {
                 return cached.clone();
             }
-            let tex = file_path.and_then(|p| {
-                crate::scanner::extract_album_art(p).and_then(|bytes| {
-                    crate::scanner::load_image_to_texture(ctx, &format!("art_{}", key), &bytes)
-                })
-            });
-            cache.insert(key.to_string(), tex.clone());
-            tex
-        } else {
-            None
+            if let Some(path) = file_path {
+                if let Ok(mut pending) = self.pending_cover_loads.lock() {
+                    if !pending.contains(key) {
+                        pending.insert(key.to_string());
+                        let _ = self.cover_req_tx.send((key.to_string(), path.to_string()));
+                    }
+                }
+            } else {
+                cache.insert(key.to_string(), None);
+            }
         }
+        None
     }
 
     pub fn evaluate_signal_chain(&self) -> crate::models::ChainEvaluation {
@@ -1000,6 +1048,21 @@ impl eframe::App for LunulaApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+
+        // Drain loaded covers from background thread into egui texture cache
+        while let Ok(result) = self.cover_res_rx.try_recv() {
+            let tex = result.image_data.map(|(size, pixels)| {
+                let color_image = eframe::egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+                ctx.load_texture(&format!("art_{}", result.key), color_image, eframe::egui::TextureOptions::LINEAR)
+            });
+            if let Ok(mut cache) = self.album_cover_cache.lock() {
+                cache.insert(result.key.clone(), tex);
+            }
+            if let Ok(mut pending) = self.pending_cover_loads.lock() {
+                pending.remove(&result.key);
+            }
+            ctx.request_repaint();
+        }
 
         // Poll background library scanner channel
         if let Some(ref rx) = self.scan_rx {

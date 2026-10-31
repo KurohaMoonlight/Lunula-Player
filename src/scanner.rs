@@ -198,6 +198,7 @@ pub fn extract_album_art<P: AsRef<Path>>(path: P) -> Option<Vec<u8>> {
 }
 
 // Convert raw image bytes (JPEG / PNG) into an egui TextureHandle
+#[allow(dead_code)]
 pub fn load_image_to_texture(
     ctx: &eframe::egui::Context,
     name: &str,

@@ -83,6 +83,7 @@ impl CpalBackend {
         shared_volume: Arc<AtomicU32>,
         visualizer: Arc<VisualizerRingBuffer>,
         bit_perfect: Arc<AtomicBool>,
+        shared_muted: Arc<AtomicBool>,
         source_bit_depth: u8,
         is_dsp_active: Arc<AtomicBool>,
     ) -> Result<(Self, Producer<f32>), Box<dyn std::error::Error + Send + Sync>> {
@@ -141,6 +142,7 @@ impl CpalBackend {
             Arc::clone(&is_paused),
             Arc::clone(&flush_requested),
             Arc::clone(&bit_perfect),
+            Arc::clone(&shared_muted),
             Arc::clone(&shared_volume),
             Arc::clone(&visualizer),
             source_bit_depth,
@@ -174,6 +176,7 @@ impl CpalBackend {
         is_paused: Arc<AtomicBool>,
         flush_requested: Arc<AtomicBool>,
         bit_perfect: Arc<AtomicBool>,
+        shared_muted: Arc<AtomicBool>,
         shared_volume: Arc<AtomicU32>,
         visualizer: Arc<VisualizerRingBuffer>,
         source_bit_depth: u8,
@@ -182,6 +185,7 @@ impl CpalBackend {
         let is_paused_cb = Arc::clone(&is_paused);
         let flush_cb = Arc::clone(&flush_requested);
         let bp_cb = Arc::clone(&bit_perfect);
+        let muted_cb = Arc::clone(&shared_muted);
         let volume_cb = Arc::clone(&shared_volume);
         let visualizer_cb = Arc::clone(&visualizer);
         let dsp_active_cb = Arc::clone(&is_dsp_active);
@@ -200,6 +204,7 @@ impl CpalBackend {
                             &is_paused_cb,
                             &flush_cb,
                             &bp_cb,
+                            &muted_cb,
                             &volume_cb,
                             &visualizer_cb,
                         );
@@ -219,8 +224,10 @@ impl CpalBackend {
                             &is_paused_cb,
                             &flush_cb,
                             &bp_cb,
+                            &muted_cb,
                             &volume_cb,
                             &visualizer_cb,
+                            source_bit_depth,
                         );
                     },
                     err_fn,
@@ -239,6 +246,7 @@ impl CpalBackend {
                             &is_paused_cb,
                             &flush_cb,
                             &bp_cb,
+                            &muted_cb,
                             &volume_cb,
                             &visualizer_cb,
                             source_bit_depth,
@@ -261,6 +269,7 @@ impl CpalBackend {
                             &is_paused_cb,
                             &flush_cb,
                             &bp_cb,
+                            &muted_cb,
                             &volume_cb,
                             &visualizer_cb,
                         );
@@ -283,6 +292,7 @@ impl CpalBackend {
         is_paused: &AtomicBool,
         flush_requested: &AtomicBool,
         bit_perfect: &AtomicBool,
+        muted: &AtomicBool,
         volume: &AtomicU32,
         visualizer: &VisualizerRingBuffer,
     ) {
@@ -301,12 +311,11 @@ impl CpalBackend {
         }
 
         let is_bp = bit_perfect.load(Ordering::Relaxed);
-        let vol = if is_bp {
-            1.0
-        } else {
-            f32::from_bits(volume.load(Ordering::Relaxed))
-        };
-        if vol <= 0.0001 && !is_bp {
+        let is_muted = muted.load(Ordering::Relaxed);
+        let vol_raw = f32::from_bits(volume.load(Ordering::Relaxed));
+        let vol = crate::audio::types::calculate_effective_volume(is_bp, is_muted, vol_raw);
+
+        if vol <= 0.0001 {
             data.fill(0.0);
             for _ in 0..(data.len() / channels.max(1)) {
                 visualizer.push_sample(0.0);
@@ -354,8 +363,10 @@ impl CpalBackend {
         is_paused: &AtomicBool,
         flush_requested: &AtomicBool,
         bit_perfect: &AtomicBool,
+        muted: &AtomicBool,
         volume: &AtomicU32,
         visualizer: &VisualizerRingBuffer,
+        source_bit_depth: u8,
     ) {
         if flush_requested.swap(false, Ordering::SeqCst) {
             while consumer.pop().is_ok() {}
@@ -372,12 +383,11 @@ impl CpalBackend {
         }
 
         let is_bp = bit_perfect.load(Ordering::Relaxed);
-        let vol = if is_bp {
-            1.0
-        } else {
-            f32::from_bits(volume.load(Ordering::Relaxed))
-        };
-        if vol <= 0.0001 && !is_bp {
+        let is_muted = muted.load(Ordering::Relaxed);
+        let vol_raw = f32::from_bits(volume.load(Ordering::Relaxed));
+        let vol = crate::audio::types::calculate_effective_volume(is_bp, is_muted, vol_raw);
+
+        if vol <= 0.0001 {
             data.fill(0);
             for _ in 0..(data.len() / channels.max(1)) {
                 visualizer.push_sample(0.0);
@@ -386,8 +396,13 @@ impl CpalBackend {
         }
 
         let to_i32 = |s: f32| -> i32 {
-            let scaled = (s as f64 * 2147483647.0).round().clamp(-2147483648.0, 2147483647.0);
-            scaled as i32
+            if source_bit_depth <= 24 {
+                let scaled = (s as f64 * 8388608.0).round().clamp(-8388608.0, 8388607.0) as i32;
+                scaled << 8
+            } else {
+                let scaled = (s as f64 * 2147483648.0).round().clamp(-2147483648.0, 2147483647.0);
+                scaled as i32
+            }
         };
 
         if channels == 2 {
@@ -430,6 +445,7 @@ impl CpalBackend {
         is_paused: &AtomicBool,
         flush_requested: &AtomicBool,
         bit_perfect: &AtomicBool,
+        muted: &AtomicBool,
         volume: &AtomicU32,
         visualizer: &VisualizerRingBuffer,
         source_bit_depth: u8,
@@ -451,12 +467,11 @@ impl CpalBackend {
         }
 
         let is_bp = bit_perfect.load(Ordering::Relaxed);
-        let vol = if is_bp {
-            1.0
-        } else {
-            f32::from_bits(volume.load(Ordering::Relaxed))
-        };
-        if vol <= 0.0001 && !is_bp {
+        let is_muted = muted.load(Ordering::Relaxed);
+        let vol_raw = f32::from_bits(volume.load(Ordering::Relaxed));
+        let vol = crate::audio::types::calculate_effective_volume(is_bp, is_muted, vol_raw);
+
+        if vol <= 0.0001 {
             data.fill(0);
             for _ in 0..(data.len() / channels.max(1)) {
                 visualizer.push_sample(0.0);
@@ -517,6 +532,7 @@ impl CpalBackend {
         is_paused: &AtomicBool,
         flush_requested: &AtomicBool,
         bit_perfect: &AtomicBool,
+        muted: &AtomicBool,
         volume: &AtomicU32,
         visualizer: &VisualizerRingBuffer,
     ) {
@@ -535,12 +551,11 @@ impl CpalBackend {
         }
 
         let is_bp = bit_perfect.load(Ordering::Relaxed);
-        let vol = if is_bp {
-            1.0
-        } else {
-            f32::from_bits(volume.load(Ordering::Relaxed))
-        };
-        if vol <= 0.0001 && !is_bp {
+        let is_muted = muted.load(Ordering::Relaxed);
+        let vol_raw = f32::from_bits(volume.load(Ordering::Relaxed));
+        let vol = crate::audio::types::calculate_effective_volume(is_bp, is_muted, vol_raw);
+
+        if vol <= 0.0001 {
             data.fill(32768);
             for _ in 0..(data.len() / channels.max(1)) {
                 visualizer.push_sample(0.0);

@@ -9,6 +9,7 @@ use crate::audio::decoder::AudioDecoder;
 use crate::audio::dsp::DspPipeline;
 use crate::audio::output::AudioOutput;
 use crate::audio::resampler::StereoResampler;
+pub use crate::audio::types::calculate_effective_volume;
 use crate::audio::types::{AudioCommand, AudioEvent, ChainMode, PlaybackState, SignalPathReport};
 use crate::audio::visualizer::{VisualizerRingBuffer, FFT_SIZE};
 use rtrb::Producer;
@@ -19,6 +20,7 @@ pub struct AudioEngineController {
     shared_position_ms: Arc<AtomicU32>,
     shared_state: Arc<AtomicU8>,
     shared_volume: Arc<AtomicU32>,
+    shared_muted: Arc<AtomicBool>,
     shared_bit_perfect: Arc<AtomicBool>,
     shared_visualizer: Arc<VisualizerRingBuffer>,
 }
@@ -31,19 +33,21 @@ impl AudioEngineController {
         let shared_position_ms = Arc::new(AtomicU32::new(0));
         let shared_state = Arc::new(AtomicU8::new(0)); // 0: Stopped, 1: Playing, 2: Paused
         let shared_volume = Arc::new(AtomicU32::new(0.80f32.to_bits()));
+        let shared_muted = Arc::new(AtomicBool::new(false));
         let shared_bit_perfect = Arc::new(AtomicBool::new(true));
         let shared_visualizer = Arc::new(VisualizerRingBuffer::new());
 
         let pos_clone = Arc::clone(&shared_position_ms);
         let state_clone = Arc::clone(&shared_state);
         let vol_clone = Arc::clone(&shared_volume);
+        let mute_clone = Arc::clone(&shared_muted);
         let bp_clone = Arc::clone(&shared_bit_perfect);
         let vis_clone = Arc::clone(&shared_visualizer);
 
         thread::Builder::new()
             .name("lunula-audio-worker".into())
             .spawn(move || {
-                run_audio_worker(cmd_rx, event_tx, pos_clone, state_clone, vol_clone, bp_clone, vis_clone);
+                run_audio_worker(cmd_rx, event_tx, pos_clone, state_clone, vol_clone, mute_clone, bp_clone, vis_clone);
             })?;
 
         Ok(Self {
@@ -52,6 +56,7 @@ impl AudioEngineController {
             shared_position_ms,
             shared_state,
             shared_volume,
+            shared_muted,
             shared_bit_perfect,
             shared_visualizer,
         })
@@ -80,6 +85,11 @@ impl AudioEngineController {
     pub fn set_volume(&self, volume: f32) {
         self.shared_volume.store(volume.clamp(0.0, 1.5).to_bits(), Ordering::Relaxed);
         let _ = self.cmd_tx.send(AudioCommand::SetVolume(volume));
+    }
+
+    pub fn set_muted(&self, muted: bool) {
+        self.shared_muted.store(muted, Ordering::Relaxed);
+        let _ = self.cmd_tx.send(AudioCommand::SetMute(muted));
     }
 
     pub fn set_eq_band(&self, index: usize, gain_db: f32) {
@@ -189,6 +199,25 @@ fn create_signal_path_report(
     }
 }
 
+pub fn route_audio_frame(
+    chain_mode: ChainMode,
+    is_chain_complete: bool,
+    l: f32,
+    r: f32,
+    dsp: &mut DspPipeline,
+) -> (f32, f32) {
+    match chain_mode {
+        ChainMode::BitPerfect => {
+            if !is_chain_complete {
+                (0.0, 0.0) // Severed cable in canvas mutes playback
+            } else {
+                (l, r) // 100% pure sample passthrough: bit-for-bit identical
+            }
+        }
+        _ => dsp.process_frame(l, r),
+    }
+}
+
 // Background Audio Feeder Worker
 fn run_audio_worker(
     cmd_rx: Receiver<AudioCommand>,
@@ -196,6 +225,7 @@ fn run_audio_worker(
     shared_position_ms: Arc<AtomicU32>,
     shared_state: Arc<AtomicU8>,
     shared_volume: Arc<AtomicU32>,
+    shared_muted: Arc<AtomicBool>,
     shared_bit_perfect: Arc<AtomicBool>,
     shared_visualizer: Arc<VisualizerRingBuffer>,
 ) {
@@ -205,6 +235,7 @@ fn run_audio_worker(
     let mut dsp = DspPipeline::new(44100.0);
     let mut resampler = StereoResampler::new(44100, 44100);
     let mut chain_mode = ChainMode::BitPerfect;
+    let mut current_stream_mode: Option<ChainMode> = None;
     let mut state = PlaybackState::Stopped;
     let mut selected_device: Option<String> = None;
     let is_dsp_active = Arc::new(AtomicBool::new(false));
@@ -245,8 +276,7 @@ fn run_audio_worker(
                                 let need_recreate = match &output {
                                     Some(out) => {
                                         out.sample_rate() != desired_rate
-                                            || (chain_mode == ChainMode::BitPerfect && !out.is_exclusive())
-                                            || (chain_mode != ChainMode::BitPerfect && out.is_exclusive())
+                                            || current_stream_mode != Some(chain_mode)
                                             || (selected_device.is_some() && Some(out.device_name()) != selected_device.as_deref())
                                     }
                                     None => true,
@@ -262,11 +292,13 @@ fn run_audio_worker(
                                         Arc::clone(&shared_volume),
                                         Arc::clone(&shared_visualizer),
                                         Arc::clone(&shared_bit_perfect),
+                                        Arc::clone(&shared_muted),
                                         Arc::clone(&is_dsp_active),
                                     ) {
                                         Ok((out, prod)) => {
                                             output = Some(out);
                                             producer = Some(prod);
+                                            current_stream_mode = Some(chain_mode);
                                         }
                                         Err(err) => {
                                             let _ = event_tx.send(AudioEvent::Error(format!(
@@ -368,6 +400,9 @@ fn run_audio_worker(
                     AudioCommand::SetVolume(vol) => {
                         dsp.set_volume(vol);
                     }
+                    AudioCommand::SetMute(muted) => {
+                        shared_muted.store(muted, Ordering::Relaxed);
+                    }
                     AudioCommand::SetEqBand { index, gain_db } => {
                         dsp.set_eq_band(index, gain_db);
                     }
@@ -389,6 +424,7 @@ fn run_audio_worker(
                                 Arc::clone(&shared_volume),
                                 Arc::clone(&shared_visualizer),
                                 Arc::clone(&shared_bit_perfect),
+                                Arc::clone(&shared_muted),
                                 Arc::clone(&is_dsp_active),
                             ) {
                                 Ok((new_out, new_prod)) => {
@@ -408,6 +444,7 @@ fn run_audio_worker(
 
                                     output = Some(new_out);
                                     producer = Some(new_prod);
+                                    current_stream_mode = Some(chain_mode);
                                 }
                                 Err(err) => {
                                     let _ = event_tx.send(AudioEvent::Error(format!(
@@ -416,6 +453,10 @@ fn run_audio_worker(
                                     )));
                                 }
                             }
+                        } else {
+                            output = None;
+                            producer = None;
+                            current_stream_mode = None;
                         }
                     }
                     AudioCommand::SetChainMode(mode) => {
@@ -431,8 +472,7 @@ fn run_audio_worker(
                             let need_recreate = match &output {
                                 Some(out) => {
                                     out.sample_rate() != desired_rate
-                                        || (chain_mode == ChainMode::BitPerfect && !out.is_exclusive())
-                                        || (chain_mode != ChainMode::BitPerfect && out.is_exclusive())
+                                        || current_stream_mode != Some(chain_mode)
                                         || (selected_device.is_some() && Some(out.device_name()) != selected_device.as_deref())
                                 }
                                 None => true,
@@ -448,6 +488,7 @@ fn run_audio_worker(
                                     Arc::clone(&shared_volume),
                                     Arc::clone(&shared_visualizer),
                                     Arc::clone(&shared_bit_perfect),
+                                    Arc::clone(&shared_muted),
                                     Arc::clone(&is_dsp_active),
                                 ) {
                                     if state == PlaybackState::Playing {
@@ -455,6 +496,7 @@ fn run_audio_worker(
                                     }
                                     output = Some(new_out);
                                     producer = Some(new_prod);
+                                    current_stream_mode = Some(chain_mode);
                                 }
                             } else if let Some(out) = &output {
                                 out.flush();
@@ -511,16 +553,13 @@ fn run_audio_worker(
                         match frame {
                             Some((l, r)) => {
                                 // Branch signal path strictly based on chain_mode
-                                let (out_l, out_r) = match chain_mode {
-                                    ChainMode::BitPerfect => {
-                                        if !dsp.is_chain_complete() {
-                                            (0.0, 0.0) // Severed cable in canvas mutes playback
-                                        } else {
-                                            (l, r) // 100% pure sample passthrough: no EQ, no clamp, bit-for-bit identical
-                                        }
-                                    }
-                                    _ => dsp.process_frame(l, r),
-                                };
+                                let (out_l, out_r) = route_audio_frame(
+                                    chain_mode,
+                                    dsp.is_chain_complete(),
+                                    l,
+                                    r,
+                                    &mut dsp,
+                                );
                                 let _ = prod.push(out_l);
                                 let _ = prod.push(out_r);
                                 generated_frames += 1;
@@ -577,12 +616,57 @@ mod tests {
     }
 
     #[test]
+    fn test_route_audio_frame_pure() {
+        let mut dsp = DspPipeline::new(44100.0);
+        let in_l = 0.42f32;
+        let in_r = -0.73f32;
+
+        // Bit-Perfect complete
+        let (out_l, out_r) = route_audio_frame(ChainMode::BitPerfect, true, in_l, in_r, &mut dsp);
+        assert_eq!(out_l.to_bits(), in_l.to_bits());
+        assert_eq!(out_r.to_bits(), in_r.to_bits());
+
+        // Bit-Perfect severed
+        let (out_l, out_r) = route_audio_frame(ChainMode::BitPerfect, false, in_l, in_r, &mut dsp);
+        assert_eq!(out_l, 0.0);
+        assert_eq!(out_r, 0.0);
+    }
+
+    #[test]
+    fn test_calculate_effective_volume_pure() {
+        // Bit-Perfect unmuted: volume slider ignored -> 1.0
+        assert_eq!(calculate_effective_volume(true, false, 0.5), 1.0);
+        assert_eq!(calculate_effective_volume(true, false, 0.0), 1.0);
+
+        // Bit-Perfect muted: MUST be 0.0
+        assert_eq!(calculate_effective_volume(true, true, 0.5), 0.0);
+        assert_eq!(calculate_effective_volume(true, true, 1.0), 0.0);
+
+        // DSP mode unmuted: volume slider applied
+        assert_eq!(calculate_effective_volume(false, false, 0.75), 0.75);
+
+        // DSP mode muted: MUST be 0.0
+        assert_eq!(calculate_effective_volume(false, true, 0.75), 0.0);
+    }
+
+    #[test]
+    fn test_pcm_24bit_in_32bit_lossless_scaling() {
+        // Test edge cases and step values across full 24-bit range (-8388608 to 8388607)
+        let test_vals = vec![
+            -8388608i32, -8388607, -4194304, -1, 0, 1, 4194303, 8388606, 8388607,
+        ];
+        for v in test_vals {
+            let float_sample = v as f64 / 8388608.0;
+            let encoded_i32 = ((float_sample * 8388608.0).round().clamp(-8388608.0, 8388607.0) as i32) << 8;
+            let recovered_24 = encoded_i32 >> 8;
+            assert_eq!(v, recovered_24, "24-bit LSB mismatch for value {}", v);
+        }
+    }
+
+    #[test]
     fn test_bit_perfect_path_proof() {
         let chain_mode = ChainMode::BitPerfect;
         let mut dsp = DspPipeline::new(44100.0);
-
-        let shared_bit_perfect = Arc::new(AtomicBool::new(true));
-        let shared_volume = Arc::new(AtomicU32::new(0.5f32.to_bits())); // Volume slider at 50%
 
         let test_samples: Vec<(f32, f32)> = vec![
             (0.0, 0.0),
@@ -596,25 +680,11 @@ mod tests {
         ];
 
         for &(in_l, in_r) in &test_samples {
-            // 1. Engine frame routing in Bit-Perfect mode
-            let (out_l, out_r) = match chain_mode {
-                ChainMode::BitPerfect => {
-                    if !dsp.is_chain_complete() {
-                        (0.0, 0.0)
-                    } else {
-                        (in_l, in_r) // 100% bit-for-bit passthrough
-                    }
-                }
-                _ => dsp.process_frame(in_l, in_r),
-            };
+            // 1. Engine frame routing in Bit-Perfect mode using pure function
+            let (out_l, out_r) = route_audio_frame(chain_mode, true, in_l, in_r, &mut dsp);
 
-            // 2. Output render callback volume application
-            let is_bp = shared_bit_perfect.load(Ordering::Relaxed);
-            let vol = if is_bp {
-                1.0 // Bypassed in Bit-Perfect mode
-            } else {
-                f32::from_bits(shared_volume.load(Ordering::Relaxed))
-            };
+            // 2. Output render callback volume application using pure function
+            let vol = calculate_effective_volume(true, false, 0.5);
 
             let rendered_l = out_l * vol;
             let rendered_r = out_r * vol;
