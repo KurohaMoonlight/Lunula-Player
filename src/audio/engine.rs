@@ -86,6 +86,10 @@ impl AudioEngineController {
         let _ = self.cmd_tx.send(AudioCommand::SetEqBypass(bypass));
     }
 
+    pub fn set_force_resample_48k(&self, force: bool) {
+        let _ = self.cmd_tx.send(AudioCommand::SetForceResample48k(force));
+    }
+
     pub fn try_recv_event(&self) -> Option<AudioEvent> {
         self.event_rx.try_recv().ok()
     }
@@ -124,6 +128,7 @@ fn run_audio_worker(
     let mut producer: Option<Producer<f32>> = None;
     let mut dsp = DspPipeline::new(44100.0);
     let mut resampler = StereoResampler::new(44100, 44100);
+    let mut force_resample_48k = false;
     let mut state = PlaybackState::Stopped;
 
     let mut raw_chunk = [0.0f32; 2048];
@@ -189,8 +194,9 @@ fn run_audio_worker(
                                 if let Some(out) = &output {
                                     out.resume();
                                     let device_rate = out.sample_rate();
-                                    resampler.reset(track_sample_rate, device_rate);
-                                    dsp.set_sample_rate(device_rate as f32);
+                                    let target_rate = if force_resample_48k { 48000 } else { device_rate };
+                                    resampler.reset(track_sample_rate, target_rate);
+                                    dsp.set_sample_rate(target_rate as f32);
                                     dsp.reset_states();
                                 }
 
@@ -275,6 +281,19 @@ fn run_audio_worker(
                     }
                     AudioCommand::SetEqBypass(bypass) => {
                         dsp.set_eq_bypass(bypass);
+                    }
+                    AudioCommand::SetForceResample48k(force) => {
+                        force_resample_48k = force;
+                        if let Some(dec) = &decoder {
+                            let track_sample_rate = dec.sample_rate();
+                            let target_rate = if force {
+                                48000
+                            } else {
+                                output.as_ref().map(|o| o.sample_rate()).unwrap_or(44100)
+                            };
+                            resampler.reset(track_sample_rate, target_rate);
+                            dsp.set_sample_rate(target_rate as f32);
+                        }
                     }
                 }
             }

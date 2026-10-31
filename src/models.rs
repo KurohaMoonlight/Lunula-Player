@@ -48,10 +48,45 @@ pub struct CableConnection {
     pub to_node: usize,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SignalNodeStatus {
+    Flowing,   // Green: audio signal actively passing through
+    Broken,    // Red: signal severed or unreachable
+}
+
+#[derive(Clone, Debug)]
+pub struct ChainEvaluation {
+    pub is_complete: bool,
+    pub reachable_from_source: std::collections::HashSet<usize>,
+    pub flowing_nodes: std::collections::HashSet<usize>,
+    pub flowing_cables: std::collections::HashSet<(usize, usize)>,
+}
+
+impl ChainEvaluation {
+    pub fn node_status(&self, node_id: usize) -> SignalNodeStatus {
+        if self.is_complete && self.flowing_nodes.contains(&node_id) {
+            SignalNodeStatus::Flowing
+        } else if !self.is_complete && self.reachable_from_source.contains(&node_id) {
+            SignalNodeStatus::Flowing
+        } else {
+            SignalNodeStatus::Broken
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum WaveformMode {
     StackedMultiBand, // Opsi A: 3 Layer Bertumpuk (Bass, Mid, Treble)
     SpectralBlend,    // Opsi B: Serato Spectral Color Blending
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default)]
+pub enum RepeatMode {
+    #[default]
+    Off,      // Tidak repeat (mati setelah selesai antrean/playlist)
+    All,      // Ulangi semua lagu (loop playlist/queue)
+    One,      // Ulangi satu lagu ini saja
+    Album,    // Ulangi hanya lagu-lagu di album ini
 }
 
 #[derive(Clone, Debug)]
@@ -118,6 +153,12 @@ pub struct SavedAppState {
     pub volume: f32,
     pub eq_bands: [f32; 10],
     pub eq_bypass: bool,
+    #[serde(default)]
+    pub is_shuffled: bool,
+    #[serde(default)]
+    pub repeat_mode: RepeatMode,
+    #[serde(default)]
+    pub queue_cursor: Option<usize>,
 }
 
 impl From<TrackData> for Track {

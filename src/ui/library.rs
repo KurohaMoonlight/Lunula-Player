@@ -2,7 +2,7 @@ use eframe::egui;
 use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 use crate::models::{CustomPlaylist, LibraryCategory, Track};
 use crate::app::LunulaApp;
-use crate::ui::components::{draw_album_art, draw_artist_avatar, format_time, open_file_in_explorer, render_card_frame, render_stat_box};
+use crate::ui::components::{draw_album_art, draw_artist_avatar, format_time, lerp_color, open_file_in_explorer, render_card_frame, render_stat_box};
 
 impl LunulaApp {
     pub fn compute_library_stats(&self) -> (usize, usize, usize, f32, usize) {
@@ -261,9 +261,18 @@ impl LunulaApp {
                                             let total_size: f32 = tracks.iter().map(|t| t.file_size_mb).sum();
                                             let is_hires = tracks.iter().any(|t| t.sample_rate >= 88200 || t.bit_depth >= 24);
 
+                                            let card_id = ui.scope_id().with(("alb_card", alb_name));
+                                            let card_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(card_w - 28.0, 245.0));
+                                            let is_hovered = ui.input(|i| i.pointer.hover_pos().map_or(false, |p| card_rect.contains(p)));
+                                            let hover_t = ui.ctx().animate_bool(card_id, is_hovered);
+
+                                            let bg_color = lerp_color(Color32::WHITE, Color32::from_rgb(248, 250, 252), hover_t);
+                                            let border_color = lerp_color(Color32::from_rgb(226, 232, 240), Color32::from_rgb(14, 165, 233), hover_t);
+                                            let stroke_w = 1.0 + hover_t * 0.7;
+
                                             let frame_resp = egui::Frame::new()
-                                                .fill(Color32::WHITE)
-                                                .stroke(Stroke::new(1.0, Color32::from_rgb(226, 232, 240)))
+                                                .fill(bg_color)
+                                                .stroke(Stroke::new(stroke_w, border_color))
                                                 .corner_radius(12.0)
                                                 .inner_margin(egui::Margin::symmetric(14, 16))
                                                 .show(ui, |ui| {
@@ -374,9 +383,18 @@ impl LunulaApp {
                                         for (art_name, tracks) in chunk {
                                             let unique_albums: std::collections::HashSet<_> = tracks.iter().map(|t| &t.album).collect();
 
+                                            let card_id = ui.scope_id().with(("art_card", art_name));
+                                            let card_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(card_w - 28.0, 205.0));
+                                            let is_hovered = ui.input(|i| i.pointer.hover_pos().map_or(false, |p| card_rect.contains(p)));
+                                            let hover_t = ui.ctx().animate_bool(card_id, is_hovered);
+
+                                            let bg_color = lerp_color(Color32::WHITE, Color32::from_rgb(248, 250, 252), hover_t);
+                                            let border_color = lerp_color(Color32::from_rgb(226, 232, 240), Color32::from_rgb(16, 185, 129), hover_t);
+                                            let stroke_w = 1.0 + hover_t * 0.7;
+
                                             let frame_resp = egui::Frame::new()
-                                                .fill(Color32::WHITE)
-                                                .stroke(Stroke::new(1.0, Color32::from_rgb(226, 232, 240)))
+                                                .fill(bg_color)
+                                                .stroke(Stroke::new(stroke_w, border_color))
                                                 .corner_radius(12.0)
                                                 .inner_margin(egui::Margin::symmetric(14, 16))
                                                 .show(ui, |ui| {
@@ -479,9 +497,18 @@ impl LunulaApp {
                             egui::ScrollArea::vertical().show(ui, |ui| {
                                 for (tier_title, desc, tracks, col, tier_id) in tiers {
                                     let total_size: f32 = tracks.iter().map(|t| t.file_size_mb).sum();
+                                    let card_id = ui.scope_id().with(("tier_card", tier_id));
+                                    let card_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), 70.0));
+                                    let is_hovered = ui.input(|i| i.pointer.hover_pos().map_or(false, |p| card_rect.contains(p)));
+                                    let hover_t = ui.ctx().animate_bool(card_id, is_hovered);
+
+                                    let bg_color = lerp_color(Color32::WHITE, Color32::from_rgb(248, 250, 252), hover_t);
+                                    let border_color = lerp_color(Color32::from_rgb(226, 232, 240), col, hover_t * 0.7);
+                                    let stroke = Stroke::new(1.0 + hover_t * 0.7, border_color);
+
                                     egui::Frame::new()
-                                        .fill(Color32::WHITE)
-                                        .stroke(Stroke::new(1.0, Color32::from_rgb(226, 232, 240)))
+                                        .fill(bg_color)
+                                        .stroke(stroke)
                                         .corner_radius(10.0)
                                         .inner_margin(14.0)
                                         .show(ui, |ui| {
@@ -526,14 +553,23 @@ impl LunulaApp {
 
                                 egui::ScrollArea::vertical().show(ui, |ui| {
                                     for (idx, song) in fav_tracks.iter().enumerate() {
-                                        let bg_color = if idx % 2 == 1 {
+                                        let fav_row_id = ui.scope_id().with(("fav_row", idx));
+                                        let row_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), 44.0));
+                                        let is_hovered = ui.input(|i| i.pointer.hover_pos().map_or(false, |p| row_rect.contains(p)));
+                                        let hover_t = ui.ctx().animate_bool(fav_row_id, is_hovered);
+
+                                        let base_bg = if idx % 2 == 1 {
                                             Color32::from_rgb(248, 250, 252)
                                         } else {
                                             Color32::WHITE
                                         };
+                                        let bg_color = lerp_color(base_bg, Color32::from_rgb(241, 245, 249), hover_t);
+                                        let border_color = lerp_color(Color32::TRANSPARENT, Color32::from_rgb(254, 205, 211), hover_t);
+                                        let stroke = Stroke::new(1.0, border_color);
 
                                         let row_resp = egui::Frame::new()
                                             .fill(bg_color)
+                                            .stroke(stroke)
                                             .corner_radius(6.0)
                                             .inner_margin(egui::Margin::symmetric(10, 6))
                                             .show(ui, |ui| {
@@ -776,9 +812,18 @@ impl LunulaApp {
                                         pl.track_paths.contains(&track_id)
                                     }).cloned().collect();
 
+                                    let card_id = ui.scope_id().with(("pl_card", pl_id));
+                                    let card_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), 65.0));
+                                    let is_hovered = ui.input(|i| i.pointer.hover_pos().map_or(false, |p| card_rect.contains(p)));
+                                    let hover_t = ui.ctx().animate_bool(card_id, is_hovered);
+
+                                    let bg_color = lerp_color(Color32::WHITE, Color32::from_rgb(248, 250, 252), hover_t);
+                                    let border_color = lerp_color(Color32::from_rgb(226, 232, 240), Color32::from_rgb(99, 102, 241), hover_t);
+                                    let stroke = Stroke::new(1.0 + hover_t * 0.8, border_color);
+
                                     let frame_resp = egui::Frame::new()
-                                        .fill(Color32::WHITE)
-                                        .stroke(Stroke::new(1.0, Color32::from_rgb(226, 232, 240)))
+                                        .fill(bg_color)
+                                        .stroke(stroke)
                                         .corner_radius(10.0)
                                         .inner_margin(12.0)
                                         .show(ui, |ui| {
@@ -957,22 +1002,39 @@ impl LunulaApp {
                                     rendered_count += 1;
                                     let is_current = self.current_track.title == song.title && self.current_track.artist == song.artist;
 
-                                    let (bg_color, stroke) = if is_current {
+                                    let row_id = ui.scope_id().with(("track_row", idx));
+                                    let row_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), 44.0));
+                                    let is_hovered = ui.input(|i| i.pointer.hover_pos().map_or(false, |p| row_rect.contains(p)));
+                                    let hover_t = ui.ctx().animate_bool(row_id, is_hovered);
+
+                                    let (base_bg, base_border) = if is_current {
                                         (
                                             Color32::from_rgb(236, 253, 245),
-                                            Stroke::new(1.0, Color32::from_rgb(167, 243, 208)),
+                                            Color32::from_rgb(167, 243, 208),
                                         )
                                     } else if rendered_count % 2 == 1 {
                                         (
                                             Color32::from_rgb(248, 250, 252),
-                                            Stroke::NONE,
+                                            Color32::TRANSPARENT,
                                         )
                                     } else {
                                         (
                                             Color32::WHITE,
-                                            Stroke::NONE,
+                                            Color32::TRANSPARENT,
                                         )
                                     };
+
+                                    let bg_color = if is_current {
+                                        lerp_color(base_bg, Color32::from_rgb(209, 250, 229), hover_t)
+                                    } else {
+                                        lerp_color(base_bg, Color32::from_rgb(241, 245, 249), hover_t)
+                                    };
+                                    let border_color = if is_current {
+                                        lerp_color(base_border, Color32::from_rgb(52, 211, 153), hover_t)
+                                    } else {
+                                        lerp_color(base_border, Color32::from_rgb(203, 213, 225), hover_t)
+                                    };
+                                    let stroke = Stroke::new(if is_current { 1.0 + hover_t * 0.3 } else { hover_t * 1.0 }, border_color);
 
                                     let row_resp = egui::Frame::new()
                                         .fill(bg_color)
@@ -1194,11 +1256,16 @@ impl LunulaApp {
         }
 
         if let Some(track) = track_to_play {
+            self.queue_cursor = None;
             self.play_track(track);
         }
 
         if let Some(track) = track_play_next {
-            self.play_queue.insert(0, track);
+            let insert_pos = match self.queue_cursor {
+                Some(cur) => (cur + 1).min(self.play_queue.len()),
+                None => 0,
+            };
+            self.play_queue.insert(insert_pos, track);
             had_mutations = true;
         }
 

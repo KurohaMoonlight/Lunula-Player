@@ -17,6 +17,7 @@ pub enum AudioCommand {
     SetVolume(f32),
     SetEqBand { index: usize, gain_db: f32 },
     SetEqBypass(bool),
+    SetForceResample48k(bool),
 }
 
 #[derive(Debug, Clone)]

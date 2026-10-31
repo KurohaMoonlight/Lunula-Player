@@ -3,7 +3,7 @@ use egui::{Color32, Pos2, Stroke, Vec2};
 use std::time::Instant;
 use crate::models::{
     AppTab, CableConnection, ChainMode, CustomPlaylist, LibraryCategory,
-    ModularNode, NodeType, ScanMsg, Track, WaveformMode,
+    ModularNode, NodeType, RepeatMode, ScanMsg, Track, WaveformMode,
 };
 use crate::ui::components::render_card_frame;
 
@@ -29,6 +29,10 @@ pub struct LunulaApp {
     pub volume: f32,
     pub is_muted: bool,
     pub _start_time: Instant,
+    pub is_shuffled: bool,
+    pub repeat_mode: RepeatMode,
+    pub selected_queue_idx: Option<usize>,
+    pub queue_cursor: Option<usize>,
 
     // Oscilloscope state
     pub zoom_level: f32,
@@ -76,6 +80,21 @@ pub struct LunulaApp {
     pub album_cover_cache: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Option<eframe::egui::TextureHandle>>>>,
 }
 
+pub fn random_index(len: usize) -> usize {
+    if len <= 1 {
+        return 0;
+    }
+    use std::time::SystemTime;
+    let nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(42);
+    let mut x = (nanos as u64) ^ 0x548b29f3c1a74d19;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    (x as usize) % len
+}
 
 impl LunulaApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
@@ -105,8 +124,8 @@ impl LunulaApp {
                 id: 3,
                 node_type: NodeType::Dsp,
                 title: "DSP ENGINE".to_string(),
-                sub1: "Bypassed".to_string(),
-                sub2: "32-bit Float".to_string(),
+                sub1: "BYPASSED (Direct Wire)".to_string(),
+                sub2: "0.0 dB Pure Master".to_string(),
                 pos: Pos2::new(332.0, 48.0),
                 is_removable: false,
             },
@@ -115,7 +134,7 @@ impl LunulaApp {
                 node_type: NodeType::Driver,
                 title: "WASAPI ENGINE".to_string(),
                 sub1: "Exclusive Mode".to_string(),
-                sub2: "3.2 ms Latency".to_string(),
+                sub2: "Direct Bitstream".to_string(),
                 pos: Pos2::new(488.0, 48.0),
                 is_removable: false,
             },
@@ -124,17 +143,16 @@ impl LunulaApp {
                 node_type: NodeType::Endpoint,
                 title: "HARDWARE DAC".to_string(),
                 sub1: "USB Audio 2.0".to_string(),
-                sub2: "Direct Bitstream".to_string(),
+                sub2: "Direct Native Rate".to_string(),
                 pos: Pos2::new(644.0, 48.0),
                 is_removable: false,
             },
         ];
 
-        // Default chain connections: 1 -> 2 -> 3 -> 4 -> 5
+        // Default chain connections: in Bit-Perfect (Option B), cable directly jumps 2 -> 4 bypassing 3
         let initial_connections = vec![
             CableConnection { from_node: 1, to_node: 2 },
-            CableConnection { from_node: 2, to_node: 3 },
-            CableConnection { from_node: 3, to_node: 4 },
+            CableConnection { from_node: 2, to_node: 4 },
             CableConnection { from_node: 4, to_node: 5 },
         ];
 
@@ -156,6 +174,10 @@ impl LunulaApp {
             volume: 0.80,
             is_muted: false,
             _start_time: Instant::now(),
+            is_shuffled: false,
+            repeat_mode: RepeatMode::Off,
+            selected_queue_idx: None,
+            queue_cursor: None,
 
             zoom_level: 28.0,
 
@@ -246,6 +268,9 @@ impl LunulaApp {
             app.volume = state.volume;
             app.eq_bands = state.eq_bands;
             app.eq_bypass = state.eq_bypass;
+            app.is_shuffled = state.is_shuffled;
+            app.repeat_mode = state.repeat_mode;
+            app.queue_cursor = state.queue_cursor;
         } else {
             app.eq_bands[0] = 3.0;
             app.eq_bands[1] = 1.5;
@@ -291,7 +316,8 @@ impl LunulaApp {
             if let Some(ref engine) = self.audio_engine {
                 engine.play(std::path::PathBuf::from(path_str));
                 engine.set_volume(if self.is_muted { 0.0 } else { self.volume });
-                engine.set_eq_bypass(self.eq_bypass);
+                engine.set_eq_bypass(self.chain_mode == ChainMode::BitPerfect || self.eq_bypass);
+                engine.set_force_resample_48k(self.chain_mode == ChainMode::OsResampled);
                 for (idx, &gain) in self.eq_bands.iter().enumerate() {
                     engine.set_eq_band(idx, gain);
                 }
@@ -319,25 +345,147 @@ impl LunulaApp {
         }
     }
 
-    pub fn play_next_track(&mut self) {
+    pub fn advance_track(&mut self, is_manual_skip: bool) {
+        // If Repeat One is active and the track ended naturally, replay current track
+        if !is_manual_skip && self.repeat_mode == RepeatMode::One {
+            if self.current_track.file_path.is_some() {
+                self.current_time = 0.0;
+                if let Some(ref engine) = self.audio_engine {
+                    engine.seek(0.0);
+                    engine.resume();
+                }
+                return;
+            }
+        }
+
+        // 1. Play Queue: persist songs in queue without disappearing, advance queue_cursor
         if !self.play_queue.is_empty() {
-            let next = self.play_queue.remove(0);
-            self.play_track(next);
-        } else if !self.playlist.is_empty() {
-            let cur_idx = self.playlist.iter().position(|t| {
+            let next_queue_idx = if self.is_shuffled {
+                let pool: Vec<usize> = if self.play_queue.len() > 1 {
+                    (0..self.play_queue.len()).filter(|&i| Some(i) != self.queue_cursor).collect()
+                } else {
+                    vec![0]
+                };
+                pool[random_index(pool.len())]
+            } else {
+                match self.queue_cursor {
+                    Some(cur) => cur + 1,
+                    None => 0,
+                }
+            };
+
+            if next_queue_idx < self.play_queue.len() {
+                self.queue_cursor = Some(next_queue_idx);
+                let next = self.play_queue[next_queue_idx].clone();
+                self.play_track(next);
+                return;
+            } else if self.repeat_mode == RepeatMode::All || self.repeat_mode == RepeatMode::Album {
+                // Loop back to start of queue
+                self.queue_cursor = Some(0);
+                let next = self.play_queue[0].clone();
+                self.play_track(next);
+                return;
+            } else {
+                // Reached end of queue
+                self.queue_cursor = None;
+                if self.repeat_mode == RepeatMode::Off {
+                    self.current_time = 0.0;
+                    self.is_playing = false;
+                    if let Some(ref engine) = self.audio_engine {
+                        engine.pause();
+                    }
+                    return;
+                }
+            }
+        }
+
+        if self.playlist.is_empty() {
+            self.current_time = 0.0;
+            self.is_playing = false;
+            return;
+        }
+
+        // 2. Determine candidate track indices from playlist
+        let candidate_indices: Vec<usize> = match self.repeat_mode {
+            RepeatMode::Album => {
+                let cur_album = self.current_track.album.trim().to_lowercase();
+                let matched: Vec<usize> = self.playlist.iter().enumerate()
+                    .filter(|(_, t)| !t.album.trim().is_empty() && t.album.trim().to_lowercase() == cur_album)
+                    .map(|(i, _)| i)
+                    .collect();
+                if matched.is_empty() {
+                    (0..self.playlist.len()).collect()
+                } else {
+                    matched
+                }
+            }
+            _ => (0..self.playlist.len()).collect(),
+        };
+
+        if candidate_indices.is_empty() {
+            self.current_time = 0.0;
+            self.is_playing = false;
+            return;
+        }
+
+        if self.is_shuffled {
+            let cur_global_idx = self.playlist.iter().position(|t| {
                 t.title == self.current_track.title && t.artist == self.current_track.artist
             });
-            if let Some(idx) = cur_idx {
-                let next_idx = (idx + 1) % self.playlist.len();
-                let next = self.playlist[next_idx].clone();
-                self.play_track(next);
-            } else if let Some(first) = self.playlist.first() {
-                let first = first.clone();
-                self.play_track(first);
-            }
+            let pool: Vec<usize> = if candidate_indices.len() > 1 {
+                candidate_indices.into_iter().filter(|&i| Some(i) != cur_global_idx).collect()
+            } else {
+                candidate_indices
+            };
+            let chosen_idx = pool[random_index(pool.len())];
+            let next = self.playlist[chosen_idx].clone();
+            self.play_track(next);
         } else {
-            self.current_time = 0.0;
+            let cur_pos = candidate_indices.iter().position(|&idx| {
+                let t = &self.playlist[idx];
+                t.title == self.current_track.title && t.artist == self.current_track.artist
+            });
+
+            match cur_pos {
+                Some(pos) => {
+                    let next_pos = pos + 1;
+                    if next_pos < candidate_indices.len() {
+                        let global_idx = candidate_indices[next_pos];
+                        let next = self.playlist[global_idx].clone();
+                        self.play_track(next);
+                    } else {
+                        // End of candidates reached
+                        match self.repeat_mode {
+                            RepeatMode::Off => {
+                                self.current_time = 0.0;
+                                self.is_playing = false;
+                                if let Some(ref engine) = self.audio_engine {
+                                    engine.pause();
+                                }
+                            }
+                            RepeatMode::All | RepeatMode::Album | RepeatMode::One => {
+                                let global_idx = candidate_indices[0];
+                                let next = self.playlist[global_idx].clone();
+                                self.play_track(next);
+                            }
+                        }
+                    }
+                }
+                None => {
+                    let global_idx = candidate_indices[0];
+                    let next = self.playlist[global_idx].clone();
+                    self.play_track(next);
+                }
+            }
         }
+    }
+
+    pub fn play_next_track(&mut self) {
+        self.advance_track(true);
+    }
+
+    pub fn on_track_ended(&mut self) {
+        self.advance_track(false);
     }
 
     pub fn play_prev_track(&mut self) {
@@ -348,18 +496,108 @@ impl LunulaApp {
             }
             return;
         }
-        if !self.playlist.is_empty() {
-            let cur_idx = self.playlist.iter().position(|t| {
+
+        // If playing from queue, go to previous queued song without removing
+        if let Some(cur) = self.queue_cursor {
+            if !self.play_queue.is_empty() {
+                if cur > 0 && cur < self.play_queue.len() {
+                    self.queue_cursor = Some(cur - 1);
+                    let prev = self.play_queue[cur - 1].clone();
+                    self.play_track(prev);
+                    return;
+                } else if self.repeat_mode == RepeatMode::All {
+                    self.queue_cursor = Some(self.play_queue.len() - 1);
+                    let prev = self.play_queue[self.play_queue.len() - 1].clone();
+                    self.play_track(prev);
+                    return;
+                }
+            }
+        }
+
+        if self.playlist.is_empty() {
+            self.current_time = 0.0;
+            return;
+        }
+
+        let candidate_indices: Vec<usize> = match self.repeat_mode {
+            RepeatMode::Album => {
+                let cur_album = self.current_track.album.trim().to_lowercase();
+                let matched: Vec<usize> = self.playlist.iter().enumerate()
+                    .filter(|(_, t)| !t.album.trim().is_empty() && t.album.trim().to_lowercase() == cur_album)
+                    .map(|(i, _)| i)
+                    .collect();
+                if matched.is_empty() {
+                    (0..self.playlist.len()).collect()
+                } else {
+                    matched
+                }
+            }
+            _ => (0..self.playlist.len()).collect(),
+        };
+
+        if candidate_indices.is_empty() {
+            self.current_time = 0.0;
+            return;
+        }
+
+        if self.is_shuffled {
+            let cur_global_idx = self.playlist.iter().position(|t| {
                 t.title == self.current_track.title && t.artist == self.current_track.artist
             });
-            if let Some(idx) = cur_idx {
-                let prev_idx = if idx == 0 { self.playlist.len() - 1 } else { idx - 1 };
-                let prev = self.playlist[prev_idx].clone();
-                self.play_track(prev);
-            }
+            let pool: Vec<usize> = if candidate_indices.len() > 1 {
+                candidate_indices.into_iter().filter(|&i| Some(i) != cur_global_idx).collect()
+            } else {
+                candidate_indices
+            };
+            let chosen_idx = pool[random_index(pool.len())];
+            let prev = self.playlist[chosen_idx].clone();
+            self.play_track(prev);
         } else {
-            self.current_time = 0.0;
+            let cur_pos = candidate_indices.iter().position(|&idx| {
+                let t = &self.playlist[idx];
+                t.title == self.current_track.title && t.artist == self.current_track.artist
+            });
+            let prev_pos = match cur_pos {
+                Some(pos) => if pos == 0 { candidate_indices.len() - 1 } else { pos - 1 },
+                None => 0,
+            };
+            let global_idx = candidate_indices[prev_pos];
+            let prev = self.playlist[global_idx].clone();
+            self.play_track(prev);
         }
+    }
+
+    pub fn toggle_shuffle(&mut self) {
+        self.is_shuffled = !self.is_shuffled;
+        self.save_library_state();
+    }
+
+    pub fn cycle_repeat_mode(&mut self) {
+        self.repeat_mode = match self.repeat_mode {
+            RepeatMode::Off => RepeatMode::All,
+            RepeatMode::All => RepeatMode::One,
+            RepeatMode::One => RepeatMode::Album,
+            RepeatMode::Album => RepeatMode::Off,
+        };
+        self.save_library_state();
+    }
+
+    pub fn set_repeat_mode(&mut self, mode: RepeatMode) {
+        self.repeat_mode = mode;
+        self.save_library_state();
+    }
+
+    pub fn shuffle_queue(&mut self) {
+        let len = self.play_queue.len();
+        if len <= 1 {
+            return;
+        }
+        for i in (1..len).rev() {
+            let j = random_index(i + 1);
+            self.play_queue.swap(i, j);
+        }
+        self.selected_queue_idx = None;
+        self.save_library_state();
     }
 
     pub fn seek_relative(&mut self, delta_seconds: f32) {
@@ -388,12 +626,112 @@ impl LunulaApp {
         }
     }
 
-    pub fn toggle_eq_bypass(&mut self) {
-        self.eq_bypass = !self.eq_bypass;
-        if let Some(ref engine) = self.audio_engine {
-            engine.set_eq_bypass(self.eq_bypass);
+    pub fn set_chain_mode(&mut self, mode: ChainMode) {
+        self.chain_mode = mode;
+
+        match mode {
+            ChainMode::BitPerfect => {
+                // Option B: Cable jumps directly from 2 (RAM Buffer) to 4 (WASAPI Engine), bypassing 3 (DSP Engine)
+                self.connections = vec![
+                    CableConnection { from_node: 1, to_node: 2 },
+                    CableConnection { from_node: 2, to_node: 4 },
+                    CableConnection { from_node: 4, to_node: 5 },
+                ];
+                // Update Node 3 (DSP Engine) to Bypassed direct jumper wire
+                for n in &mut self.nodes {
+                    if n.id == 3 {
+                        n.title = "DSP ENGINE".to_string();
+                        n.sub1 = "BYPASSED (Direct Wire)".to_string();
+                        n.sub2 = "0.0 dB Pure Master".to_string();
+                    } else if n.id == 4 {
+                        n.title = "WASAPI ENGINE".to_string();
+                        n.sub1 = "Exclusive Mode".to_string();
+                        n.sub2 = "Direct Bitstream".to_string();
+                    } else if n.id == 5 {
+                        n.title = "HARDWARE DAC".to_string();
+                        n.sub1 = "USB Audio 2.0".to_string();
+                        n.sub2 = "Direct Native Rate".to_string();
+                    }
+                }
+                self.eq_bypass = true;
+                if let Some(ref engine) = self.audio_engine {
+                    engine.set_eq_bypass(true);
+                    engine.set_force_resample_48k(false);
+                }
+            }
+            ChainMode::DspActive => {
+                // Cable goes through DSP: 1 -> 2 -> 3 -> 4 -> 5
+                self.connections = vec![
+                    CableConnection { from_node: 1, to_node: 2 },
+                    CableConnection { from_node: 2, to_node: 3 },
+                    CableConnection { from_node: 3, to_node: 4 },
+                    CableConnection { from_node: 4, to_node: 5 },
+                ];
+                // Update Node 3 (DSP Engine) to Active state
+                for n in &mut self.nodes {
+                    if n.id == 3 {
+                        n.title = "DSP ENGINE".to_string();
+                        n.sub1 = "Active (32-bit Float)".to_string();
+                        n.sub2 = "10-Band EQ & FX Active".to_string();
+                    } else if n.id == 4 {
+                        n.title = "WASAPI ENGINE".to_string();
+                        n.sub1 = "Exclusive Mode".to_string();
+                        n.sub2 = "High-Precision 32-bit".to_string();
+                    } else if n.id == 5 {
+                        n.title = "HARDWARE DAC".to_string();
+                        n.sub1 = "USB Audio 2.0".to_string();
+                        n.sub2 = "Enhanced Master".to_string();
+                    }
+                }
+                self.eq_bypass = false;
+                if let Some(ref engine) = self.audio_engine {
+                    engine.set_eq_bypass(false);
+                    engine.set_force_resample_48k(false);
+                }
+            }
+            ChainMode::OsResampled => {
+                // Cable goes through Windows Audio Mixer (Shared Mode)
+                self.connections = vec![
+                    CableConnection { from_node: 1, to_node: 2 },
+                    CableConnection { from_node: 2, to_node: 4 },
+                    CableConnection { from_node: 4, to_node: 5 },
+                ];
+                // Update Node 4 to Windows Audio Mixer
+                for n in &mut self.nodes {
+                    if n.id == 3 {
+                        n.title = "DSP ENGINE".to_string();
+                        n.sub1 = "BYPASSED".to_string();
+                        n.sub2 = "Bypass Mode".to_string();
+                    } else if n.id == 4 {
+                        n.title = "WINDOWS AUDIO MIXER".to_string();
+                        n.sub1 = "Shared Mode (WASAPI)".to_string();
+                        n.sub2 = "SRC Resampled to 48.0 kHz".to_string();
+                    } else if n.id == 5 {
+                        n.title = "HARDWARE DAC".to_string();
+                        n.sub1 = "Default Windows Endpoint".to_string();
+                        n.sub2 = "Fixed 48.0 kHz 24-bit".to_string();
+                    }
+                }
+                if let Some(ref engine) = self.audio_engine {
+                    engine.set_force_resample_48k(true);
+                }
+            }
         }
         self.save_library_state();
+    }
+
+    pub fn toggle_eq_bypass(&mut self) {
+        if self.chain_mode == ChainMode::BitPerfect {
+            self.set_chain_mode(ChainMode::DspActive);
+        } else if self.chain_mode == ChainMode::DspActive {
+            self.set_chain_mode(ChainMode::BitPerfect);
+        } else {
+            self.eq_bypass = !self.eq_bypass;
+            if let Some(ref engine) = self.audio_engine {
+                engine.set_eq_bypass(self.eq_bypass);
+            }
+            self.save_library_state();
+        }
     }
 
     pub fn get_album_cover_texture(
@@ -415,6 +753,72 @@ impl LunulaApp {
             tex
         } else {
             None
+        }
+    }
+
+    pub fn evaluate_signal_chain(&self) -> crate::models::ChainEvaluation {
+        use std::collections::{HashSet, VecDeque};
+        use crate::models::{ChainEvaluation, NodeType};
+
+        let source_id = self.nodes.iter().find(|n| n.node_type == NodeType::Source).map(|n| n.id).unwrap_or(1);
+        let endpoint_id = self.nodes.iter().find(|n| n.node_type == NodeType::Endpoint).map(|n| n.id).unwrap_or(5);
+
+        // 1. Forward reachability from Source
+        let mut reachable_from_source = HashSet::new();
+        let mut q_fwd = VecDeque::new();
+        reachable_from_source.insert(source_id);
+        q_fwd.push_back(source_id);
+
+        while let Some(curr) = q_fwd.pop_front() {
+            for conn in &self.connections {
+                if conn.from_node == curr {
+                    if reachable_from_source.insert(conn.to_node) {
+                        q_fwd.push_back(conn.to_node);
+                    }
+                }
+            }
+        }
+
+        let is_complete = reachable_from_source.contains(&endpoint_id);
+
+        // 2. Backward reachability from Endpoint
+        let mut can_reach_endpoint = HashSet::new();
+        let mut q_back = VecDeque::new();
+        can_reach_endpoint.insert(endpoint_id);
+        q_back.push_back(endpoint_id);
+
+        while let Some(curr) = q_back.pop_front() {
+            for conn in &self.connections {
+                if conn.to_node == curr {
+                    if can_reach_endpoint.insert(conn.from_node) {
+                        q_back.push_back(conn.from_node);
+                    }
+                }
+            }
+        }
+
+        // 3. Flowing nodes and flowing cables
+        let mut flowing_nodes = HashSet::new();
+        let mut flowing_cables = HashSet::new();
+
+        if is_complete {
+            for node in &self.nodes {
+                if reachable_from_source.contains(&node.id) && can_reach_endpoint.contains(&node.id) {
+                    flowing_nodes.insert(node.id);
+                }
+            }
+            for conn in &self.connections {
+                if flowing_nodes.contains(&conn.from_node) && flowing_nodes.contains(&conn.to_node) {
+                    flowing_cables.insert((conn.from_node, conn.to_node));
+                }
+            }
+        }
+
+        ChainEvaluation {
+            is_complete,
+            reachable_from_source,
+            flowing_nodes,
+            flowing_cables,
         }
     }
 }
@@ -496,11 +900,24 @@ impl eframe::App for LunulaApp {
         }
 
         if track_ended {
-            self.play_next_track();
+            self.on_track_ended();
+        }
+
+        // Evaluate Signal Chain reachability
+        let chain_eval = self.evaluate_signal_chain();
+        let is_chain_ok = chain_eval.is_complete;
+
+        // Audio Engine volume interlock: silence hardware output when signal chain is severed
+        if let Some(ref engine) = self.audio_engine {
+            if !is_chain_ok {
+                engine.set_volume(0.0);
+            } else {
+                engine.set_volume(if self.is_muted { 0.0 } else { self.volume });
+            }
         }
 
         // Live Real-Time 48-Band FFT Analysis from speaker audio stream
-        let is_audio_active = self.is_playing && !self.is_muted && self.volume > 0.001;
+        let is_audio_active = self.is_playing && !self.is_muted && self.volume > 0.001 && is_chain_ok;
         if is_audio_active {
             if let Some(ref engine) = self.audio_engine {
                 let mut raw_samples = [0.0f32; 1024];
@@ -508,30 +925,33 @@ impl eframe::App for LunulaApp {
                 self.fft_analyzer.compute_bands(&raw_samples, &mut self.spectrum_bars);
             }
         } else {
-            // Smoothly decay to baseline when paused, stopped, or muted
+            // Smoothly decay to baseline when paused, stopped, muted, or chain severed
             for b in self.spectrum_bars.iter_mut() {
                 *b = (*b * 0.80).max(0.0);
             }
         }
 
-        if self.is_playing || self.spectrum_bars.iter().any(|&v| v > 0.005) {
+        if self.is_playing || self.spectrum_bars.iter().any(|&v| v > 0.005) || !is_chain_ok {
             ctx.request_repaint();
             self.visualizer_anim_phase += 0.025;
 
-            let engine_pos = self.audio_engine.as_ref().and_then(|e| {
-                if e.playback_state() == crate::audio::PlaybackState::Playing {
-                    Some(e.current_position())
-                } else {
-                    None
-                }
-            });
+            // Only advance playback time when the signal chain is healthy and complete
+            if is_chain_ok {
+                let engine_pos = self.audio_engine.as_ref().and_then(|e| {
+                    if e.playback_state() == crate::audio::PlaybackState::Playing {
+                        Some(e.current_position())
+                    } else {
+                        None
+                    }
+                });
 
-            if let Some(pos) = engine_pos {
-                self.current_time = pos;
-            } else if self.current_track.duration > 0.0 {
-                self.current_time += 1.0 / 60.0;
-                if self.current_time >= self.current_track.duration {
-                    self.play_next_track();
+                if let Some(pos) = engine_pos {
+                    self.current_time = pos;
+                } else if self.current_track.duration > 0.0 {
+                    self.current_time += 1.0 / 60.0;
+                    if self.current_time >= self.current_track.duration {
+                        self.on_track_ended();
+                    }
                 }
             }
         }
@@ -567,16 +987,83 @@ impl eframe::App for LunulaApp {
                     }
                 }
                 if i.key_pressed(egui::Key::ArrowUp) {
-                    self.set_app_volume(self.volume + 0.05);
+                    if self.show_queue_drawer && !self.play_queue.is_empty() {
+                        if i.modifiers.ctrl || i.modifiers.alt {
+                            if let Some(sel) = self.selected_queue_idx {
+                                if sel > 0 {
+                                    self.play_queue.swap(sel, sel - 1);
+                                    self.selected_queue_idx = Some(sel - 1);
+                                    self.save_library_state();
+                                }
+                            }
+                        } else {
+                            let next_sel = match self.selected_queue_idx {
+                                Some(sel) if sel > 0 => sel - 1,
+                                _ => 0,
+                            };
+                            self.selected_queue_idx = Some(next_sel);
+                        }
+                    } else {
+                        self.set_app_volume(self.volume + 0.05);
+                    }
                 }
                 if i.key_pressed(egui::Key::ArrowDown) {
-                    self.set_app_volume(self.volume - 0.05);
+                    if self.show_queue_drawer && !self.play_queue.is_empty() {
+                        if i.modifiers.ctrl || i.modifiers.alt {
+                            if let Some(sel) = self.selected_queue_idx {
+                                if sel + 1 < self.play_queue.len() {
+                                    self.play_queue.swap(sel, sel + 1);
+                                    self.selected_queue_idx = Some(sel + 1);
+                                    self.save_library_state();
+                                }
+                            }
+                        } else {
+                            let next_sel = match self.selected_queue_idx {
+                                Some(sel) if sel + 1 < self.play_queue.len() => sel + 1,
+                                Some(sel) => sel,
+                                None => 0,
+                            };
+                            self.selected_queue_idx = Some(next_sel);
+                        }
+                    } else {
+                        self.set_app_volume(self.volume - 0.05);
+                    }
+                }
+                if self.show_queue_drawer {
+                    if i.key_pressed(egui::Key::Enter) {
+                        if let Some(sel) = self.selected_queue_idx {
+                            if sel < self.play_queue.len() {
+                                self.queue_cursor = Some(sel);
+                                let track = self.play_queue[sel].clone();
+                                self.play_track(track);
+                            }
+                        }
+                    }
+                    if i.key_pressed(egui::Key::Delete) {
+                        if let Some(sel) = self.selected_queue_idx {
+                            if sel < self.play_queue.len() {
+                                self.play_queue.remove(sel);
+                                if self.play_queue.is_empty() {
+                                    self.selected_queue_idx = None;
+                                } else {
+                                    self.selected_queue_idx = Some(sel.min(self.play_queue.len() - 1));
+                                }
+                                self.save_library_state();
+                            }
+                        }
+                    }
                 }
                 if i.key_pressed(egui::Key::M) {
                     self.toggle_mute();
                 }
                 if i.key_pressed(egui::Key::B) {
                     self.toggle_eq_bypass();
+                }
+                if i.key_pressed(egui::Key::R) {
+                    self.cycle_repeat_mode();
+                }
+                if i.key_pressed(egui::Key::S) && i.modifiers.ctrl {
+                    self.toggle_shuffle();
                 }
             });
         }
@@ -632,7 +1119,11 @@ impl eframe::App for LunulaApp {
                             ui.vertical(|ui| {
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new("⚡ MODULAR SIGNAL CHAIN").strong().size(13.5).color(Color32::from_rgb(15, 23, 42)));
-                                    ui.label(egui::RichText::new("• Buka tab 'Signal Chain Studio' untuk menghubungkan filter modular").size(11.5).color(Color32::from_rgb(148, 163, 184)));
+                                    if is_chain_ok {
+                                        ui.label(egui::RichText::new("✓ Sinyal Bit-Perfect Mengalir").size(11.5).color(Color32::from_rgb(16, 185, 129)).strong());
+                                    } else {
+                                        ui.label(egui::RichText::new("⚠️ Sinyal Terputus (Audio Dibisukan)").size(11.5).color(Color32::from_rgb(239, 68, 68)).strong());
+                                    }
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                         if ui.button(egui::RichText::new("Buka Studio Penuh ➔").strong()).clicked() {
                                             self.current_tab = AppTab::SignalChain;
@@ -644,7 +1135,23 @@ impl eframe::App for LunulaApp {
                             });
                         });
 
-                        ui.add_space(10.0);
+                        ui.add_space(8.0);
+
+                        // If signal chain is severed, display a warning card above transport
+                        if !is_chain_ok {
+                            egui::Frame::new()
+                                .fill(Color32::from_rgb(254, 242, 242))
+                                .stroke(Stroke::new(1.0, Color32::from_rgb(252, 165, 165)))
+                                .corner_radius(8.0)
+                                .inner_margin(egui::Margin::symmetric(14, 8))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new("🔴 JALUR SINYAL AUDIO TERPUTUS:").strong().size(12.5).color(Color32::from_rgb(185, 28, 28)));
+                                        ui.label(egui::RichText::new("Lagu tidak dapat berbunyi karena sambungan rantai audio (RAM Buffer / DSP / DAC) terputus. Klik tanda ✕ merah di atas untuk menyambung!").size(12.0).color(Color32::from_rgb(153, 27, 27)));
+                                    });
+                                });
+                            ui.add_space(6.0);
+                        }
 
                         // Grand Ambient Waveform Station + Perfectly Centered Transport Deck
                         self.render_ambient_waveform_station(ui);
@@ -683,9 +1190,15 @@ impl eframe::App for LunulaApp {
                                                     self.reset_patchbay_layout(ui.available_width(), ui.available_height());
                                                 }
 
-                                                ui.selectable_value(&mut self.chain_mode, ChainMode::OsResampled, egui::RichText::new("OS Resampled").size(11.0).strong());
-                                                ui.selectable_value(&mut self.chain_mode, ChainMode::DspActive, egui::RichText::new("DSP Active").size(11.0).strong());
-                                                ui.selectable_value(&mut self.chain_mode, ChainMode::BitPerfect, egui::RichText::new("Bit-Perfect").size(11.0).strong());
+                                                if ui.selectable_label(self.chain_mode == ChainMode::OsResampled, egui::RichText::new("OS Resampled").size(11.0).strong()).clicked() {
+                                                    self.set_chain_mode(ChainMode::OsResampled);
+                                                }
+                                                if ui.selectable_label(self.chain_mode == ChainMode::DspActive, egui::RichText::new("DSP Active").size(11.0).strong()).clicked() {
+                                                    self.set_chain_mode(ChainMode::DspActive);
+                                                }
+                                                if ui.selectable_label(self.chain_mode == ChainMode::BitPerfect, egui::RichText::new("Bit-Perfect").size(11.0).strong()).clicked() {
+                                                    self.set_chain_mode(ChainMode::BitPerfect);
+                                                }
                                                 ui.label(egui::RichText::new("Mode:").size(11.0).color(Color32::from_rgb(100, 116, 139)));
                                             });
                                         });

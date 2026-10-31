@@ -18,19 +18,40 @@ pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
 }
 
 pub fn render_card_frame<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
+    let top_left = ui.cursor().min;
+    let card_w = ui.available_width();
+    let card_rect = Rect::from_min_size(top_left, Vec2::new(card_w, 40.0));
+    let is_hovered = ui.input(|i| i.pointer.hover_pos().map_or(false, |p| card_rect.contains(p)));
+    let card_id = ui.scope_id().with(("card_frame", top_left.x as i64, top_left.y as i64));
+    let hover_t = ui.ctx().animate_bool(card_id, is_hovered);
+
+    let border_color = lerp_color(Color32::from_rgb(226, 232, 240), Color32::from_rgb(186, 230, 253), hover_t);
+    let stroke_w = 1.0 + hover_t * 0.5;
+
     egui::Frame::new()
         .fill(Color32::WHITE)
-        .stroke(Stroke::new(1.0, Color32::from_rgb(226, 232, 240)))
+        .stroke(Stroke::new(stroke_w, border_color))
         .corner_radius(12.0)
         .inner_margin(16.0)
         .show(ui, add_contents)
 }
 
-// Render an individual modern Nordic stat card
+// Render an individual modern Nordic stat card with silky smooth hover animation
 pub fn render_stat_box(ui: &mut egui::Ui, icon: &str, label: &str, value: &str, sub: &str, accent_color: Color32) {
+    let card_id = ui.scope_id().with(("stat_card", label));
+    let top_left = ui.cursor().min;
+    let min_size = Vec2::new(135.0, 68.0);
+    let card_rect = Rect::from_min_size(top_left, min_size);
+    let is_hovered = ui.input(|i| i.pointer.hover_pos().map_or(false, |p| card_rect.contains(p)));
+    let hover_t = ui.ctx().animate_bool(card_id, is_hovered);
+
+    let bg_color = lerp_color(Color32::WHITE, Color32::from_rgb(248, 250, 252), hover_t);
+    let border_color = lerp_color(Color32::from_rgb(226, 232, 240), accent_color, hover_t * 0.7);
+    let stroke_w = 1.0 + hover_t * 0.6;
+
     egui::Frame::new()
-        .fill(Color32::WHITE)
-        .stroke(Stroke::new(1.0, Color32::from_rgb(226, 232, 240)))
+        .fill(bg_color)
+        .stroke(Stroke::new(stroke_w, border_color))
         .corner_radius(8.0)
         .inner_margin(egui::Margin::symmetric(14, 10))
         .show(ui, |ui| {
@@ -38,7 +59,8 @@ pub fn render_stat_box(ui: &mut egui::Ui, icon: &str, label: &str, value: &str, 
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(icon).size(14.0));
-                    ui.label(egui::RichText::new(label).strong().size(11.0).color(Color32::from_rgb(71, 85, 105)));
+                    let lbl_col = lerp_color(Color32::from_rgb(71, 85, 105), Color32::from_rgb(15, 23, 42), hover_t);
+                    ui.label(egui::RichText::new(label).strong().size(11.0).color(lbl_col));
                 });
                 ui.add_space(3.0);
                 ui.label(egui::RichText::new(value).strong().size(16.5).color(accent_color));

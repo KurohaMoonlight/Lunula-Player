@@ -521,7 +521,14 @@ impl LunulaApp {
                 egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
                 |ui| {
                     ui.horizontal(|ui| {
-                        self.render_icon_btn(ui, "btn_shuffle", "🔀", 15.0, "Shuffle", |_app| {});
+                        let shuffle_tip = if self.is_shuffled {
+                            "Shuffle: Aktif (Lagu Diacak) - Klik untuk Matikan"
+                        } else {
+                            "Shuffle: Mati (Urutan Normal) - Klik untuk Acak"
+                        };
+                        self.render_toggle_icon_btn(ui, "btn_shuffle", "🔀", 15.0, self.is_shuffled, shuffle_tip, |app| {
+                            app.toggle_shuffle();
+                        });
                         ui.add_space(8.0);
 
                         self.render_icon_btn(ui, "btn_prev", "⏮", 18.0, "Previous", |app| {
@@ -645,7 +652,15 @@ impl LunulaApp {
                         });
                         ui.add_space(8.0);
 
-                        self.render_icon_btn(ui, "btn_repeat", "🔁", 15.0, "Repeat", |_app| {});
+                        let (repeat_icon, is_rep_active, repeat_tip) = match self.repeat_mode {
+                            crate::models::RepeatMode::Off => ("🔁", false, "Repeat: Mati (Klik untuk Ulangi Semua)"),
+                            crate::models::RepeatMode::All => ("🔁", true, "Repeat: Semua Lagu Aktif (Klik untuk Ulangi 1 Lagu)"),
+                            crate::models::RepeatMode::One => ("🔂", true, "Repeat: 1 Lagu Ini Saja (Klik untuk Ulangi Album Ini)"),
+                            crate::models::RepeatMode::Album => ("💿", true, "Repeat: Hanya Lagu Album Ini (Klik untuk Matikan)"),
+                        };
+                        self.render_toggle_icon_btn(ui, "btn_repeat", repeat_icon, 15.0, is_rep_active, repeat_tip, |app| {
+                            app.cycle_repeat_mode();
+                        });
                     });
                 },
             );
@@ -781,6 +796,60 @@ impl LunulaApp {
         }
 
         let icon_color = lerp_color(Color32::from_rgb(100, 116, 139), Color32::from_rgb(15, 23, 42), hover_anim);
+
+        painter.text(
+            center,
+            egui::Align2::CENTER_CENTER,
+            icon,
+            egui::FontId::proportional(font_size),
+            icon_color,
+        );
+
+        res.on_hover_text(tooltip);
+    }
+
+    pub fn render_toggle_icon_btn<F>(
+        &mut self,
+        ui: &mut egui::Ui,
+        id_str: &str,
+        icon: &str,
+        font_size: f32,
+        is_active: bool,
+        tooltip: &str,
+        mut on_click: F,
+    ) where
+        F: FnMut(&mut Self),
+    {
+        let size = Vec2::splat(36.0);
+        let (rect, res) = ui.allocate_exact_size(size, egui::Sense::click());
+        let hover_anim = ui.ctx().animate_bool(ui.scope_id().with(id_str), res.hovered());
+
+        if res.clicked() {
+            on_click(self);
+        }
+
+        let painter = ui.painter_at(rect);
+        let center = rect.center();
+
+        if is_active {
+            let bg_col = if hover_anim > 0.0 {
+                Color32::from_rgb(207, 250, 254)
+            } else {
+                Color32::from_rgb(224, 242, 254)
+            };
+            painter.circle_filled(center, 16.0, bg_col);
+            painter.circle_stroke(center, 16.0, Stroke::new(1.0, Color32::from_rgb(186, 230, 253)));
+            painter.circle_filled(center + Vec2::new(0.0, 12.0), 2.0, Color32::from_rgb(2, 132, 199));
+        } else if hover_anim > 0.0 {
+            let circle_color = Color32::from_rgba_unmultiplied(241, 245, 249, (hover_anim * 255.0) as u8);
+            painter.circle_filled(center, 16.0, circle_color);
+        }
+
+        let icon_color = if is_active {
+            Color32::from_rgb(2, 132, 199)
+        } else {
+            lerp_color(Color32::from_rgb(100, 116, 139), Color32::from_rgb(15, 23, 42), hover_anim)
+        };
 
         painter.text(
             center,

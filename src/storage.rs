@@ -26,6 +26,9 @@ impl LunulaApp {
             volume: self.volume,
             eq_bands: self.eq_bands,
             eq_bypass: self.eq_bypass,
+            is_shuffled: self.is_shuffled,
+            repeat_mode: self.repeat_mode,
+            queue_cursor: self.queue_cursor,
         };
         if let Ok(json) = serde_json::to_string_pretty(&saved_state) {
             let path = get_storage_path();
