@@ -233,6 +233,17 @@ fn filter_color(filter_type: FilterType) -> Color32 {
 }
 
 impl LunulaApp {
+    pub fn is_equalizer_in_active_chain(&self) -> bool {
+        if self.chain_mode == ChainMode::BitPerfect {
+            return false;
+        }
+        let chain_eval = self.evaluate_signal_chain();
+        self.nodes.iter().any(|n| {
+            matches!(n.node_type, NodeType::SavedEqPreset(ref name) if name == &self.active_eq.name)
+                && chain_eval.node_status(n.id) == SignalNodeStatus::Flowing
+        })
+    }
+
     pub fn sync_parametric_to_legacy_eq(&mut self) {
         let legacy_freqs = [31.0, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0];
         let max_boost = calculate_combined_peak_boost(&self.active_eq.bands, 44100.0);
@@ -251,13 +262,20 @@ impl LunulaApp {
                 self.eq_bypass,
             );
             self.eq_bands[i] = (total_db as f32).clamp(-12.0, 12.0);
+        }
+
+        // Only stream live band parameters if this EQ preset is currently connected in the signal chain!
+        if self.is_equalizer_in_active_chain() {
             if let Some(ref engine) = self.audio_engine {
-                engine.set_eq_band(i, self.eq_bands[i]);
+                for (i, &gain) in self.eq_bands.iter().enumerate() {
+                    engine.set_eq_band(i, gain);
+                }
+                engine.set_eq_bypass(self.eq_bypass);
             }
         }
-        if let Some(ref engine) = self.audio_engine {
-            engine.set_eq_bypass(self.eq_bypass);
-        }
+
+        // Always sync the signal chain so that if this EQ preset card is in the chain,
+        // it recompiles with the new bands; if not in the chain, no EQ filter is inserted.
         self.sync_signal_chain_to_engine();
     }
 
@@ -413,13 +431,12 @@ impl LunulaApp {
             ui.label(egui::RichText::new(preset_title).strong().size(12.5).color(pill_color));
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Connection status in Signal Chain Studio
+                // Modular connection status in Signal Chain Studio
                 let chain_eval = self.evaluate_signal_chain();
                 let is_preset_flowing = self.nodes.iter().any(|n| {
                     n.node_type == NodeType::SavedEqPreset(preset.name.clone()) && chain_eval.node_status(n.id) == SignalNodeStatus::Flowing
                 });
-                let is_dsp_flowing = chain_eval.node_status(3) == SignalNodeStatus::Flowing;
-                let is_eq_flowing = self.chain_mode == ChainMode::DspActive && (is_preset_flowing || is_dsp_flowing);
+                let is_eq_flowing = self.chain_mode != ChainMode::BitPerfect && is_preset_flowing;
                 let is_preset_on_canvas = self.nodes.iter().any(|n| n.node_type == NodeType::SavedEqPreset(preset.name.clone()));
 
                 if is_eq_flowing {
@@ -429,7 +446,7 @@ impl LunulaApp {
                         .corner_radius(6.0)
                         .inner_margin(egui::Margin::symmetric(10, 4))
                         .show(ui, |ui| {
-                            ui.label(egui::RichText::new("⚡ Terhubung di Signal Chain").strong().size(11.5).color(Color32::from_rgb(16, 185, 129)));
+                            ui.label(egui::RichText::new("⚡ Terhubung di Signal Chain (Live Real-Time Tuning)").strong().size(11.5).color(Color32::from_rgb(16, 185, 129)));
                         });
                 } else {
                     if !is_preset_on_canvas {
@@ -450,9 +467,9 @@ impl LunulaApp {
                             let status_text = if self.chain_mode == ChainMode::BitPerfect {
                                 "⚪ Dilewati (Bit-Perfect)"
                             } else if is_preset_on_canvas {
-                                "⚠️ Terputus di Canvas"
+                                "⚠️ Terputus di Patchbay (Audio Tidak Terpengaruh)"
                             } else {
-                                "⚪ Belum Ada di Canvas"
+                                "⚪ Belum Terhubung di Patchbay (Audio Tidak Terpengaruh)"
                             };
                             ui.label(egui::RichText::new(status_text).size(11.5).color(Color32::from_rgb(100, 116, 139)));
                         });
@@ -573,9 +590,6 @@ impl LunulaApp {
     }
 
     fn render_eq_status_notice(&self, ui: &mut egui::Ui) {
-        let chain_eval = self.evaluate_signal_chain();
-        let is_node3_active = chain_eval.is_complete && chain_eval.node_status(3) == SignalNodeStatus::Flowing;
-
         if self.chain_mode == ChainMode::BitPerfect {
             egui::Frame::new()
                 .fill(Color32::from_rgba_premultiplied(236, 253, 245, 230))
@@ -586,14 +600,24 @@ impl LunulaApp {
                     ui.label(egui::RichText::new("⚡ Mode Bit-Perfect Aktif: Rantai equalizer dilewati murni (Bit-Perfect Passthrough) untuk menjaga keutuhan bit audio asli.").size(11.5).color(Color32::from_rgb(6, 95, 70)));
                 });
             ui.add_space(6.0);
-        } else if !is_node3_active {
+        } else if self.is_equalizer_in_active_chain() {
             egui::Frame::new()
-                .fill(Color32::from_rgba_premultiplied(254, 242, 242, 230))
-                .stroke(Stroke::new(1.0, Color32::from_rgb(252, 165, 165)))
+                .fill(Color32::from_rgba_premultiplied(236, 253, 245, 230))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(167, 243, 208)))
                 .corner_radius(6.0)
                 .inner_margin(egui::Margin::symmetric(12, 6))
                 .show(ui, |ui| {
-                    ui.label(egui::RichText::new("⚠️ Equalizer Terputus: Modul DSP (3) di Signal Chain Studio terputus atau belum tersambung ke Endpoint audio.").size(11.5).color(Color32::from_rgb(185, 28, 28)));
+                    ui.label(egui::RichText::new(format!("🟢 Status: Aktif di Signal Chain (Live Real-Time Tuning) • Preset \"{}\" sedang memproses audio secara modular.", self.active_eq.name)).size(11.5).color(Color32::from_rgb(6, 95, 70)));
+                });
+            ui.add_space(6.0);
+        } else {
+            egui::Frame::new()
+                .fill(Color32::from_rgba_premultiplied(248, 250, 252, 230))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(203, 213, 225)))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(12, 6))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new(format!("⚪ Status: Kartu EQ Tidak Terhubung di Patchbay • Perubahan slider/kurva tersimpan di preset, tetapi audio yang sedang diputar TIDAK terpengaruh sampai kartu \"{}\" disambungkan di Signal Chain Studio.", self.active_eq.name)).size(11.5).color(Color32::from_rgb(71, 85, 105)));
                 });
             ui.add_space(6.0);
         }

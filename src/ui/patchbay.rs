@@ -728,10 +728,7 @@ impl LunulaApp {
         // If from_id can already reach to_id (e.g. through an EQ preset or modular filter),
         // the connection is fully satisfied and NO red dashed line is drawn!
         if !chain_eval.is_complete {
-            let standard_pairs: Vec<(usize, usize)> = match self.chain_mode {
-                ChainMode::BitPerfect | ChainMode::OsResampled => vec![(1, 2), (2, 4), (4, 5)],
-                ChainMode::DspActive => vec![(1, 2), (2, 3), (3, 4), (4, 5)],
-            };
+            let standard_pairs: Vec<(usize, usize)> = vec![(1, 2), (2, 4), (4, 5)];
             for (from_id, to_id) in standard_pairs {
                 // If from_id can already reach to_id through modular filters, it is NOT broken!
                 if self.can_reach_node(from_id, to_id) {
@@ -1683,6 +1680,325 @@ impl LunulaApp {
                         Color32::from_rgb(148, 163, 184),
                     );
                 }
+            } else if node.node_type == NodeType::Source {
+                // 🎛️ FILE SOURCE: Reel-to-Reel Tape Spools & Format Badge
+                let cy = node_rect.min.y + 33.0;
+                let r_l_cx = node_rect.min.x + 24.0;
+                let r_r_cx = node_rect.max.x - 24.0;
+                let r_rad = 9.0;
+
+                let reel_angle = if self.is_playing && is_flowing {
+                    ui.ctx().request_repaint();
+                    self.visualizer_anim_phase * 4.5
+                } else {
+                    0.0
+                };
+
+                // Tape guide line connecting the reels
+                painter.line_segment(
+                    [Pos2::new(r_l_cx, cy + r_rad), Pos2::new(r_r_cx, cy + r_rad)],
+                    Stroke::new(1.5, Color32::from_rgb(100, 116, 139)),
+                );
+                // Center magnetic read head
+                painter.rect_filled(
+                    Rect::from_center_size(Pos2::new(node_rect.center().x, cy + r_rad), Vec2::new(8.0, 5.0)),
+                    1.5,
+                    Color32::from_rgb(51, 65, 85),
+                );
+
+                // Left Reel
+                painter.circle_filled(Pos2::new(r_l_cx, cy), r_rad, Color32::from_rgb(241, 245, 249));
+                painter.circle_stroke(Pos2::new(r_l_cx, cy), r_rad, Stroke::new(1.2, Color32::from_rgb(148, 163, 184)));
+                painter.circle_filled(Pos2::new(r_l_cx, cy), 2.5, Color32::from_rgb(100, 116, 139));
+                for spk in 0..3 {
+                    let ang = reel_angle + spk as f32 * (std::f32::consts::TAU / 3.0);
+                    let ex = r_l_cx + ang.cos() * (r_rad - 1.5);
+                    let ey = cy + ang.sin() * (r_rad - 1.5);
+                    painter.line_segment([Pos2::new(r_l_cx, cy), Pos2::new(ex, ey)], Stroke::new(1.0, Color32::from_rgb(148, 163, 184)));
+                }
+
+                // Right Reel
+                painter.circle_filled(Pos2::new(r_r_cx, cy), r_rad, Color32::from_rgb(241, 245, 249));
+                painter.circle_stroke(Pos2::new(r_r_cx, cy), r_rad, Stroke::new(1.2, Color32::from_rgb(148, 163, 184)));
+                painter.circle_filled(Pos2::new(r_r_cx, cy), 2.5, Color32::from_rgb(100, 116, 139));
+                for spk in 0..3 {
+                    let ang = reel_angle + spk as f32 * (std::f32::consts::TAU / 3.0);
+                    let ex = r_r_cx + ang.cos() * (r_rad - 1.5);
+                    let ey = cy + ang.sin() * (r_rad - 1.5);
+                    painter.line_segment([Pos2::new(r_r_cx, cy), Pos2::new(ex, ey)], Stroke::new(1.0, Color32::from_rgb(148, 163, 184)));
+                }
+
+                // Center format badge
+                let badge_rect = Rect::from_center_size(Pos2::new(node_rect.center().x, cy - 6.0), Vec2::new(64.0, 13.0));
+                painter.rect_filled(badge_rect, 3.0, Color32::from_rgb(238, 242, 255));
+                painter.rect_stroke(badge_rect, 3.0, Stroke::new(0.8, Color32::from_rgb(199, 210, 254)), egui::StrokeKind::Outside);
+                let badge_txt = if !node.sub1.is_empty() { &node.sub1 } else { "FLAC Lossless" };
+                painter.text(
+                    badge_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    badge_txt,
+                    egui::FontId::proportional(8.0),
+                    Color32::from_rgb(67, 56, 202),
+                );
+
+                let sub2_txt = if !node.sub2.is_empty() { &node.sub2 } else { "Lossless Master" };
+                painter.text(
+                    Pos2::new(node_rect.center().x, node_rect.min.y + 49.0),
+                    egui::Align2::CENTER_CENTER,
+                    sub2_txt,
+                    egui::FontId::proportional(8.5),
+                    Color32::from_rgb(100, 116, 139),
+                );
+            } else if node.node_type == NodeType::Buffer {
+                // ⚡ RAM BUFFER: Segmented 6-Block Low-Latency Cache Bank
+                let seg_w = 13.0;
+                let seg_h = 12.0;
+                let seg_gap = 3.5;
+                let total_w = 6.0 * seg_w + 5.0 * seg_gap;
+                let start_x = node_rect.center().x - total_w * 0.5;
+                let cy = node_rect.min.y + 27.0;
+
+                for s in 0..6 {
+                    let sx = start_x + s as f32 * (seg_w + seg_gap);
+                    let s_rect = Rect::from_min_size(Pos2::new(sx, cy - seg_h * 0.5), Vec2::new(seg_w, seg_h));
+
+                    let is_lit = is_flowing;
+                    let pulse = if self.is_playing && is_flowing {
+                        ui.ctx().request_repaint();
+                        (self.visualizer_anim_phase * 5.0 + s as f32 * 0.9).sin() * 0.5 + 0.5
+                    } else {
+                        0.6
+                    };
+
+                    let col = if !is_flowing {
+                        Color32::from_rgb(254, 202, 202)
+                    } else if is_lit {
+                        let r = (20.0 + 14.0 * pulse) as u8;
+                        let g = (180.0 + 55.0 * pulse) as u8;
+                        let b = (220.0 + 35.0 * pulse) as u8;
+                        Color32::from_rgb(r, g, b)
+                    } else {
+                        Color32::from_rgb(226, 232, 240)
+                    };
+
+                    painter.rect_filled(s_rect, 2.0, col);
+                    painter.rect_stroke(s_rect, 2.0, Stroke::new(0.8, Color32::from_rgb(14, 165, 233)), egui::StrokeKind::Outside);
+                }
+
+                let sub2_txt = if !node.sub2.is_empty() { &node.sub2 } else { "100% Buffered • 0 Disk I/O" };
+                painter.text(
+                    Pos2::new(node_rect.center().x, node_rect.min.y + 48.0),
+                    egui::Align2::CENTER_CENTER,
+                    sub2_txt,
+                    egui::FontId::proportional(8.5),
+                    Color32::from_rgb(14, 116, 144),
+                );
+            } else if node.node_type == NodeType::Dsp {
+                // 🎛️ DSP ENGINE: 7 Mini Dancing Graphic Spectrum Bars
+                if !is_bypassed_effect {
+                    let bar_count = 7;
+                    let bar_w = 8.0;
+                    let bar_gap = 4.0;
+                    let total_w = bar_count as f32 * bar_w + (bar_count - 1) as f32 * bar_gap;
+                    let start_x = node_rect.center().x - total_w * 0.5;
+                    let base_y = node_rect.min.y + 39.0;
+                    let max_h = 16.0;
+
+                    for b in 0..bar_count {
+                        let bx = start_x + b as f32 * (bar_w + bar_gap);
+                        let spec_val = self.spectrum_bars[b * 6];
+                        let active_h = if self.is_playing && is_flowing {
+                            ui.ctx().request_repaint();
+                            let wave_bounce = ((self.visualizer_anim_phase * 6.0 + b as f32 * 1.1).sin() * 0.35 + 0.35).abs();
+                            (spec_val * 1.5).max(wave_bounce).clamp(0.15, 1.0) * max_h
+                        } else {
+                            3.5
+                        };
+
+                        let b_rect = Rect::from_min_size(Pos2::new(bx, base_y - active_h), Vec2::new(bar_w, active_h));
+                        painter.rect_filled(b_rect, 1.5, Color32::from_rgb(129, 140, 248));
+                        painter.line_segment(
+                            [Pos2::new(bx, base_y - active_h - 1.5), Pos2::new(bx + bar_w, base_y - active_h - 1.5)],
+                            Stroke::new(1.0, Color32::from_rgb(192, 132, 252)),
+                        );
+                    }
+
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 48.0),
+                        egui::Align2::CENTER_CENTER,
+                        "64-bit Master DSP Bus",
+                        egui::FontId::proportional(8.5),
+                        Color32::from_rgb(99, 102, 241),
+                    );
+                } else {
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        egui::Align2::CENTER_CENTER,
+                        "DILEWATI (Direct Wire)",
+                        egui::FontId::proportional(10.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 41.5),
+                        egui::Align2::CENTER_CENTER,
+                        "0.0 dB Pure Master",
+                        egui::FontId::proportional(9.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                }
+            } else if node.node_type == NodeType::Driver {
+                // 📡 AUDIO ENGINE / RESAMPLER: Oscilloscope Screen with rolling Sinc / Sine wave
+                let scope_rect = Rect::from_min_size(
+                    Pos2::new(node_rect.min.x + 14.0, node_rect.min.y + 20.0),
+                    Vec2::new(node_width - 28.0, 19.0),
+                );
+                painter.rect_filled(scope_rect, 3.0, Color32::from_rgb(15, 23, 42));
+                painter.rect_stroke(scope_rect, 3.0, Stroke::new(1.0, Color32::from_rgb(51, 65, 85)), egui::StrokeKind::Outside);
+
+                let sc_cy = scope_rect.center().y;
+                painter.line_segment(
+                    [Pos2::new(scope_rect.min.x + 2.0, sc_cy), Pos2::new(scope_rect.max.x - 2.0, sc_cy)],
+                    Stroke::new(0.6, Color32::from_rgb(30, 41, 59)),
+                );
+
+                let trace_painter = painter.with_clip_rect(scope_rect);
+                let pts_count = 20;
+                let mut trace_pts = Vec::new();
+                let roll = if self.is_playing && is_flowing {
+                    ui.ctx().request_repaint();
+                    self.visualizer_anim_phase * 7.0
+                } else {
+                    0.0
+                };
+                for p_idx in 0..=pts_count {
+                    let frac = p_idx as f32 / pts_count as f32;
+                    let px = scope_rect.min.x + scope_rect.width() * frac;
+                    let t_norm = (frac - 0.5) * 8.0;
+                    let sinc = if t_norm.abs() < 1e-4 {
+                        1.0
+                    } else {
+                        (t_norm + roll).sin() / (t_norm.abs() + 0.5)
+                    };
+                    let py = sc_cy - sinc * 6.5;
+                    trace_pts.push(Pos2::new(px, py));
+                }
+                for w in trace_pts.windows(2) {
+                    trace_painter.line_segment([w[0], w[1]], Stroke::new(1.4, Color32::from_rgb(52, 211, 153)));
+                }
+
+                let sub2_txt = if !node.sub2.is_empty() { &node.sub2 } else { "Rubato Sinc • 48.0 kHz" };
+                painter.text(
+                    Pos2::new(node_rect.center().x, node_rect.min.y + 48.0),
+                    egui::Align2::CENTER_CENTER,
+                    sub2_txt,
+                    egui::FontId::proportional(8.5),
+                    Color32::from_rgb(16, 185, 129),
+                );
+            } else if node.node_type == NodeType::Endpoint {
+                // 🔊 OUTPUT DAC: Dual Stereo Analog VU Meters (L & R)
+                let m_w = (node_width - 36.0) * 0.5;
+                let m_h = 16.0;
+                let m_l = Rect::from_min_size(Pos2::new(node_rect.min.x + 14.0, node_rect.min.y + 20.0), Vec2::new(m_w, m_h));
+                let m_r = Rect::from_min_size(Pos2::new(node_rect.center().x + 4.0, node_rect.min.y + 20.0), Vec2::new(m_w, m_h));
+
+                for (idx, m_rect) in [m_l, m_r].iter().enumerate() {
+                    painter.rect_filled(*m_rect, 2.5, Color32::from_rgb(254, 252, 232));
+                    painter.rect_stroke(*m_rect, 2.5, Stroke::new(0.8, Color32::from_rgb(253, 224, 71)), egui::StrokeKind::Outside);
+
+                    let piv = Pos2::new(m_rect.center().x, m_rect.max.y + 2.0);
+                    let spec_val = if idx == 0 { self.spectrum_bars[4] } else { self.spectrum_bars[12] };
+                    let bounce = if self.is_playing && is_flowing {
+                        ui.ctx().request_repaint();
+                        let osc = ((self.visualizer_anim_phase * 6.5 + idx as f32 * 1.5).sin() * 0.35 + 0.35).abs();
+                        (spec_val * 1.8).max(osc).clamp(0.1, 0.95)
+                    } else {
+                        0.15
+                    };
+
+                    let angle = -std::f32::consts::FRAC_PI_4 + bounce * std::f32::consts::FRAC_PI_2;
+                    let tip = Pos2::new(piv.x + angle.sin() * 14.0, piv.y - angle.cos() * 14.0);
+                    painter.line_segment([piv, tip], Stroke::new(1.2, Color32::from_rgb(180, 83, 9)));
+
+                    let lbl = if idx == 0 { "L" } else { "R" };
+                    painter.text(Pos2::new(m_rect.min.x + 3.0, m_rect.min.y + 2.0), egui::Align2::LEFT_TOP, lbl, egui::FontId::proportional(6.5), Color32::from_rgb(161, 98, 7));
+                }
+
+                let sub2_txt = if !node.sub2.is_empty() { &node.sub2 } else { "32-bit Float PCM Direct" };
+                painter.text(
+                    Pos2::new(node_rect.center().x, node_rect.min.y + 48.0),
+                    egui::Align2::CENTER_CENTER,
+                    sub2_txt,
+                    egui::FontId::proportional(8.5),
+                    Color32::from_rgb(217, 119, 6),
+                );
+            } else if let NodeType::SavedEqPreset(ref name) = node.node_type {
+                // 🎛️ EQ PRESET: Mini Dynamic Frequency Curve CRT Screen
+                let screen_rect = Rect::from_min_size(
+                    Pos2::new(node_rect.min.x + 14.0, node_rect.min.y + 19.0),
+                    Vec2::new(node_width - 28.0, 19.0),
+                );
+                painter.rect_filled(screen_rect, 3.0, Color32::from_rgb(15, 23, 42));
+                painter.rect_stroke(screen_rect, 3.0, Stroke::new(1.0, Color32::from_rgb(51, 65, 85)), egui::StrokeKind::Outside);
+
+                // Zero line (0 dB)
+                let sc_cy = screen_rect.center().y;
+                painter.line_segment(
+                    [Pos2::new(screen_rect.min.x + 2.0, sc_cy), Pos2::new(screen_rect.max.x - 2.0, sc_cy)],
+                    Stroke::new(0.6, Color32::from_rgb(30, 41, 59)),
+                );
+
+                // Render dynamic EQ curve across the screen width
+                let curve_painter = painter.with_clip_rect(screen_rect);
+                let pts_count = 24;
+                let mut curve_pts = Vec::new();
+                let is_active_live = &self.active_eq.name == name;
+                let bands = if is_active_live {
+                    &self.active_eq.bands
+                } else if let Some(p) = self.eq_presets.iter().find(|p| &p.name == name) {
+                    &p.bands
+                } else {
+                    &self.active_eq.bands
+                };
+
+                for p_idx in 0..=pts_count {
+                    let frac = p_idx as f64 / pts_count as f64;
+                    // Log frequency mapping from 20 Hz to 20000 Hz
+                    let freq = 20.0 * (1000.0_f64).powf(frac);
+                    let db = crate::ui::equalizer::compute_total_curve_db(bands, freq, 44100.0, 0.0, !is_flowing);
+                    let px = screen_rect.min.x + screen_rect.width() * frac as f32;
+                    let py = (sc_cy - (db as f32 / 12.0) * 8.0).clamp(screen_rect.min.y + 1.0, screen_rect.max.y - 1.0);
+                    curve_pts.push(Pos2::new(px, py));
+                }
+
+                let curve_stroke_color = if !is_flowing {
+                    Color32::from_rgb(148, 163, 184)
+                } else {
+                    Color32::from_rgb(168, 85, 247) // Purple EQ curve
+                };
+
+                for w in curve_pts.windows(2) {
+                    curve_painter.line_segment([w[0], w[1]], Stroke::new(1.4, curve_stroke_color));
+                }
+
+                // Preset name and live status
+                let sub2_txt = if is_flowing {
+                    if is_active_live { "Live Tuning • Aktif" } else { "Preset • Aktif" }
+                } else {
+                    "Klik untuk Buka EQ"
+                };
+                let sub2_col = if is_flowing {
+                    Color32::from_rgb(168, 85, 247)
+                } else {
+                    Color32::from_rgb(100, 116, 139)
+                };
+
+                painter.text(
+                    Pos2::new(node_rect.center().x, node_rect.min.y + 48.0),
+                    egui::Align2::CENTER_CENTER,
+                    sub2_txt,
+                    egui::FontId::proportional(8.5),
+                    sub2_col,
+                );
             } else {
                 // Sublabels: Dynamic based on bypassed vs flowing vs broken
                 let (sub1_txt, sub1_col, sub2_txt, sub2_col) = if is_bypassed_effect {

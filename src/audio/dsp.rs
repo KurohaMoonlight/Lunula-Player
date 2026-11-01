@@ -2216,4 +2216,51 @@ mod tests {
         assert!(l[63] > 0.65, "Hard Left should amplify L, got {}", l[63]);
         assert!(r[63] < 0.01, "Hard Left should mute R, got {}", r[63]);
     }
+
+    #[test]
+    fn test_volume_booster_without_eq_has_boost_but_no_eq_filtering() {
+        let mut dsp = DspPipeline::new(48000.0);
+        dsp.set_eq_bypass(false);
+
+        // Chain with Volume Booster (+6.0 dB = ~2.0x gain) but NO Equalizer:
+        // Source (1) -> RAM Buffer (2) -> Volume Booster (6) -> App Resampler (4) -> Output DAC (5)
+        let booster = Box::new(VolumeBoosterEffect::new(6.02));
+        let graph = crate::audio::SignalChainGraph {
+            is_complete: true,
+            nodes: vec![
+                crate::audio::GraphNode { id: 1, name: "FILE SOURCE".to_string(), effect: Box::new(PassthroughEffect) },
+                crate::audio::GraphNode { id: 2, name: "RAM BUFFER".to_string(), effect: Box::new(PassthroughEffect) },
+                crate::audio::GraphNode { id: 6, name: "VOLUME BOOSTER".to_string(), effect: booster },
+                crate::audio::GraphNode { id: 4, name: "APP RESAMPLER".to_string(), effect: Box::new(PassthroughEffect) },
+                crate::audio::GraphNode { id: 5, name: "OUTPUT DAC".to_string(), effect: Box::new(PassthroughEffect) },
+            ],
+            edges: vec![(1, 2), (2, 6), (6, 4), (4, 5)],
+            topological_order: vec![1, 2, 6, 4, 5],
+            effects: vec![],
+        };
+        dsp.set_signal_chain(graph);
+
+        // Set extreme EQ cut on all bands: -12 dB (should have 0 effect since EQ is disconnected)
+        for band in 0..10 {
+            dsp.set_eq_band(band, -12.0);
+        }
+
+        let input_l = [0.25f32; 256];
+        let input_r = [-0.25f32; 256];
+        let mut left = input_l;
+        let mut right = input_r;
+
+        // Process blocks
+        for _ in 0..10 {
+            left = input_l;
+            right = input_r;
+            dsp.process_block(&mut left, &mut right);
+        }
+
+        // +6.02 dB on 0.25 is ~0.50. Equalizer -12dB must NOT be applied at all!
+        let end_sample_l = left[255];
+        let end_sample_r = right[255];
+        assert!((end_sample_l - 0.50).abs() < 0.02, "Volume Booster must amplify 0.25 to ~0.50 despite -12dB EQ: got {}", end_sample_l);
+        assert!((end_sample_r - (-0.50)).abs() < 0.02, "Volume Booster must amplify -0.25 to ~-0.50 despite -12dB EQ: got {}", end_sample_r);
+    }
 }

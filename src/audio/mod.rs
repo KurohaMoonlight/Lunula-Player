@@ -10,7 +10,7 @@ pub mod visualizer;
 pub use decoder::AudioDecoder;
 pub use dsp::{
     AnalogPreampEffect, BassGuardEffect, DspPipeline, DynamicLoudnessEffect, GraphicEqEffect, LowPassFilterEffect, MixerEffect, OpticalLevelerEffect,
-    PassthroughEffect, PresetEqEffect, SplitterEffect, SteppedAttenuatorEffect, StereoBalanceEffect, StereoWidenerEffect, TubeWarmerEffect,
+    ParametricBandConfig, ParametricEqEffect, PassthroughEffect, PresetEqEffect, SplitterEffect, SteppedAttenuatorEffect, StereoBalanceEffect, StereoWidenerEffect, TubeWarmerEffect,
     VolumeAttenuatorEffect, VolumeBoosterEffect, EQ_FREQUENCIES,
 };
 pub use engine::AudioEngineController;

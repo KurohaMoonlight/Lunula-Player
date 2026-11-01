@@ -187,9 +187,9 @@ impl LunulaApp {
             ModularNode {
                 id: 4,
                 node_type: NodeType::Driver,
-                title: "OUTPUT ENGINE".to_string(),
+                title: "APP RESAMPLER".to_string(),
                 sub1: "System Audio Endpoint".to_string(),
-                sub2: "Direct Bitstream".to_string(),
+                sub2: "Rubato Sinc SRC • 48.0 kHz".to_string(),
                 pos: Pos2::new(488.0, 48.0),
                 is_removable: false,
                 param_val: 0.0,
@@ -800,17 +800,13 @@ impl LunulaApp {
                     }
                 }
                 4 => {
+                    node.title = "APP RESAMPLER".to_string();
+                    node.sub1 = report.device_name.clone();
                     if report.is_exclusive {
-                        node.title = "WASAPI EXCLUSIVE".to_string();
-                        node.sub1 = report.device_name.clone();
                         node.sub2 = format!("Direct Bitstream • {:.1} kHz", report.device_rate as f32 / 1000.0);
                     } else if report.is_resampling {
-                        node.title = "APP RESAMPLER".to_string();
-                        node.sub1 = report.device_name.clone();
                         node.sub2 = format!("Rubato Sinc SRC • {:.1} kHz", report.device_rate as f32 / 1000.0);
                     } else {
-                        node.title = "SHARED STREAM".to_string();
-                        node.sub1 = report.device_name.clone();
                         node.sub2 = format!("1:1 Native Rate • {:.1} kHz", report.device_rate as f32 / 1000.0);
                     }
                 }
@@ -842,8 +838,7 @@ impl LunulaApp {
         if self.connections.is_empty() {
             self.connections = vec![
                 CableConnection { from_node: 1, to_node: 2 },
-                CableConnection { from_node: 2, to_node: 3 },
-                CableConnection { from_node: 3, to_node: 4 },
+                CableConnection { from_node: 2, to_node: 4 },
                 CableConnection { from_node: 4, to_node: 5 },
             ];
         }
@@ -870,27 +865,23 @@ impl LunulaApp {
                     3 => {
                         if mode == ChainMode::DspActive {
                             n.sub1 = "Active (64-bit Float)".to_string();
-                            n.sub2 = "10-Band Biquad f64 • Headroom Guard".to_string();
+                            n.sub2 = "64-bit DSP Bus • Clean Passthrough".to_string();
                         } else {
                             n.sub1 = "BYPASSED (Direct Wire)".to_string();
                             n.sub2 = "0.0 dB Pure Master".to_string();
                         }
                     }
                     4 => {
+                        n.title = "APP RESAMPLER".to_string();
+                        n.sub1 = dev_name.clone();
                         match mode {
                             ChainMode::BitPerfect => {
-                                n.title = "AUDIO ENGINE".to_string();
-                                n.sub1 = dev_name.clone();
-                                n.sub2 = "Bit-Perfect Requested".to_string();
+                                n.sub2 = "1:1 Native Rate (Bit-Perfect)".to_string();
                             }
                             ChainMode::DspActive => {
-                                n.title = "AUDIO ENGINE".to_string();
-                                n.sub1 = dev_name.clone();
-                                n.sub2 = "DSP Stream Active".to_string();
+                                n.sub2 = "Rubato Sinc SRC • 48.0 kHz".to_string();
                             }
                             ChainMode::OsResampled => {
-                                n.title = "APP RESAMPLER".to_string();
-                                n.sub1 = dev_name.clone();
                                 n.sub2 = "Resample to 48.0 kHz".to_string();
                             }
                         }
@@ -1102,7 +1093,7 @@ impl LunulaApp {
         use std::collections::{HashMap, VecDeque};
         use crate::models::NodeType;
         use crate::audio::{
-            AnalogPreampEffect, BassGuardEffect, DynamicLoudnessEffect, Effect, GraphicEqEffect, LowPassFilterEffect, MixerEffect, OpticalLevelerEffect,
+            AnalogPreampEffect, BassGuardEffect, DynamicLoudnessEffect, Effect, LowPassFilterEffect, MixerEffect, OpticalLevelerEffect,
             PassthroughEffect, PresetEqEffect, SplitterEffect, SteppedAttenuatorEffect, StereoBalanceEffect, StereoWidenerEffect,
             TubeWarmerEffect, VolumeAttenuatorEffect, VolumeBoosterEffect,
         };
@@ -1167,7 +1158,8 @@ impl LunulaApp {
                 let is_custom_effect = node.node_type.is_dsp_or_effect();
                 let effect: Box<dyn Effect> = match &node.node_type {
                     NodeType::Dsp => {
-                        Box::new(GraphicEqEffect::new(self.eq_bands, sample_rate))
+                        // Neutral 64-bit transparent DSP bus (no hidden EQ coloration)
+                        Box::new(PassthroughEffect)
                     }
                     NodeType::TubeWarmer => {
                         let drive = if (0.0..=100.0).contains(&node.param_val) { node.param_val } else { 35.0 };
@@ -1194,7 +1186,31 @@ impl LunulaApp {
                         Box::new(SplitterEffect)
                     }
                     NodeType::SavedEqPreset(name) => {
-                        Box::new(PresetEqEffect::from_preset(name, sample_rate))
+                        let bands_opt = if &self.active_eq.name == name {
+                            Some(&self.active_eq.bands)
+                        } else {
+                            self.eq_presets.iter().find(|p| &p.name == name).map(|p| &p.bands)
+                        };
+
+                        if let Some(bands) = bands_opt {
+                            let configs: Vec<crate::audio::ParametricBandConfig> = bands.iter().map(|b| {
+                                let f_type = match b.filter_type {
+                                    crate::models::FilterType::LowShelf => "low_shelf",
+                                    crate::models::FilterType::HighShelf => "high_shelf",
+                                    crate::models::FilterType::HighPass => "hpf",
+                                    _ => "peak",
+                                }.to_string();
+                                crate::audio::ParametricBandConfig {
+                                    freq: b.freq as f64,
+                                    gain_db: if b.enabled { b.gain_db as f64 } else { 0.0 },
+                                    q: b.q as f64,
+                                    filter_type: f_type,
+                                }
+                            }).collect();
+                            Box::new(crate::audio::ParametricEqEffect::new(name, configs, sample_rate))
+                        } else {
+                            Box::new(PresetEqEffect::from_preset(name, sample_rate))
+                        }
                     }
                     NodeType::VolumeBooster => {
                         let boost = if (0.0..=24.0).contains(&node.param_val) { node.param_val } else { 6.0 };
@@ -1792,6 +1808,97 @@ impl eframe::App for LunulaApp {
                     }
                 }
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{CableConnection, ChainMode, FilterType, ModularNode, NodeType, ParametricBand};
+
+    #[test]
+    fn test_node4_title_is_consistently_app_resampler() {
+        let mut app = LunulaApp::default();
+        assert_eq!(app.nodes.iter().find(|n| n.id == 4).unwrap().title, "APP RESAMPLER");
+
+        app.set_chain_mode(ChainMode::BitPerfect);
+        assert_eq!(app.nodes.iter().find(|n| n.id == 4).unwrap().title, "APP RESAMPLER");
+
+        app.set_chain_mode(ChainMode::DspActive);
+        assert_eq!(app.nodes.iter().find(|n| n.id == 4).unwrap().title, "APP RESAMPLER");
+
+        app.set_chain_mode(ChainMode::OsResampled);
+        assert_eq!(app.nodes.iter().find(|n| n.id == 4).unwrap().title, "APP RESAMPLER");
+    }
+
+    #[test]
+    fn test_eq_not_in_chain_produces_no_eq_effect_even_with_node3_dsp_engine() {
+        let mut app = LunulaApp::default();
+        app.chain_mode = ChainMode::DspActive;
+        // Connect 1 -> 2 -> 3 -> 4 -> 5 (DSP ENGINE is in path, but NO EQ preset card)
+        app.connections = vec![
+            CableConnection { from_node: 1, to_node: 2 },
+            CableConnection { from_node: 2, to_node: 3 },
+            CableConnection { from_node: 3, to_node: 4 },
+            CableConnection { from_node: 4, to_node: 5 },
+        ];
+        app.invalidate_chain_cache();
+
+        assert!(!app.is_equalizer_in_active_chain());
+
+        let graph = app.compile_signal_chain();
+        assert!(graph.is_complete);
+        // None of the effects in the graph should be an EQ effect
+        for eff in &graph.effects {
+            assert_ne!(eff.name(), "10-Band Graphic EQ");
+            assert_ne!(eff.name(), app.active_eq.name);
+        }
+    }
+
+    #[test]
+    fn test_eq_preset_card_connected_is_compiled_into_signal_chain() {
+        let mut app = LunulaApp::default();
+        app.chain_mode = ChainMode::DspActive;
+        app.active_eq.name = "My Custom EQ".to_string();
+        app.active_eq.bands = vec![
+            ParametricBand {
+                enabled: true,
+                filter_type: FilterType::Peaking,
+                freq: 1000.0,
+                gain_db: 6.0,
+                q: 1.414,
+                slope: crate::models::FilterSlope::Db12,
+            }
+        ];
+
+        // Add a modular EQ preset card
+        let eq_card_id = 99;
+        app.nodes.push(ModularNode {
+            id: eq_card_id,
+            node_type: NodeType::SavedEqPreset("My Custom EQ".to_string()),
+            title: "🎛️ EQ PRESET".to_string(),
+            sub1: "My Custom EQ".to_string(),
+            sub2: "Parametric".to_string(),
+            pos: Pos2::new(300.0, 100.0),
+            is_removable: true,
+            param_val: 0.0,
+        });
+
+        // Connect 1 -> 2 -> 99 -> 4 -> 5
+        app.connections = vec![
+            CableConnection { from_node: 1, to_node: 2 },
+            CableConnection { from_node: 2, to_node: eq_card_id },
+            CableConnection { from_node: eq_card_id, to_node: 4 },
+            CableConnection { from_node: 4, to_node: 5 },
+        ];
+        app.invalidate_chain_cache();
+
+        assert!(app.is_equalizer_in_active_chain());
+
+        let graph = app.compile_signal_chain();
+        assert!(graph.is_complete);
+        let has_custom_eq = graph.effects.iter().any(|eff| eff.name() == "My Custom EQ");
+        assert!(has_custom_eq, "Compiled graph must contain 'My Custom EQ' effect");
     }
 }
 
