@@ -74,6 +74,10 @@ impl AudioEngineController {
         let _ = self.cmd_tx.send(AudioCommand::Resume);
     }
 
+    pub fn restart(&self) {
+        let _ = self.cmd_tx.send(AudioCommand::Restart);
+    }
+
     pub fn stop(&self) {
         let _ = self.cmd_tx.send(AudioCommand::Stop);
     }
@@ -175,10 +179,15 @@ fn create_signal_path_report(
 
     let actual_mode = match chain_mode {
         ChainMode::BitPerfect => {
-            if track_rate == device_rate {
+            let bit_depth_ok = out.bit_depth() >= source_bit_depth;
+            // True bit-perfect requires:
+            // 1. Hardware exclusive mode (bypasses Windows OS audio mixer)
+            // 2. Exactly matching sample rate (no resampler)
+            // 3. Hardware bit depth >= track bit depth (no bit depth truncation)
+            // 4. Source bit depth between 1 and 24 (lossless; 32-bit integer PCM through f32 loses bits, and lossy formats 0-bit are not bit-perfect)
+            if is_exclusive && track_rate == device_rate && bit_depth_ok && source_bit_depth > 0 && source_bit_depth <= 24 {
                 ChainMode::BitPerfect
             } else {
-                // Fallback: device hardware does not natively support track rate
                 ChainMode::OsResampled
             }
         }
@@ -311,6 +320,7 @@ fn run_audio_worker(
                                         Arc::clone(&shared_bit_perfect),
                                         Arc::clone(&shared_muted),
                                         Arc::clone(&is_dsp_active),
+                                        event_tx.clone(),
                                     ) {
                                         Ok((out, prod)) => {
                                             sync_output_dsp(&out, desired_rate, chain_mode, last_bypass, &last_graph, &last_eq_bands);
@@ -319,10 +329,22 @@ fn run_audio_worker(
                                             current_stream_mode = Some(chain_mode);
                                         }
                                         Err(err) => {
+                                            if let Some(out) = &output {
+                                                out.pause();
+                                                let _ = out.flush();
+                                            }
+                                            decoder = None;
+                                            raw_pos = 0;
+                                            raw_len = 0;
+                                            state = PlaybackState::Stopped;
+                                            shared_state.store(0, Ordering::Relaxed);
+                                            shared_position_ms.store(0, Ordering::Relaxed);
+                                            let _ = event_tx.send(AudioEvent::StateChanged(PlaybackState::Stopped));
                                             let _ = event_tx.send(AudioEvent::Error(format!(
                                                 "Inisialisasi perangkat audio gagal: {}",
                                                 err
-                                             )));
+                                            )));
+                                            continue;
                                         }
                                     }
                                 } else if let Some(out) = &output {
@@ -363,6 +385,17 @@ fn run_audio_worker(
                                 let _ = event_tx.send(AudioEvent::StateChanged(PlaybackState::Playing));
                             }
                             Err(err) => {
+                                if let Some(out) = &output {
+                                    out.pause();
+                                    let _ = out.flush();
+                                }
+                                decoder = None;
+                                raw_pos = 0;
+                                raw_len = 0;
+                                state = PlaybackState::Stopped;
+                                shared_state.store(0, Ordering::Relaxed);
+                                shared_position_ms.store(0, Ordering::Relaxed);
+                                let _ = event_tx.send(AudioEvent::StateChanged(PlaybackState::Stopped));
                                 let _ = event_tx.send(AudioEvent::Error(format!(
                                     "Gagal membuka file audio: {}",
                                     err
@@ -381,7 +414,23 @@ fn run_audio_worker(
                         }
                     }
                     AudioCommand::Resume => {
-                        if state == PlaybackState::Paused {
+                        if state == PlaybackState::Paused || (state == PlaybackState::Stopped && decoder.is_some()) {
+                            if let Some(dec) = &mut decoder {
+                                if raw_pos >= raw_len && dec.current_time() >= (dec.duration().max(0.1) - 0.5) {
+                                    let _ = dec.seek(0.0);
+                                    raw_pos = 0;
+                                    raw_len = 0;
+                                    if let Some(out) = &output {
+                                        let _ = out.flush();
+                                    }
+                                    let device_rate = output.as_ref().map(|o| o.sample_rate()).unwrap_or(44100);
+                                    let track_sample_rate = dec.sample_rate();
+                                    resampler.reset(track_sample_rate, device_rate);
+                                    dsp.reset_states();
+                                    shared_position_ms.store(0, Ordering::Relaxed);
+                                    let _ = event_tx.send(AudioEvent::Position(0.0));
+                                }
+                            }
                             if let Some(out) = &output {
                                 out.resume();
                             }
@@ -390,9 +439,30 @@ fn run_audio_worker(
                             let _ = event_tx.send(AudioEvent::StateChanged(PlaybackState::Playing));
                         }
                     }
+                    AudioCommand::Restart => {
+                        if let Some(dec) = &mut decoder {
+                            let _ = dec.seek(0.0);
+                            raw_pos = 0;
+                            raw_len = 0;
+                            if let Some(out) = &output {
+                                let _ = out.flush();
+                                out.resume();
+                            }
+                            let device_rate = output.as_ref().map(|o| o.sample_rate()).unwrap_or(44100);
+                            let track_sample_rate = dec.sample_rate();
+                            resampler.reset(track_sample_rate, device_rate);
+                            dsp.reset_states();
+                            state = PlaybackState::Playing;
+                            shared_state.store(1, Ordering::Relaxed);
+                            shared_position_ms.store(0, Ordering::Relaxed);
+                            let _ = event_tx.send(AudioEvent::Position(0.0));
+                            let _ = event_tx.send(AudioEvent::StateChanged(PlaybackState::Playing));
+                        }
+                    }
                     AudioCommand::Stop => {
                         if let Some(out) = &output {
                             out.pause();
+                            let _ = out.flush();
                         }
                         decoder = None;
                         raw_pos = 0;
@@ -400,26 +470,32 @@ fn run_audio_worker(
                         state = PlaybackState::Stopped;
                         shared_state.store(0, Ordering::Relaxed);
                         shared_position_ms.store(0, Ordering::Relaxed);
+                        shared_visualizer.clear();
                         let _ = event_tx.send(AudioEvent::StateChanged(PlaybackState::Stopped));
                     }
                     AudioCommand::Seek(seconds) => {
                         if let Some(dec) = &mut decoder {
-                            if let Ok(()) = dec.seek(seconds) {
-                                let pos = dec.current_time();
-                                shared_position_ms.store((pos * 1000.0) as u32, Ordering::Relaxed);
-                                let _ = event_tx.send(AudioEvent::Position(pos));
+                            match dec.seek(seconds) {
+                                Ok(actual_pos) => {
+                                    raw_pos = 0;
+                                    raw_len = 0;
 
-                                raw_pos = 0;
-                                raw_len = 0;
-
-                                if let Some(out) = &output {
-                                    if !out.flush() {
-                                        let _ = event_tx.send(AudioEvent::Error(
-                                            "Timeout flush audio saat seek (50ms): audio callback tidak merespons ACK".to_string(),
-                                        ));
+                                    if let Some(out) = &output {
+                                        if !out.flush() {
+                                            let _ = event_tx.send(AudioEvent::Error(
+                                                "Timeout flush audio saat seek (50ms): audio callback tidak merespons ACK".to_string(),
+                                            ));
+                                        }
+                                        let sr = out.sample_rate();
+                                        resampler.reset(dec.sample_rate(), sr);
+                                        dsp.reset_states();
                                     }
-                                    let sr = out.sample_rate();
-                                    resampler.reset(dec.sample_rate(), sr);
+
+                                    shared_position_ms.store((actual_pos * 1000.0) as u32, Ordering::Relaxed);
+                                    let _ = event_tx.send(AudioEvent::Position(actual_pos));
+                                }
+                                Err(err) => {
+                                    let _ = event_tx.send(AudioEvent::Error(format!("Seek gagal: {}", err)));
                                 }
                             }
                         }
@@ -469,6 +545,7 @@ fn run_audio_worker(
                                 Arc::clone(&shared_bit_perfect),
                                 Arc::clone(&shared_muted),
                                 Arc::clone(&is_dsp_active),
+                                event_tx.clone(),
                             ) {
                                 Ok((new_out, new_prod)) => {
                                     if state == PlaybackState::Playing {
@@ -504,6 +581,7 @@ fn run_audio_worker(
                         }
                     }
                     AudioCommand::SetChainMode(mode) => {
+                        let prev_mode = chain_mode;
                         chain_mode = mode;
                         let dsp_active = mode == ChainMode::DspActive;
                         is_dsp_active.store(dsp_active, Ordering::Relaxed);
@@ -523,7 +601,7 @@ fn run_audio_worker(
                             };
 
                             if need_recreate {
-                                if let Ok((new_out, new_prod)) = AudioOutput::new(
+                                match AudioOutput::new(
                                     selected_device.as_deref(),
                                     desired_rate,
                                     track_bit_depth,
@@ -534,19 +612,30 @@ fn run_audio_worker(
                                     Arc::clone(&shared_bit_perfect),
                                     Arc::clone(&shared_muted),
                                     Arc::clone(&is_dsp_active),
+                                    event_tx.clone(),
                                 ) {
-                                    if state == PlaybackState::Playing {
-                                        new_out.resume();
+                                    Ok((new_out, new_prod)) => {
+                                        if state == PlaybackState::Playing {
+                                            new_out.resume();
+                                        }
+                                        sync_output_dsp(&new_out, desired_rate, chain_mode, last_bypass, &last_graph, &last_eq_bands);
+                                        output = Some(new_out);
+                                        producer = Some(new_prod);
+                                        current_stream_mode = Some(chain_mode);
                                     }
-                                    sync_output_dsp(&new_out, desired_rate, chain_mode, last_bypass, &last_graph, &last_eq_bands);
-                                    output = Some(new_out);
-                                    producer = Some(new_prod);
-                                    current_stream_mode = Some(chain_mode);
+                                    Err(err) => {
+                                        chain_mode = prev_mode;
+                                        is_dsp_active.store(prev_mode == ChainMode::DspActive, Ordering::Relaxed);
+                                        let _ = event_tx.send(AudioEvent::Error(format!(
+                                            "Gagal mengganti mode output audio: {}",
+                                            err
+                                        )));
+                                    }
                                 }
                             } else if let Some(out) = &output {
                                 if !out.flush() {
                                     let _ = event_tx.send(AudioEvent::Error(
-                                        "Timeout flush audio saat stop (50ms): audio callback tidak merespons ACK".to_string(),
+                                        "Timeout flush audio: audio callback tidak merespons ACK".to_string(),
                                     ));
                                 }
                             }
@@ -594,7 +683,16 @@ fn run_audio_worker(
                         let frame = resampler.next_frame(|| {
                             if raw_pos >= raw_len {
                                 raw_pos = 0;
-                                raw_len = dec.read_stereo_samples(&mut raw_chunk);
+                                match dec.read_stereo_samples(&mut raw_chunk) {
+                                    Ok(n) => raw_len = n,
+                                    Err(err) => {
+                                        let _ = event_tx.send(AudioEvent::Error(format!(
+                                            "Error membaca file audio: {}",
+                                            err
+                                        )));
+                                        raw_len = 0;
+                                    }
+                                }
                             }
                             if raw_pos < raw_len {
                                 let l = raw_chunk[raw_pos];
@@ -624,12 +722,18 @@ fn run_audio_worker(
                         let _ = prod.push_partial_slice(&batch_buf[..batch_samples]);
                     }
 
-                    if generated_frames > 0 {
-                        let cur_pos = dec.current_time();
-                        shared_position_ms.store((cur_pos * 1000.0) as u32, Ordering::Relaxed);
-                    } else if raw_pos >= raw_len {
-                        // EOF reached and ring buffer emptying
-                        if prod.slots() >= 95000 {
+                    let cur_pos = dec.current_time();
+                    let track_sr = dec.sample_rate().max(1) as f32;
+                    let dev_sr = output.as_ref().map(|o| o.sample_rate()).unwrap_or(44100).max(1) as f32;
+                    let buffered_ring = (prod.buffer().capacity() - prod.slots()) as f32;
+                    let ring_lat = (buffered_ring / 2.0) / dev_sr;
+                    let raw_lat = ((raw_len.saturating_sub(raw_pos)) as f32 / 2.0) / track_sr;
+                    let played_pos = (cur_pos - ring_lat - raw_lat).max(0.0);
+                    shared_position_ms.store((played_pos * 1000.0) as u32, Ordering::Relaxed);
+
+                    if generated_frames == 0 && raw_pos >= raw_len {
+                        // EOF reached and waiting for the entire ring buffer to be drained by the hardware
+                        if prod.slots() == prod.buffer().capacity() {
                             state = PlaybackState::Stopped;
                             shared_state.store(0, Ordering::Relaxed);
                             let _ = event_tx.send(AudioEvent::TrackEnded);
@@ -639,7 +743,15 @@ fn run_audio_worker(
                         }
                     }
                 } else {
-                    // Buffer is well supplied, yield CPU
+                    // Buffer is well supplied, update real-time position from decreasing ring buffer
+                    let cur_pos = dec.current_time();
+                    let track_sr = dec.sample_rate().max(1) as f32;
+                    let dev_sr = output.as_ref().map(|o| o.sample_rate()).unwrap_or(44100).max(1) as f32;
+                    let buffered_ring = (prod.buffer().capacity() - prod.slots()) as f32;
+                    let ring_lat = (buffered_ring / 2.0) / dev_sr;
+                    let raw_lat = ((raw_len.saturating_sub(raw_pos)) as f32 / 2.0) / track_sr;
+                    let played_pos = (cur_pos - ring_lat - raw_lat).max(0.0);
+                    shared_position_ms.store((played_pos * 1000.0) as u32, Ordering::Relaxed);
                     thread::sleep(Duration::from_millis(5));
                 }
             } else {

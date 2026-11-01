@@ -13,6 +13,7 @@ pub struct OutputDeviceInfo {
 pub trait OutputBackend: Send {
     fn sample_rate(&self) -> u32;
     fn channels(&self) -> u16;
+    fn bit_depth(&self) -> u8;
     fn format_desc(&self) -> String;
     fn device_name(&self) -> &str;
     fn is_exclusive(&self) -> bool;

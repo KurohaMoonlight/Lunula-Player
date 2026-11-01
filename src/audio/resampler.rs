@@ -15,6 +15,7 @@ pub struct StereoResampler {
     out_buffer: Vec<f32>,
     out_queue: Vec<(f32, f32)>,
     out_queue_idx: usize,
+    flushed_eof: bool,
 }
 
 impl StereoResampler {
@@ -27,6 +28,7 @@ impl StereoResampler {
             out_buffer: Vec::new(),
             out_queue: Vec::new(),
             out_queue_idx: 0,
+            flushed_eof: false,
         };
         resampler.setup_sinc();
         resampler
@@ -38,6 +40,7 @@ impl StereoResampler {
     }
 
     fn setup_sinc(&mut self) {
+        self.flushed_eof = false;
         if self.is_passthrough() {
             self.sinc_resampler = None;
             self.in_buffer.clear();
@@ -114,22 +117,40 @@ impl StereoResampler {
         }
 
         if valid_in_frames == 0 {
-            return None; // EOF
-        }
-
-        // If partial final chunk at EOF, zero-fill remaining input frames
-        if valid_in_frames < in_frames {
+            if !self.flushed_eof {
+                self.flushed_eof = true;
+                // Zero-fill input buffer to flush the sinc filter delay line
+                self.in_buffer[..in_frames * 2].fill(0.0);
+                valid_in_frames = in_frames;
+            } else {
+                return None; // True EOF: sinc filter has been fully flushed
+            }
+        } else if valid_in_frames < in_frames {
+            // Partial final chunk before EOF: zero-fill remainder
             for i in (valid_in_frames * 2)..(in_frames * 2) {
                 self.in_buffer[i] = 0.0;
             }
         }
 
-        let in_adapter = InterleavedSlice::new(&self.in_buffer, 2, in_frames).ok()?;
+        let in_adapter = match InterleavedSlice::new(&self.in_buffer, 2, in_frames) {
+            Ok(adapter) => adapter,
+            Err(e) => {
+                eprintln!("[Resampler Error] in_adapter creation failed: {}", e);
+                return None;
+            }
+        };
+
         let out_frames_needed = resampler.output_frames_next();
         if self.out_buffer.len() < out_frames_needed * 2 {
             self.out_buffer.resize(out_frames_needed * 2, 0.0);
         }
-        let mut out_adapter = InterleavedSlice::new_mut(&mut self.out_buffer, 2, out_frames_needed).ok()?;
+        let mut out_adapter = match InterleavedSlice::new_mut(&mut self.out_buffer, 2, out_frames_needed) {
+            Ok(adapter) => adapter,
+            Err(e) => {
+                eprintln!("[Resampler Error] out_adapter creation failed: {}", e);
+                return None;
+            }
+        };
 
         let indexing = if valid_in_frames < in_frames {
             Some(Indexing::new().partial_len(valid_in_frames))
@@ -137,11 +158,17 @@ impl StereoResampler {
             None
         };
 
-        if let Ok((_, produced_frames)) = resampler.process_into_buffer(&in_adapter, &mut out_adapter, indexing.as_ref()) {
-            for f in 0..produced_frames {
-                let l = self.out_buffer[f * 2];
-                let r = self.out_buffer[f * 2 + 1];
-                self.out_queue.push((l, r));
+        match resampler.process_into_buffer(&in_adapter, &mut out_adapter, indexing.as_ref()) {
+            Ok((_, produced_frames)) => {
+                for f in 0..produced_frames {
+                    let l = self.out_buffer[f * 2];
+                    let r = self.out_buffer[f * 2 + 1];
+                    self.out_queue.push((l, r));
+                }
+            }
+            Err(e) => {
+                eprintln!("[Resampler Error] Rubato process failed: {}", e);
+                return None;
             }
         }
 

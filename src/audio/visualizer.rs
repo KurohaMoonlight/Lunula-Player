@@ -24,6 +24,12 @@ impl VisualizerRingBuffer {
         self.buffer[idx].store(sample.to_bits(), Ordering::Relaxed);
     }
 
+    pub fn clear(&self) {
+        for b in &self.buffer {
+            b.store(0, Ordering::Relaxed);
+        }
+    }
+
     pub fn get_latest_samples(&self, dest: &mut [f32; FFT_SIZE]) {
         let current_idx = self.write_idx.load(Ordering::Relaxed);
         for (i, d) in dest.iter_mut().enumerate() {

@@ -22,8 +22,10 @@ impl<T> SendWrap<T> {
 pub struct WasapiExclusiveBackend {
     sample_rate: u32,
     channels: u16,
+    bit_depth: u8,
     format_desc: String,
     device_name: String,
+    raw_event_handle: isize,
     is_paused: Arc<AtomicBool>,
     flush_requested: Arc<AtomicBool>,
     flush_ack: Arc<AtomicBool>,
@@ -33,6 +35,10 @@ pub struct WasapiExclusiveBackend {
     dsp_tx: Sender<DspCommand>,
 }
 
+unsafe extern "system" {
+    fn SetEvent(hEvent: *mut std::ffi::c_void) -> i32;
+}
+
 impl OutputBackend for WasapiExclusiveBackend {
     fn sample_rate(&self) -> u32 {
         self.sample_rate
@@ -40,6 +46,10 @@ impl OutputBackend for WasapiExclusiveBackend {
 
     fn channels(&self) -> u16 {
         self.channels
+    }
+
+    fn bit_depth(&self) -> u8 {
+        self.bit_depth
     }
 
     fn format_desc(&self) -> String {
@@ -92,6 +102,11 @@ impl OutputBackend for WasapiExclusiveBackend {
 impl Drop for WasapiExclusiveBackend {
     fn drop(&mut self) {
         self.stop_signal.store(true, Ordering::SeqCst);
+        if self.raw_event_handle != 0 {
+            unsafe {
+                SetEvent(self.raw_event_handle as *mut std::ffi::c_void);
+            }
+        }
         if let Some(handle) = self.worker_handle.take() {
             let _ = handle.join();
         }
@@ -108,6 +123,7 @@ impl WasapiExclusiveBackend {
         visualizer: Arc<VisualizerRingBuffer>,
         bit_perfect: Arc<AtomicBool>,
         shared_muted: Arc<AtomicBool>,
+        event_tx: Sender<crate::audio::types::AudioEvent>,
     ) -> Result<(Self, Producer<f32>), Box<dyn std::error::Error + Send + Sync>> {
         let _ = initialize_mta();
 
@@ -130,19 +146,19 @@ impl WasapiExclusiveBackend {
         let mut client = device.get_iaudioclient()?;
 
         // Try supported bit depths in Exclusive mode: 32-bit (for 24-bit audiophile files), 24-bit, 16-bit, or 32-bit Float
-        let candidate_formats = if preferred_bit_depth > 16 {
+        let candidate_formats = if preferred_bit_depth == 0 || preferred_bit_depth > 16 {
             vec![
                 (32, 24, SampleType::Int, "24-bit in 32-bit PCM (WASAPI Exclusive)"),
-                (32, 32, SampleType::Int, "32-bit Integer PCM (WASAPI Exclusive)"),
                 (32, 32, SampleType::Float, "32-bit Float (WASAPI Exclusive)"),
+                (32, 32, SampleType::Int, "32-bit Integer PCM (WASAPI Exclusive)"),
                 (16, 16, SampleType::Int, "16-bit Integer PCM (WASAPI Exclusive)"),
             ]
         } else {
             vec![
                 (16, 16, SampleType::Int, "16-bit Integer PCM (WASAPI Exclusive)"),
                 (32, 24, SampleType::Int, "24-bit in 32-bit PCM (WASAPI Exclusive)"),
-                (32, 32, SampleType::Int, "32-bit Integer PCM (WASAPI Exclusive)"),
                 (32, 32, SampleType::Float, "32-bit Float (WASAPI Exclusive)"),
+                (32, 32, SampleType::Int, "32-bit Integer PCM (WASAPI Exclusive)"),
             ]
         };
 
@@ -166,6 +182,7 @@ impl WasapiExclusiveBackend {
         )?;
 
         let h_event = client.set_get_eventhandle()?;
+        let raw_event_handle = h_event.as_handle().0 as isize;
         let render_client = client.get_audiorenderclient()?;
         let is_paused = Arc::new(AtomicBool::new(false));
         let flush_requested = Arc::new(AtomicBool::new(false));
@@ -180,6 +197,7 @@ impl WasapiExclusiveBackend {
         let muted_worker = Arc::clone(&shared_muted);
         let vol_worker = Arc::clone(&shared_volume);
         let vis_worker = Arc::clone(&visualizer);
+        let event_tx_worker = event_tx.clone();
 
         let (producer, mut consumer) = RingBuffer::<f32>::new(buffer_capacity);
         let (dsp_tx, dsp_rx) = crossbeam_channel::unbounded::<DspCommand>();
@@ -205,7 +223,7 @@ impl WasapiExclusiveBackend {
                 let mut dsp = DspPipeline::new(preferred_sample_rate as f32);
 
                 while !stop_worker.load(Ordering::Relaxed) {
-                    if let Ok(()) = h_event.wait_for_event(100) {
+                    if let Ok(()) = h_event.wait_for_event(20) {
                         if stop_worker.load(Ordering::Relaxed) {
                             break;
                         }
@@ -234,8 +252,26 @@ impl WasapiExclusiveBackend {
                             }
                         }
 
-                        let padding = client.get_current_padding().unwrap_or(0);
-                        let buffer_frame_count = client.get_buffer_size().unwrap_or(0);
+                        let padding = match client.get_current_padding() {
+                            Ok(p) => p,
+                            Err(e) => {
+                                let _ = event_tx_worker.send(crate::audio::types::AudioEvent::Error(format!(
+                                    "WASAPI Exclusive get_padding gagal: {}",
+                                    e
+                                )));
+                                break;
+                            }
+                        };
+                        let buffer_frame_count = match client.get_buffer_size() {
+                            Ok(b) => b,
+                            Err(e) => {
+                                let _ = event_tx_worker.send(crate::audio::types::AudioEvent::Error(format!(
+                                    "WASAPI Exclusive get_buffer_size gagal: {}",
+                                    e
+                                )));
+                                break;
+                            }
+                        };
                         let available_frames = buffer_frame_count.saturating_sub(padding);
 
                         if flush_worker.swap(false, Ordering::SeqCst) {
@@ -243,7 +279,13 @@ impl WasapiExclusiveBackend {
                             if available_frames > 0 {
                                 raw_bytes.clear();
                                 raw_bytes.resize(available_frames as usize * bytes_per_frame, 0);
-                                let _ = render_client.write_to_device(available_frames as usize, &raw_bytes, None);
+                                if let Err(e) = render_client.write_to_device(available_frames as usize, &raw_bytes, None) {
+                                    let _ = event_tx_worker.send(crate::audio::types::AudioEvent::Error(format!(
+                                        "WASAPI Exclusive flush write gagal: {}",
+                                        e
+                                    )));
+                                    break;
+                                }
                             }
                             flush_ack_worker.store(true, Ordering::SeqCst);
                             continue;
@@ -254,7 +296,16 @@ impl WasapiExclusiveBackend {
                             if available_frames > 0 {
                                 raw_bytes.clear();
                                 raw_bytes.resize(available_frames as usize * bytes_per_frame, 0);
-                                let _ = render_client.write_to_device(available_frames as usize, &raw_bytes, None);
+                                if let Err(e) = render_client.write_to_device(available_frames as usize, &raw_bytes, None) {
+                                    let _ = event_tx_worker.send(crate::audio::types::AudioEvent::Error(format!(
+                                        "WASAPI Exclusive pause write gagal: {}",
+                                        e
+                                    )));
+                                    break;
+                                }
+                                for _ in 0..available_frames {
+                                    vis_worker.push_sample(0.0);
+                                }
                             }
                             continue;
                         }
@@ -267,9 +318,25 @@ impl WasapiExclusiveBackend {
                             let vol = crate::audio::types::calculate_effective_volume(is_bp, is_muted, vol_raw);
 
                             if vol <= 0.0001 {
+                                let mut frames_remaining = frames_to_write;
+                                while frames_remaining > 0 {
+                                    let chunk_frames = frames_remaining.min(512);
+                                    let chunk_samples = chunk_frames * 2;
+                                    let _ = consumer.pop_partial_slice(&mut batch_f32[..chunk_samples]);
+                                    frames_remaining -= chunk_frames;
+                                }
+                                for _ in 0..frames_to_write {
+                                    vis_worker.push_sample(0.0);
+                                }
                                 raw_bytes.clear();
                                 raw_bytes.resize(frames_to_write * bytes_per_frame, 0);
-                                let _ = render_client.write_to_device(frames_to_write, &raw_bytes, None);
+                                if let Err(e) = render_client.write_to_device(frames_to_write, &raw_bytes, None) {
+                                    let _ = event_tx_worker.send(crate::audio::types::AudioEvent::Error(format!(
+                                        "WASAPI Exclusive write gagal: {}",
+                                        e
+                                    )));
+                                    break;
+                                }
                                 continue;
                             }
 
@@ -303,7 +370,13 @@ impl WasapiExclusiveBackend {
                                     }
                                     frames_remaining -= chunk_frames;
                                 }
-                                let _ = render_client.write_to_device(frames_to_write, &raw_bytes, None);
+                                if let Err(e) = render_client.write_to_device(frames_to_write, &raw_bytes, None) {
+                                    let _ = event_tx_worker.send(crate::audio::types::AudioEvent::Error(format!(
+                                        "WASAPI Exclusive write gagal: {}",
+                                        e
+                                    )));
+                                    break;
+                                }
                             } else if store_bits == 32 && sample_type == SampleType::Int {
                                 while frames_remaining > 0 {
                                     let chunk_frames = frames_remaining.min(512);
@@ -329,7 +402,13 @@ impl WasapiExclusiveBackend {
                                     }
                                     frames_remaining -= chunk_frames;
                                 }
-                                let _ = render_client.write_to_device(frames_to_write, &raw_bytes, None);
+                                if let Err(e) = render_client.write_to_device(frames_to_write, &raw_bytes, None) {
+                                    let _ = event_tx_worker.send(crate::audio::types::AudioEvent::Error(format!(
+                                        "WASAPI Exclusive write gagal: {}",
+                                        e
+                                    )));
+                                    break;
+                                }
                             } else {
                                 // 32-bit Float
                                 while frames_remaining > 0 {
@@ -354,7 +433,13 @@ impl WasapiExclusiveBackend {
                                     }
                                     frames_remaining -= chunk_frames;
                                 }
-                                let _ = render_client.write_to_device(frames_to_write, &raw_bytes, None);
+                                if let Err(e) = render_client.write_to_device(frames_to_write, &raw_bytes, None) {
+                                    let _ = event_tx_worker.send(crate::audio::types::AudioEvent::Error(format!(
+                                        "WASAPI Exclusive write gagal: {}",
+                                        e
+                                    )));
+                                    break;
+                                }
                             }
                         } else {
                             thread::sleep(Duration::from_millis(1));
@@ -371,8 +456,10 @@ impl WasapiExclusiveBackend {
             Self {
                 sample_rate: preferred_sample_rate,
                 channels: 2,
+                bit_depth: valid_bits as u8,
                 format_desc: format_desc.to_string(),
                 device_name,
+                raw_event_handle,
                 is_paused,
                 flush_requested,
                 flush_ack,

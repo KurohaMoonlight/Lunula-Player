@@ -14,6 +14,7 @@ pub struct CpalBackend {
     _stream: Stream,
     sample_rate: u32,
     channels: u16,
+    bit_depth: u8,
     format_desc: String,
     device_name: String,
     is_paused: Arc<AtomicBool>,
@@ -32,6 +33,10 @@ impl OutputBackend for CpalBackend {
 
     fn channels(&self) -> u16 {
         self.channels
+    }
+
+    fn bit_depth(&self) -> u8 {
+        self.bit_depth
     }
 
     fn format_desc(&self) -> String {
@@ -92,6 +97,7 @@ impl CpalBackend {
         shared_muted: Arc<AtomicBool>,
         source_bit_depth: u8,
         is_dsp_active: Arc<AtomicBool>,
+        event_tx: Option<Sender<crate::audio::types::AudioEvent>>,
     ) -> Result<(Self, Producer<f32>), Box<dyn std::error::Error + Send + Sync>> {
         let host = cpal::default_host();
         let device = if let Some(target_name) = preferred_device_name {
@@ -140,6 +146,12 @@ impl CpalBackend {
             _ => "PCM (Shared)".to_string(),
         };
 
+        let bit_depth = match format {
+            SampleFormat::F32 | SampleFormat::I32 => 32,
+            SampleFormat::I16 | SampleFormat::U16 => 16,
+            _ => 16,
+        };
+
         let (producer, consumer) = RingBuffer::<f32>::new(buffer_capacity);
         let (dsp_tx, dsp_rx) = crossbeam_channel::unbounded::<DspCommand>();
         let stream = Self::build_stream(
@@ -157,6 +169,7 @@ impl CpalBackend {
             source_bit_depth,
             Arc::clone(&is_dsp_active),
             dsp_rx,
+            event_tx,
         )?;
         stream.play()?;
 
@@ -168,6 +181,7 @@ impl CpalBackend {
                 _stream: stream,
                 sample_rate,
                 channels,
+                bit_depth,
                 format_desc,
                 device_name,
                 is_paused,
@@ -221,6 +235,7 @@ impl CpalBackend {
         source_bit_depth: u8,
         _is_dsp_active: Arc<AtomicBool>,
         dsp_rx: Receiver<DspCommand>,
+        event_tx: Option<Sender<crate::audio::types::AudioEvent>>,
     ) -> Result<Stream, Box<dyn std::error::Error + Send + Sync>> {
         let is_paused_cb = Arc::clone(&is_paused);
         let flush_cb = Arc::clone(&flush_requested);
@@ -230,7 +245,13 @@ impl CpalBackend {
         let volume_cb = Arc::clone(&shared_volume);
         let visualizer_cb = Arc::clone(&visualizer);
         let channels_count = config.channels as usize;
-        let err_fn = |err| eprintln!("Audio stream error: {}", err);
+        let err_tx = event_tx.clone();
+        let err_fn = move |err| {
+            eprintln!("Audio stream error: {}", err);
+            if let Some(ref tx) = err_tx {
+                let _ = tx.send(crate::audio::types::AudioEvent::Error(format!("CPAL error: {}", err)));
+            }
+        };
         let stream_rate = config.sample_rate.0 as f32;
 
         let stream = match sample_format {
@@ -377,20 +398,19 @@ impl CpalBackend {
         let vol_raw = f32::from_bits(volume.load(Ordering::Relaxed));
         let vol = crate::audio::types::calculate_effective_volume(is_bp, is_muted, vol_raw);
 
-        if vol <= 0.0001 {
-            data.fill(0.0);
-            for _ in 0..(data.len() / channels.max(1)) {
-                visualizer.push_sample(0.0);
-            }
-            return;
-        }
-
         if channels == 2 {
             // High-Performance Batch Pop: drains hardware buffer in 1 atomic operation
             let (popped, _) = consumer.pop_partial_slice(data);
             let popped_len = popped.len();
             if popped_len < data.len() {
                 data[popped_len..].fill(0.0);
+            }
+            if vol <= 0.0001 {
+                data.fill(0.0);
+                for _ in 0..(data.len() / 2) {
+                    visualizer.push_sample(0.0);
+                }
+                return;
             }
             if !is_bp {
                 dsp.process_interleaved(data);
@@ -407,22 +427,32 @@ impl CpalBackend {
             for out in data.iter_mut() {
                 let l = consumer.pop().unwrap_or(0.0);
                 let r = consumer.pop().unwrap_or(0.0);
-                let s = ((l + r) * 0.5) * vol;
-                *out = s;
-                visualizer.push_sample(s);
+                if vol <= 0.0001 {
+                    *out = 0.0;
+                    visualizer.push_sample(0.0);
+                } else {
+                    let s = ((l + r) * 0.5) * vol;
+                    *out = s;
+                    visualizer.push_sample(s);
+                }
             }
         } else {
             for frame in data.chunks_mut(channels) {
-                let l = consumer.pop().unwrap_or(0.0) * vol;
-                let r = if frame.len() > 1 { consumer.pop().unwrap_or(0.0) * vol } else { l };
-                frame[0] = l;
-                if frame.len() > 1 {
-                    frame[1] = r;
+                let l = consumer.pop().unwrap_or(0.0);
+                let r = if frame.len() > 1 { consumer.pop().unwrap_or(0.0) } else { l };
+                if vol <= 0.0001 {
+                    frame.fill(0.0);
+                    visualizer.push_sample(0.0);
+                } else {
+                    frame[0] = l * vol;
+                    if frame.len() > 1 {
+                        frame[1] = r * vol;
+                    }
+                    for ch in 2..frame.len() {
+                        frame[ch] = 0.0;
+                    }
+                    visualizer.push_sample((l + r) * 0.5 * vol);
                 }
-                for ch in 2..frame.len() {
-                    frame[ch] = 0.0;
-                }
-                visualizer.push_sample((l + r) * 0.5);
             }
         }
     }
@@ -468,14 +498,6 @@ impl CpalBackend {
         let vol_raw = f32::from_bits(volume.load(Ordering::Relaxed));
         let vol = crate::audio::types::calculate_effective_volume(is_bp, is_muted, vol_raw);
 
-        if vol <= 0.0001 {
-            data.fill(0);
-            for _ in 0..(data.len() / channels.max(1)) {
-                visualizer.push_sample(0.0);
-            }
-            return;
-        }
-
         let to_i32 = |s: f32| -> i32 {
             crate::audio::types::encode_sample_i32(s, source_bit_depth)
         };
@@ -489,8 +511,12 @@ impl CpalBackend {
                 if popped_len < needed {
                     temp_buf[popped_len..needed].fill(0.0);
                 }
-                if !is_bp {
-                    dsp.process_interleaved(&mut temp_buf[..needed]);
+                if vol <= 0.0001 {
+                    frame_chunk.fill(0);
+                    for _ in 0..(needed / 2) {
+                        visualizer.push_sample(0.0);
+                    }
+                    continue;
                 }
                 if !is_bp {
                     dsp.process_interleaved(&mut temp_buf[..needed]);
@@ -506,22 +532,32 @@ impl CpalBackend {
             for out in data.iter_mut() {
                 let l = consumer.pop().unwrap_or(0.0);
                 let r = consumer.pop().unwrap_or(0.0);
-                let s = ((l + r) * 0.5) * vol;
-                *out = to_i32(s);
-                visualizer.push_sample(s);
+                if vol <= 0.0001 {
+                    *out = 0;
+                    visualizer.push_sample(0.0);
+                } else {
+                    let s = ((l + r) * 0.5) * vol;
+                    *out = to_i32(s);
+                    visualizer.push_sample(s);
+                }
             }
         } else {
             for frame in data.chunks_mut(channels) {
-                let l = consumer.pop().unwrap_or(0.0) * vol;
-                let r = if frame.len() > 1 { consumer.pop().unwrap_or(0.0) * vol } else { l };
-                frame[0] = to_i32(l);
-                if frame.len() > 1 {
-                    frame[1] = to_i32(r);
+                let l = consumer.pop().unwrap_or(0.0);
+                let r = if frame.len() > 1 { consumer.pop().unwrap_or(0.0) } else { l };
+                if vol <= 0.0001 {
+                    frame.fill(0);
+                    visualizer.push_sample(0.0);
+                } else {
+                    frame[0] = to_i32(l * vol);
+                    if frame.len() > 1 {
+                        frame[1] = to_i32(r * vol);
+                    }
+                    for ch in 2..frame.len() {
+                        frame[ch] = 0;
+                    }
+                    visualizer.push_sample((l + r) * 0.5 * vol);
                 }
-                for ch in 2..frame.len() {
-                    frame[ch] = 0;
-                }
-                visualizer.push_sample((l + r) * 0.5);
             }
         }
     }
@@ -567,14 +603,6 @@ impl CpalBackend {
         let vol_raw = f32::from_bits(volume.load(Ordering::Relaxed));
         let vol = crate::audio::types::calculate_effective_volume(is_bp, is_muted, vol_raw);
 
-        if vol <= 0.0001 {
-            data.fill(0);
-            for _ in 0..(data.len() / channels.max(1)) {
-                visualizer.push_sample(0.0);
-            }
-            return;
-        }
-
         // Apply TPDF dither ONLY when converting higher bit depth (e.g. 24-bit) down to 16-bit
         // AND NEVER in Bit-Perfect mode (Bit-Perfect keeps pure unmodified bits)
         let should_dither = source_bit_depth > 16 && !is_bp;
@@ -592,6 +620,13 @@ impl CpalBackend {
                 if popped_len < needed {
                     temp_buf[popped_len..needed].fill(0.0);
                 }
+                if vol <= 0.0001 {
+                    frame_chunk.fill(0);
+                    for _ in 0..(needed / 2) {
+                        visualizer.push_sample(0.0);
+                    }
+                    continue;
+                }
                 if !is_bp {
                     dsp.process_interleaved(&mut temp_buf[..needed]);
                 }
@@ -606,22 +641,32 @@ impl CpalBackend {
             for out in data.iter_mut() {
                 let l = consumer.pop().unwrap_or(0.0);
                 let r = consumer.pop().unwrap_or(0.0);
-                let s = ((l + r) * 0.5) * vol;
-                *out = to_i16(s, dither_state);
-                visualizer.push_sample(s);
+                if vol <= 0.0001 {
+                    *out = 0;
+                    visualizer.push_sample(0.0);
+                } else {
+                    let s = ((l + r) * 0.5) * vol;
+                    *out = to_i16(s, dither_state);
+                    visualizer.push_sample(s);
+                }
             }
         } else {
             for frame in data.chunks_mut(channels) {
-                let l = consumer.pop().unwrap_or(0.0) * vol;
-                let r = if frame.len() > 1 { consumer.pop().unwrap_or(0.0) * vol } else { l };
-                frame[0] = to_i16(l, dither_state);
-                if frame.len() > 1 {
-                    frame[1] = to_i16(r, dither_state);
+                let l = consumer.pop().unwrap_or(0.0);
+                let r = if frame.len() > 1 { consumer.pop().unwrap_or(0.0) } else { l };
+                if vol <= 0.0001 {
+                    frame.fill(0);
+                    visualizer.push_sample(0.0);
+                } else {
+                    frame[0] = to_i16(l * vol, dither_state);
+                    if frame.len() > 1 {
+                        frame[1] = to_i16(r * vol, dither_state);
+                    }
+                    for ch in 2..frame.len() {
+                        frame[ch] = 0;
+                    }
+                    visualizer.push_sample((l + r) * 0.5 * vol);
                 }
-                for ch in 2..frame.len() {
-                    frame[ch] = 0;
-                }
-                visualizer.push_sample((l + r) * 0.5);
             }
         }
     }
@@ -662,14 +707,6 @@ impl CpalBackend {
         let vol_raw = f32::from_bits(volume.load(Ordering::Relaxed));
         let vol = crate::audio::types::calculate_effective_volume(is_bp, is_muted, vol_raw);
 
-        if vol <= 0.0001 {
-            data.fill(32768);
-            for _ in 0..(data.len() / channels.max(1)) {
-                visualizer.push_sample(0.0);
-            }
-            return;
-        }
-
         let to_u16 = |s: f32| -> u16 {
             let clamped = (s * 0.5 + 0.5).clamp(0.0, 1.0);
             (clamped * 65535.0).round() as u16
@@ -677,32 +714,48 @@ impl CpalBackend {
 
         if channels == 2 {
             for frame in data.chunks_exact_mut(2) {
-                let l = consumer.pop().unwrap_or(0.0) * vol;
-                let r = consumer.pop().unwrap_or(0.0) * vol;
-                frame[0] = to_u16(l);
-                frame[1] = to_u16(r);
-                visualizer.push_sample((l + r) * 0.5);
+                let l = consumer.pop().unwrap_or(0.0);
+                let r = consumer.pop().unwrap_or(0.0);
+                if vol <= 0.0001 {
+                    frame[0] = 32768;
+                    frame[1] = 32768;
+                    visualizer.push_sample(0.0);
+                } else {
+                    frame[0] = to_u16(l * vol);
+                    frame[1] = to_u16(r * vol);
+                    visualizer.push_sample((l + r) * 0.5 * vol);
+                }
             }
         } else if channels == 1 {
             for out in data.iter_mut() {
                 let l = consumer.pop().unwrap_or(0.0);
                 let r = consumer.pop().unwrap_or(0.0);
-                let s = ((l + r) * 0.5) * vol;
-                *out = to_u16(s);
-                visualizer.push_sample(s);
+                if vol <= 0.0001 {
+                    *out = 32768;
+                    visualizer.push_sample(0.0);
+                } else {
+                    let s = ((l + r) * 0.5) * vol;
+                    *out = to_u16(s);
+                    visualizer.push_sample(s);
+                }
             }
         } else {
             for frame in data.chunks_mut(channels) {
-                let l = consumer.pop().unwrap_or(0.0) * vol;
-                let r = if frame.len() > 1 { consumer.pop().unwrap_or(0.0) * vol } else { l };
-                frame[0] = to_u16(l);
-                if frame.len() > 1 {
-                    frame[1] = to_u16(r);
+                let l = consumer.pop().unwrap_or(0.0);
+                let r = if frame.len() > 1 { consumer.pop().unwrap_or(0.0) } else { l };
+                if vol <= 0.0001 {
+                    frame.fill(32768);
+                    visualizer.push_sample(0.0);
+                } else {
+                    frame[0] = to_u16(l * vol);
+                    if frame.len() > 1 {
+                        frame[1] = to_u16(r * vol);
+                    }
+                    for ch in 2..frame.len() {
+                        frame[ch] = 32768;
+                    }
+                    visualizer.push_sample((l + r) * 0.5 * vol);
                 }
-                for ch in 2..frame.len() {
-                    frame[ch] = 32768;
-                }
-                visualizer.push_sample((l + r) * 0.5);
             }
         }
     }

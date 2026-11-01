@@ -88,13 +88,13 @@ pub fn parse_single_audio_file(path: &Path) -> Option<Track> {
             let props = tagged_file.properties();
             let duration = props.duration().as_secs_f32().max(1.0);
             let sample_rate = props.sample_rate().unwrap_or(44100);
-            let bit_depth = props.bit_depth().unwrap_or(16);
+            let bit_depth = props.bit_depth().unwrap_or(0);
             let bitrate = props.audio_bitrate().or_else(|| props.overall_bitrate());
 
             (title, artist, album, duration, sample_rate, bit_depth, bitrate)
         }
         Err(_) => {
-            (fallback_title.clone(), "Unknown Artist".to_string(), "Single".to_string(), 180.0, 44100, 16, None)
+            (fallback_title.clone(), "Unknown Artist".to_string(), "Single".to_string(), 180.0, 44100, 0, None)
         }
     };
 

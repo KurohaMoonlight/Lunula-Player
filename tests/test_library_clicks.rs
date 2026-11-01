@@ -42,7 +42,7 @@ fn test_print_card_rects_for_grid() {
     );
     out0.textures_delta.clear();
 
-    // Try clicking Putar on the second row (Encore)
+    // Try clicking Putar on the second row (Happy End)
     let encore_btn_pos = egui::pos2(42.8, 704.5);
     let mut out1 = ctx.run_ui(
         egui::RawInput {
@@ -93,13 +93,13 @@ fn test_print_card_rects_for_grid() {
     );
     out3.textures_delta.clear();
 
-    println!("After clicking Encore Putar:");
+    println!("After clicking second row Putar:");
     println!("app.current_track: {}", app.current_track.title);
     println!("app.is_playing: {}", app.is_playing);
     println!("app.library_category: {:?}", app.library_category);
     println!("app.selected_album_filter: {:?}", app.selected_album_filter);
 
-    assert_eq!(app.current_track.album, "Encore", "Must play Encore!");
+    assert_eq!(app.current_track.album, "Happy End", "Must play second row card!");
 }
 
 #[test]

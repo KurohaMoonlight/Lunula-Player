@@ -133,6 +133,7 @@ pub enum AudioCommand {
     Play(PathBuf),
     Pause,
     Resume,
+    Restart,
     Stop,
     Seek(f32),
     SetVolume(f32),

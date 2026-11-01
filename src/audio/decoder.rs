@@ -13,7 +13,7 @@ pub struct AudioDecoder {
     format: Box<dyn FormatReader>,
     decoder: Box<dyn Decoder>,
     track_id: u32,
-    _time_base: Option<TimeBase>,
+    time_base: Option<TimeBase>,
     sample_rate: u32,
     source_channels: usize,
     bits_per_sample: u8,
@@ -59,7 +59,9 @@ impl AudioDecoder {
         let time_base = track.codec_params.time_base;
         let sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
         let source_channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2);
-        let bits_per_sample = track.codec_params.bits_per_sample.unwrap_or(16) as u8;
+        // Lossless formats report their native integer bit depth (16, 24, 32).
+        // Lossy formats (MP3, AAC, Vorbis, Opus) have no fixed integer bit depth and decode into 32-bit float, so 0 represents lossy/float.
+        let bits_per_sample = track.codec_params.bits_per_sample.unwrap_or(0) as u8;
 
         let duration = if let (Some(n_frames), Some(tb)) = (track.codec_params.n_frames, time_base) {
             let time = tb.calc_time(n_frames);
@@ -77,7 +79,7 @@ impl AudioDecoder {
             format,
             decoder,
             track_id,
-            _time_base: time_base,
+            time_base,
             sample_rate,
             source_channels,
             bits_per_sample,
@@ -110,18 +112,31 @@ impl AudioDecoder {
         self.source_channels
     }
 
-    pub fn seek(&mut self, time_secs: f32) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub fn seek(&mut self, time_secs: f32) -> Result<f32, Box<dyn std::error::Error + Send + Sync>> {
         let seek_to = SeekTo::Time {
             time: Time::from(time_secs.max(0.0) as f64),
             track_id: Some(self.track_id),
         };
+        let seek_to_coarse = SeekTo::Time {
+            time: Time::from(time_secs.max(0.0) as f64),
+            track_id: Some(self.track_id),
+        };
 
-        self.format.seek(SeekMode::Coarse, seek_to)?;
+        // Attempt sample-accurate seek first; fallback to coarse seek if accurate not supported by container
+        let seeked = self.format.seek(SeekMode::Accurate, seek_to)
+            .or_else(|_| self.format.seek(SeekMode::Coarse, seek_to_coarse))?;
         self.decoder.reset();
         self.stereo_cache.clear();
         self.cache_read_idx = 0;
-        self.current_time = time_secs.max(0.0);
-        Ok(())
+
+        let actual_time = if let Some(tb) = self.time_base {
+            let t = tb.calc_time(seeked.actual_ts);
+            t.seconds as f32 + (t.frac as f32)
+        } else {
+            time_secs.max(0.0)
+        };
+        self.current_time = actual_time;
+        Ok(actual_time)
     }
 
     // Decode packets until stereo_cache has data or EOF is hit
@@ -207,17 +222,80 @@ impl AudioDecoder {
             // Direct Stereo
             stereo_cache.extend_from_slice(raw_samples);
         } else if channels > 2 {
-            // Downmix to Stereo by taking Left (ch 0) and Right (ch 1)
-            for frame in raw_samples.chunks_exact(channels) {
-                stereo_cache.push(frame[0]);
-                stereo_cache.push(frame[1]);
+            // High-quality ITU-R BS.775 downmix for multichannel audio (5.1, 7.1, quad, etc.)
+            // Preserves center channel (dialog/vocals), LFE, and surround channels instead of dropping them
+            let inv_sqrt2: f32 = 0.70710678;
+            match channels {
+                3 => {
+                    // FL, FR, FC
+                    let norm = 1.0 / (1.0 + inv_sqrt2);
+                    for frame in raw_samples.chunks_exact(3) {
+                        let c = frame[2] * inv_sqrt2;
+                        stereo_cache.push((frame[0] + c) * norm);
+                        stereo_cache.push((frame[1] + c) * norm);
+                    }
+                }
+                4 => {
+                    // Quad: FL, FR, BL, BR
+                    let norm = 1.0 / (1.0 + inv_sqrt2);
+                    for frame in raw_samples.chunks_exact(4) {
+                        stereo_cache.push((frame[0] + frame[2] * inv_sqrt2) * norm);
+                        stereo_cache.push((frame[1] + frame[3] * inv_sqrt2) * norm);
+                    }
+                }
+                6 => {
+                    // Standard 5.1: FL, FR, FC, LFE, BL, BR
+                    let norm = 1.0 / (1.0 + inv_sqrt2 + inv_sqrt2 + 0.5);
+                    for frame in raw_samples.chunks_exact(6) {
+                        let fl = frame[0];
+                        let fr = frame[1];
+                        let fc = frame[2] * inv_sqrt2;
+                        let lfe = frame[3] * 0.5;
+                        let bl = frame[4] * inv_sqrt2;
+                        let br = frame[5] * inv_sqrt2;
+                        stereo_cache.push((fl + fc + bl + lfe) * norm);
+                        stereo_cache.push((fr + fc + br + lfe) * norm);
+                    }
+                }
+                8 => {
+                    // Standard 7.1: FL, FR, FC, LFE, BL, BR, SL, SR
+                    let norm = 1.0 / (1.0 + inv_sqrt2 * 3.0 + 0.5);
+                    for frame in raw_samples.chunks_exact(8) {
+                        let fl = frame[0];
+                        let fr = frame[1];
+                        let fc = frame[2] * inv_sqrt2;
+                        let lfe = frame[3] * 0.5;
+                        let bl = frame[4] * inv_sqrt2;
+                        let br = frame[5] * inv_sqrt2;
+                        let sl = frame[6] * inv_sqrt2;
+                        let sr = frame[7] * inv_sqrt2;
+                        stereo_cache.push((fl + fc + bl + sl + lfe) * norm);
+                        stereo_cache.push((fr + fc + br + sr + lfe) * norm);
+                    }
+                }
+                _ => {
+                    let norm = 1.0 / (channels as f32).sqrt();
+                    for frame in raw_samples.chunks_exact(channels) {
+                        let mut l = frame[0];
+                        let mut r = frame[1];
+                        for (i, &s) in frame.iter().enumerate().skip(2) {
+                            if i % 2 == 0 {
+                                l += s * inv_sqrt2;
+                            } else {
+                                r += s * inv_sqrt2;
+                            }
+                        }
+                        stereo_cache.push(l * norm);
+                        stereo_cache.push(r * norm);
+                    }
+                }
             }
         }
     }
 
     // Read up to dest.len() interleaved stereo f32 samples (L, R, L, R...).
-    // Returns the number of samples copied (always an even number for complete stereo frames).
-    pub fn read_stereo_samples(&mut self, dest: &mut [f32]) -> usize {
+    // Returns Ok(copied_samples) or Err on demuxer/decoding failure. Ok(0) indicates clean EOF.
+    pub fn read_stereo_samples(&mut self, dest: &mut [f32]) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
         let mut total_written = 0;
         let needed = dest.len();
 
@@ -227,7 +305,13 @@ impl AudioDecoder {
             if available == 0 {
                 match self.fill_cache() {
                     Ok(true) => continue,
-                    _ => break, // EOF or unrecoverable error
+                    Ok(false) => break, // EOF reached cleanly
+                    Err(err) => {
+                        if total_written > 0 {
+                            break;
+                        }
+                        return Err(err);
+                    }
                 }
             }
 
@@ -247,7 +331,7 @@ impl AudioDecoder {
             self.current_time += frames_read / (self.sample_rate as f32);
         }
 
-        total_written
+        Ok(total_written)
     }
 }
 
@@ -342,7 +426,7 @@ mod tests {
         assert_eq!(decoder.bits_per_sample(), 16);
 
         let mut read_buf = vec![0.0f32; raw_pcm.len()];
-        let n_read = decoder.read_stereo_samples(&mut read_buf);
+        let n_read = decoder.read_stereo_samples(&mut read_buf).expect("Failed to read stereo samples");
         assert_eq!(n_read, raw_pcm.len(), "Must read all generated stereo samples");
 
         // Pass through Bit-Perfect pipeline (passthrough: no EQ, no volume scaling)

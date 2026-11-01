@@ -26,6 +26,7 @@ impl AudioOutput {
         bit_perfect: Arc<AtomicBool>,
         shared_muted: Arc<AtomicBool>,
         is_dsp_active: Arc<AtomicBool>,
+        event_tx: crossbeam_channel::Sender<crate::audio::types::AudioEvent>,
     ) -> Result<(Self, Producer<f32>), Box<dyn std::error::Error + Send + Sync>> {
         #[cfg(target_os = "windows")]
         if chain_mode == ChainMode::BitPerfect {
@@ -38,6 +39,7 @@ impl AudioOutput {
                 Arc::clone(&visualizer),
                 Arc::clone(&bit_perfect),
                 Arc::clone(&shared_muted),
+                event_tx.clone(),
             ) {
                 return Ok((
                     Self {
@@ -59,6 +61,7 @@ impl AudioOutput {
             shared_muted,
             preferred_bit_depth,
             is_dsp_active,
+            Some(event_tx),
         )?;
 
         Ok((
@@ -75,6 +78,10 @@ impl AudioOutput {
 
     pub fn channels(&self) -> u16 {
         self.backend.channels()
+    }
+
+    pub fn bit_depth(&self) -> u8 {
+        self.backend.bit_depth()
     }
 
     pub fn format_desc(&self) -> String {
