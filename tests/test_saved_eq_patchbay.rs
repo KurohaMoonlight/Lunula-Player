@@ -5,7 +5,7 @@ use lunulaplayer::models::{AppTab, FilterSlope, FilterType, NodeType, Parametric
 #[test]
 fn test_saved_eq_node_click_navigates_to_equalizer_tab_with_exact_preset() {
     let ctx = egui::Context::default();
-    let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0)));
+    let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 3000.0)));
 
     let mut app = LunulaApp::default();
     app.current_tab = AppTab::SignalChain;
@@ -133,7 +133,7 @@ fn test_saved_eq_node_click_navigates_to_equalizer_tab_with_exact_preset() {
 #[test]
 fn test_saved_eq_floating_popup_positioning_and_actions() {
     let ctx = egui::Context::default();
-    let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0)));
+    let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 3000.0)));
 
     let mut app = LunulaApp::default();
     app.current_tab = AppTab::SignalChain;
@@ -169,7 +169,7 @@ fn test_saved_eq_floating_popup_positioning_and_actions() {
 #[test]
 fn test_sidebar_saved_equalizers_plus_button_toggles_popup() {
     let ctx = egui::Context::default();
-    let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0)));
+    let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 3000.0)));
 
     let mut app = LunulaApp::default();
     app.current_tab = AppTab::SignalChain;
@@ -189,12 +189,32 @@ fn test_sidebar_saved_equalizers_plus_button_toggles_popup() {
     out0.textures_delta.clear();
 
     // Find the text "Equalizer Presets"
-    let mut btn_pos = egui::Pos2::ZERO;
-    for shape in out0.shapes {
-        if let egui::epaint::Shape::Text(text_shape) = shape.shape {
-            if text_shape.galley.job.text.contains("Equalizer Presets") {
-                btn_pos = text_shape.pos;
+    fn find_text_pos(shape: &egui::epaint::Shape, needle: &str) -> Option<egui::Pos2> {
+        match shape {
+            egui::epaint::Shape::Text(t) => {
+                if t.galley.job.text.contains(needle) {
+                    Some(t.pos)
+                } else {
+                    None
+                }
             }
+            egui::epaint::Shape::Vec(v) => {
+                for s in v {
+                    if let Some(p) = find_text_pos(s, needle) {
+                        return Some(p);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    let mut btn_pos = egui::Pos2::ZERO;
+    for shape in &out0.shapes {
+        if let Some(pos) = find_text_pos(&shape.shape, "Equalizer Presets") {
+            btn_pos = pos;
+            break;
         }
     }
     assert_ne!(btn_pos, egui::Pos2::ZERO, "Equalizer Presets card must be rendered in sidebar!");

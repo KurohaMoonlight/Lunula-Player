@@ -43,7 +43,7 @@ impl LunulaApp {
 
             egui::Frame::new()
                 .fill(opt_bg)
-                .stroke(Stroke::new(1.0 + opt_hover_t * 0.4, opt_border))
+                .stroke(Stroke::new(1.0, opt_border))
                 .corner_radius(8.0)
                 .inner_margin(8.0)
                 .show(ui, |ui| {
@@ -153,7 +153,7 @@ impl LunulaApp {
 
             egui::Frame::new()
                 .fill(np_bg)
-                .stroke(Stroke::new(1.0 + np_hover_t * 0.5, np_border))
+                .stroke(Stroke::new(1.0, np_border))
                 .corner_radius(8.0)
                 .inner_margin(8.0)
                 .show(ui, |ui| {
@@ -277,7 +277,7 @@ impl LunulaApp {
 
                         let border_color = lerp_color(base_border, hover_target_border, hover_t);
                         let stroke = Stroke::new(
-                            if is_selected || is_active_track { 1.2 + hover_t * 0.4 } else { 1.0 + hover_t * 0.5 },
+                            if is_selected || is_active_track { 1.2 } else { 1.0 },
                             border_color,
                         );
 

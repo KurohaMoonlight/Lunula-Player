@@ -26,11 +26,11 @@ pub fn render_card_frame<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut eg
     let hover_t = ui.ctx().animate_bool(card_id, is_hovered);
 
     let border_color = lerp_color(Color32::from_rgb(226, 232, 240), Color32::from_rgb(186, 230, 253), hover_t);
-    let stroke_w = 1.0 + hover_t * 0.5;
+    let stroke = Stroke::new(1.0, border_color);
 
     egui::Frame::new()
         .fill(Color32::WHITE)
-        .stroke(Stroke::new(stroke_w, border_color))
+        .stroke(stroke)
         .corner_radius(12.0)
         .inner_margin(16.0)
         .show(ui, add_contents)
@@ -47,11 +47,11 @@ pub fn render_stat_box(ui: &mut egui::Ui, icon: &str, label: &str, value: &str, 
 
     let bg_color = lerp_color(Color32::WHITE, Color32::from_rgb(248, 250, 252), hover_t);
     let border_color = lerp_color(Color32::from_rgb(226, 232, 240), accent_color, hover_t * 0.7);
-    let stroke_w = 1.0 + hover_t * 0.6;
+    let stroke = Stroke::new(1.0, border_color);
 
     egui::Frame::new()
         .fill(bg_color)
-        .stroke(Stroke::new(stroke_w, border_color))
+        .stroke(stroke)
         .corner_radius(8.0)
         .inner_margin(egui::Margin::symmetric(14, 10))
         .show(ui, |ui| {

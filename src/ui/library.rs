@@ -274,14 +274,14 @@ impl LunulaApp {
 
                                             let bg_color = lerp_color(Color32::WHITE, Color32::from_rgb(248, 250, 252), hover_t);
                                             let border_color = lerp_color(Color32::from_rgb(226, 232, 240), Color32::from_rgb(14, 165, 233), hover_t);
-                                            let stroke_w = 1.0 + hover_t * 0.7;
+                                            let stroke = Stroke::new(1.0, border_color);
 
                                             // Allocate card interaction BEFORE inner frame so child buttons are above it and get clicks first
                                             let card_resp = ui.interact(card_rect, card_id, egui::Sense::click());
 
                                             let _frame_resp = egui::Frame::new()
                                                 .fill(bg_color)
-                                                .stroke(Stroke::new(stroke_w, border_color))
+                                                .stroke(stroke)
                                                 .corner_radius(12.0)
                                                 .inner_margin(egui::Margin::symmetric(14, 16))
                                                 .show(ui, |ui| {
@@ -405,14 +405,14 @@ impl LunulaApp {
 
                                             let bg_color = lerp_color(Color32::WHITE, Color32::from_rgb(248, 250, 252), hover_t);
                                             let border_color = lerp_color(Color32::from_rgb(226, 232, 240), Color32::from_rgb(16, 185, 129), hover_t);
-                                            let stroke_w = 1.0 + hover_t * 0.7;
+                                            let stroke = Stroke::new(1.0, border_color);
 
                                             // Allocate card interaction BEFORE inner frame so child buttons are above it and get clicks first
                                             let card_resp = ui.interact(card_rect, card_id, egui::Sense::click());
 
                                             let _frame_resp = egui::Frame::new()
                                                 .fill(bg_color)
-                                                .stroke(Stroke::new(stroke_w, border_color))
+                                                .stroke(stroke)
                                                 .corner_radius(12.0)
                                                 .inner_margin(egui::Margin::symmetric(14, 16))
                                                 .show(ui, |ui| {
@@ -525,7 +525,7 @@ impl LunulaApp {
 
                                     let bg_color = lerp_color(Color32::WHITE, Color32::from_rgb(248, 250, 252), hover_t);
                                     let border_color = lerp_color(Color32::from_rgb(226, 232, 240), col, hover_t * 0.7);
-                                    let stroke = Stroke::new(1.0 + hover_t * 0.7, border_color);
+                                    let stroke = Stroke::new(1.0, border_color);
 
                                     egui::Frame::new()
                                         .fill(bg_color)
@@ -843,7 +843,7 @@ impl LunulaApp {
 
                                     let bg_color = lerp_color(Color32::WHITE, Color32::from_rgb(248, 250, 252), hover_t);
                                     let border_color = lerp_color(Color32::from_rgb(226, 232, 240), Color32::from_rgb(99, 102, 241), hover_t);
-                                    let stroke = Stroke::new(1.0 + hover_t * 0.8, border_color);
+                                    let stroke = Stroke::new(1.0, border_color);
 
                                     // Allocate playlist interaction BEFORE inner frame so child buttons are above it and get clicks first
                                     let pl_click = ui.interact(card_rect, card_id, egui::Sense::click());
@@ -1072,7 +1072,7 @@ impl LunulaApp {
                                     } else {
                                         lerp_color(base_border, Color32::from_rgb(203, 213, 225), hover_t)
                                     };
-                                    let stroke = Stroke::new(if is_current { 1.0 + hover_t * 0.3 } else { hover_t * 1.0 }, border_color);
+                                    let stroke = Stroke::new(1.0, border_color);
 
                                     // Allocate row interaction BEFORE inner frame so favorite button is above it and gets clicks first
                                     let row_click = ui.interact(row_rect, row_id, egui::Sense::click());

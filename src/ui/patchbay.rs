@@ -69,6 +69,13 @@ fn get_interactive_slider_bounds_and_val(node_type: &NodeType, world_rect: Rect,
             let norm = ((pos_x - track_min_x) / track_w).clamp(0.0, 1.0);
             Some((hit, (norm * 100.0).clamp(0.0, 100.0)))
         }
+        NodeType::StereoWidener => {
+            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 34.0, world_rect.min.y + 19.0), Vec2::new(node_width - 42.0, 22.0));
+            let track_min_x = world_rect.min.x + 36.0;
+            let track_w = (node_width - 50.0).max(10.0);
+            let norm = ((pos_x - track_min_x) / track_w).clamp(0.0, 1.0);
+            Some((hit, (norm * 100.0).clamp(0.0, 100.0)))
+        }
         NodeType::VolumeBooster => {
             let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 34.0, world_rect.min.y + 19.0), Vec2::new(node_width - 42.0, 22.0));
             let track_min_x = world_rect.min.x + 36.0;
@@ -159,7 +166,7 @@ impl LunulaApp {
         let param_val = match &node_type {
             NodeType::LowPassFilter => 800.0,
             NodeType::Mixer => 0.5,
-            NodeType::StereoWidener => 1.35,
+            NodeType::StereoWidener => 35.0,
             NodeType::VolumeAttenuator => -6.02,
             NodeType::TubeWarmer => 35.0,
             NodeType::BassGuard => 24.0,
@@ -1629,24 +1636,63 @@ impl LunulaApp {
                 let active_warmth = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(warmth);
 
                 if !is_bypassed_effect {
-                    let cy = node_rect.min.y + 28.0;
-                    let tube_rect = Rect::from_center_size(Pos2::new(node_rect.min.x + 22.0, cy), Vec2::new(18.0, 24.0));
-                    painter.rect_filled(tube_rect, 6.0, Color32::from_rgb(30, 27, 75));
-                    painter.rect_stroke(tube_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(79, 70, 229)), egui::StrokeKind::Outside);
+                    let cy = node_rect.min.y + 27.5;
+                    let tube_cx = node_rect.min.x + 22.0;
+                    let dome_top = node_rect.min.y + 13.0;
+                    let base_bot = node_rect.min.y + 44.5;
 
+                    // 1. Brass contact pins below base
+                    painter.line_segment([Pos2::new(tube_cx - 3.5, base_bot), Pos2::new(tube_cx - 3.5, base_bot + 2.5)], Stroke::new(1.3, Color32::from_rgb(217, 119, 6)));
+                    painter.line_segment([Pos2::new(tube_cx + 3.5, base_bot), Pos2::new(tube_cx + 3.5, base_bot + 2.5)], Stroke::new(1.3, Color32::from_rgb(217, 119, 6)));
+
+                    // 2. Metallic / Bakelite base collar
+                    let base_rect = Rect::from_center_size(Pos2::new(tube_cx, base_bot - 2.0), Vec2::new(13.0, 4.0));
+                    painter.rect_filled(base_rect, 1.5, Color32::from_rgb(30, 41, 59));
+                    painter.rect_stroke(base_rect, 1.5, Stroke::new(0.8, Color32::from_rgb(71, 85, 105)), egui::StrokeKind::Outside);
+
+                    // 3. Glass Envelope (Vertical Capsule Dome)
+                    let glass_rect = Rect::from_min_max(Pos2::new(tube_cx - 7.5, dome_top), Pos2::new(tube_cx + 7.5, base_bot - 3.0));
+                    painter.rect_filled(glass_rect, 6.0, Color32::from_rgba_premultiplied(15, 23, 42, 230));
+                    painter.rect_stroke(glass_rect, 6.0, Stroke::new(1.1, Color32::from_rgba_premultiplied(148, 163, 184, 190)), egui::StrokeKind::Outside);
+
+                    // 4. Barium getter mirror flash at dome tip
+                    painter.rect_filled(Rect::from_center_size(Pos2::new(tube_cx, dome_top + 2.0), Vec2::new(9.0, 2.5)), 1.5, Color32::from_rgba_premultiplied(226, 232, 240, 160));
+
+                    // 5. Internal dark anode plate
+                    let plate_rect = Rect::from_center_size(Pos2::new(tube_cx, dome_top + 15.0), Vec2::new(9.0, 14.0));
+                    painter.rect_filled(plate_rect, 1.5, Color32::from_rgb(17, 24, 39));
+                    painter.rect_stroke(plate_rect, 1.5, Stroke::new(0.8, Color32::from_rgb(51, 65, 85)), egui::StrokeKind::Outside);
+                    painter.line_segment([Pos2::new(tube_cx - 3.5, dome_top + 13.0), Pos2::new(tube_cx + 3.5, dome_top + 13.0)], Stroke::new(0.6, Color32::from_rgb(71, 85, 105)));
+                    painter.line_segment([Pos2::new(tube_cx - 3.5, dome_top + 17.0), Pos2::new(tube_cx + 3.5, dome_top + 17.0)], Stroke::new(0.6, Color32::from_rgb(71, 85, 105)));
+
+                    // 6. Glowing vacuum heater filament with music breathing pulse
                     let norm = active_warmth / 100.0;
                     let glow_pulse = if self.is_playing {
                         let t = ui.input(|i| i.time);
-                        0.8 + 0.2 * (t * 4.0).sin().abs() as f32
+                        0.82 + 0.18 * (t * 4.5).sin().abs() as f32
                     } else {
                         1.0
                     };
-                    let glow_alpha = ((120.0 + norm * 135.0) * glow_pulse).clamp(0.0, 255.0) as u8;
-                    let f1 = Pos2::new(tube_rect.center().x - 3.5, tube_rect.center().y);
-                    let f2 = Pos2::new(tube_rect.center().x + 3.5, tube_rect.center().y);
-                    painter.circle_filled(f1, 2.5, Color32::from_rgba_premultiplied(249, 115, 22, glow_alpha));
-                    painter.circle_filled(f2, 2.5, Color32::from_rgba_premultiplied(251, 146, 60, glow_alpha));
+                    let glow_alpha = ((130.0 + norm * 125.0) * glow_pulse).clamp(0.0, 255.0) as u8;
 
+                    // Warm amber aura
+                    painter.circle_filled(
+                        Pos2::new(tube_cx, dome_top + 15.0),
+                        7.5 * (0.8 + norm * 0.4),
+                        Color32::from_rgba_premultiplied(249, 115, 22, (glow_alpha / 4).max(12)),
+                    );
+
+                    // Twin vertical hairpin glowing filaments
+                    let fil_y_top = dome_top + 10.0;
+                    let fil_y_bot = dome_top + 20.0;
+                    painter.line_segment([Pos2::new(tube_cx - 1.8, fil_y_bot), Pos2::new(tube_cx - 1.8, fil_y_top)], Stroke::new(1.5, Color32::from_rgba_premultiplied(251, 146, 60, glow_alpha)));
+                    painter.line_segment([Pos2::new(tube_cx + 1.8, fil_y_bot), Pos2::new(tube_cx + 1.8, fil_y_top)], Stroke::new(1.5, Color32::from_rgba_premultiplied(251, 146, 60, glow_alpha)));
+                    painter.line_segment([Pos2::new(tube_cx - 1.8, fil_y_top), Pos2::new(tube_cx + 1.8, fil_y_top)], Stroke::new(1.6, Color32::from_rgba_premultiplied(254, 240, 138, glow_alpha)));
+
+                    // 7. Glass specular reflection streak down left edge
+                    painter.line_segment([Pos2::new(tube_cx - 5.5, dome_top + 4.0), Pos2::new(tube_cx - 5.5, base_bot - 6.0)], Stroke::new(0.9, Color32::from_rgba_premultiplied(255, 255, 255, 80)));
+
+                    // Interactive slider track
                     let track_min_x = node_rect.min.x + 42.0;
                     let track_w = (node_width - 54.0).max(10.0);
                     let thumb_x = track_min_x + track_w * norm;
@@ -1663,6 +1709,70 @@ impl LunulaApp {
                         readout,
                         egui::FontId::proportional(9.0),
                         Color32::from_rgb(194, 65, 12),
+                    );
+                } else {
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        egui::Align2::CENTER_CENTER,
+                        "DILEWATI (Bypassed)",
+                        egui::FontId::proportional(10.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 41.5),
+                        egui::Align2::CENTER_CENTER,
+                        "Nonaktif di Bit-Perfect",
+                        egui::FontId::proportional(9.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                }
+            } else if node.node_type == NodeType::StereoWidener {
+                let width_val = (node.param_val).clamp(0.0, 100.0);
+                let active_width = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(width_val);
+
+                if !is_bypassed_effect {
+                    let cy = node_rect.min.y + 27.5;
+                    let norm = (active_width / 100.0).clamp(0.0, 1.0);
+
+                    // Left Icon Badge: 🌐 Spatial Stereo
+                    let badge_rect = Rect::from_center_size(Pos2::new(node_rect.min.x + 20.0, cy), Vec2::new(22.0, 18.0));
+                    painter.rect_filled(badge_rect, 4.0, Color32::from_rgb(30, 27, 75));
+                    painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER, "🌐", egui::FontId::proportional(11.0), Color32::from_rgb(129, 140, 248));
+
+                    // Interactive slider track
+                    let track_min_x = node_rect.min.x + 36.0;
+                    let track_w = (node_width - 50.0).max(10.0);
+                    let thumb_x = track_min_x + track_w * norm;
+
+                    let track_color = Color32::from_rgb(224, 231, 255);
+                    let fill_color = if norm > 0.75 {
+                        Color32::from_rgb(79, 70, 229)
+                    } else if norm > 0.35 {
+                        Color32::from_rgb(99, 102, 241)
+                    } else {
+                        Color32::from_rgb(59, 130, 246)
+                    };
+
+                    painter.rect_filled(Rect::from_min_size(Pos2::new(track_min_x, cy - 2.5), Vec2::new(track_w, 5.0)), 2.5, track_color);
+                    painter.rect_filled(Rect::from_min_size(Pos2::new(track_min_x, cy - 2.5), Vec2::new(thumb_x - track_min_x, 5.0)), 2.5, fill_color);
+                    painter.circle_filled(Pos2::new(thumb_x, cy), 5.5, Color32::WHITE);
+                    painter.circle_stroke(Pos2::new(thumb_x, cy), 5.5, Stroke::new(1.8, fill_color));
+
+                    if self.is_playing && is_flowing {
+                        let t = ui.input(|i| i.time);
+                        let pulse = ((t * 4.0).sin().abs() as f32) * 2.0;
+                        let led_pos = Pos2::new(track_min_x + track_w + 6.0, cy);
+                        painter.circle_filled(led_pos, 2.0 + pulse * 0.5, Color32::from_rgb(129, 140, 248));
+                        ui.ctx().request_repaint();
+                    }
+
+                    let readout = format!("+{:.0}% Width • Haas 3D Field", active_width);
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 44.5),
+                        egui::Align2::CENTER_CENTER,
+                        readout,
+                        egui::FontId::proportional(9.0),
+                        fill_color,
                     );
                 } else {
                     painter.text(
@@ -2156,6 +2266,9 @@ impl LunulaApp {
                     }
                     NodeType::TubeWarmer => {
                         n.sub1 = format!("Warmth {:.0}%", new_val);
+                    }
+                    NodeType::StereoWidener => {
+                        n.sub1 = format!("+{:.0}% Soundstage", new_val);
                     }
                     NodeType::VolumeBooster => {
                         n.sub1 = format!("+{:.1} dB Gain", new_val);
@@ -2824,13 +2937,17 @@ impl LunulaApp {
                     });
                     ui.add_space(8.0);
 
-                    // Filter 1: Tube Warmer (Coming Soon)
-                    let has_tube = self.nodes.iter().any(|n| n.node_type == NodeType::TubeWarmer);
+                    // Filter 1: Tube Warmer (Analog Triode)
+                    let tube_node = self.nodes.iter().find(|n| n.node_type == NodeType::TubeWarmer);
+                    let has_tube = tube_node.is_some();
+                    let current_tube_warmth = tube_node.map(|n| n.param_val).unwrap_or(35.0);
+                    let mut tube_change: Option<f32> = None;
+
                     let g1 = ui.group(|ui| {
                         ui.vertical(|ui| {
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new("🔥 Tube Warmer (Analog)").strong().size(12.5).color(Color32::from_rgb(15, 23, 42)));
-                                ui.label(egui::RichText::new("🚧 Coming Soon").size(10.0).strong().color(Color32::from_rgb(217, 119, 6)));
+                                ui.label(egui::RichText::new(format!("{:.0}% Warmth", current_tube_warmth)).strong().size(10.5).color(Color32::from_rgb(234, 88, 12)));
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     render_routing_help_button(
                                         ui,
@@ -2838,12 +2955,27 @@ impl LunulaApp {
                                         NodeType::TubeWarmer,
                                         &mut self.active_filter_tutorial,
                                         &mut self.filter_tutorial_step,
-                                        );
+                                    );
                                 });
                             });
-                            ui.label(egui::RichText::new("Harmonik ganjil-genap lampu tabung vintage untuk suara vokal tebal (Mesin DSP sedang dalam pengembangan).").size(10.5).color(Color32::from_rgb(100, 116, 139)));
+                            ui.label(egui::RichText::new("Harmonik ganjil-genap lampu tabung vintage trioda 12AX7 untuk vokal tebal dan analog warmth.").size(10.5).color(Color32::from_rgb(100, 116, 139)));
+
+                            if has_tube {
+                                let mut val = current_tube_warmth;
+                                if ui.add(egui::Slider::new(&mut val, 0.0..=100.0).suffix("%").show_value(false)).changed() {
+                                    tube_change = Some(val);
+                                }
+                                ui.horizontal(|ui| {
+                                    for (lbl, p_val) in [("20% Mild", 20.0), ("35% Triode", 35.0), ("50% Rich", 50.0), ("75% Hot", 75.0)] {
+                                        if ui.button(egui::RichText::new(lbl).size(9.0)).clicked() {
+                                            tube_change = Some(p_val);
+                                        }
+                                    }
+                                });
+                            }
+
                             ui.horizontal(|ui| {
-                                if ui.button(egui::RichText::new("🚧 Coming Soon").strong().color(Color32::from_rgb(180, 83, 9))).on_hover_text("Mesin DSP filter ini sedang dalam antrean pengembangan").clicked() {
+                                if ui.button(egui::RichText::new("➕ Tambah ke Chain").strong()).clicked() {
                                     self.add_modular_filter(NodeType::TubeWarmer);
                                 }
                                 if has_tube {
@@ -2855,7 +2987,7 @@ impl LunulaApp {
                         });
                     });
                     g1.response.context_menu(|ui| {
-                        ui.label(egui::RichText::new("🔥 Tube Warmer (Analog) 🚧 Coming Soon").strong());
+                        ui.label(egui::RichText::new("🔥 Tube Warmer (Analog)").strong());
                         ui.separator();
                         if ui.button("➕ Tambah ke Signal Chain").clicked() {
                             self.add_modular_filter(NodeType::TubeWarmer);
@@ -2868,15 +3000,33 @@ impl LunulaApp {
                             }
                         }
                     });
+
+                    if let Some(new_val) = tube_change {
+                        if let Some(n) = self.nodes.iter_mut().find(|n| n.node_type == NodeType::TubeWarmer) {
+                            n.param_val = new_val;
+                            n.sub1 = format!("Warmth {:.0}%", new_val);
+                            let nid = n.id;
+                            if self.chain_mode != ChainMode::DspActive {
+                                self.set_chain_mode(ChainMode::DspActive);
+                            }
+                            if let Some(ref engine) = self.audio_engine {
+                                engine.set_node_param(nid as u32, 0, new_val);
+                            }
+                        }
+                    }
                     ui.add_space(8.0);
 
-                    // Filter 2: Spatial Stereo Widener (Coming Soon)
-                    let has_widener = self.nodes.iter().any(|n| n.node_type == NodeType::StereoWidener);
+                    // Filter 2: Spatial Stereo Widener
+                    let widener_node = self.nodes.iter().find(|n| n.node_type == NodeType::StereoWidener);
+                    let has_widener = widener_node.is_some();
+                    let current_widener_val = widener_node.map(|n| n.param_val).unwrap_or(35.0);
+                    let mut widener_change: Option<f32> = None;
+
                     let g2 = ui.group(|ui| {
                         ui.vertical(|ui| {
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new("🌐 Stereo 3D Widener").strong().size(12.5).color(Color32::from_rgb(15, 23, 42)));
-                                ui.label(egui::RichText::new("🚧 Coming Soon").size(10.0).strong().color(Color32::from_rgb(217, 119, 6)));
+                                ui.label(egui::RichText::new(format!("+{:.0}% Width", current_widener_val)).strong().size(10.5).color(Color32::from_rgb(59, 130, 246)));
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     render_routing_help_button(
                                         ui,
@@ -2887,9 +3037,24 @@ impl LunulaApp {
                                     );
                                 });
                             });
-                            ui.label(egui::RichText::new("Memperlebar soundstage instrumen menggunakan algoritma Haas delay (Mesin DSP sedang dalam pengembangan).").size(10.5).color(Color32::from_rgb(100, 116, 139)));
+                            ui.label(egui::RichText::new("Pelebaran soundstage instrumen spatial stereo Haas & mid-side delay tanpa merusak fase mono vokal.").size(10.5).color(Color32::from_rgb(100, 116, 139)));
+
+                            if has_widener {
+                                let mut val = current_widener_val;
+                                if ui.add(egui::Slider::new(&mut val, 0.0..=100.0).suffix("%").show_value(false)).changed() {
+                                    widener_change = Some(val);
+                                }
+                                ui.horizontal(|ui| {
+                                    for (lbl, p_val) in [("+15% Natural", 15.0), ("+35% Haas", 35.0), ("+60% Wide", 60.0), ("+100% 3D", 100.0)] {
+                                        if ui.button(egui::RichText::new(lbl).size(9.0)).clicked() {
+                                            widener_change = Some(p_val);
+                                        }
+                                    }
+                                });
+                            }
+
                             ui.horizontal(|ui| {
-                                if ui.button(egui::RichText::new("🚧 Coming Soon").strong().color(Color32::from_rgb(180, 83, 9))).on_hover_text("Mesin DSP filter ini sedang dalam antrean pengembangan").clicked() {
+                                if ui.button(egui::RichText::new("➕ Tambah ke Chain").strong()).clicked() {
                                     self.add_modular_filter(NodeType::StereoWidener);
                                 }
                                 if has_widener {
@@ -2901,7 +3066,7 @@ impl LunulaApp {
                         });
                     });
                     g2.response.context_menu(|ui| {
-                        ui.label(egui::RichText::new("🌐 Stereo 3D Widener 🚧 Coming Soon").strong());
+                        ui.label(egui::RichText::new("🌐 Stereo 3D Widener").strong());
                         ui.separator();
                         if ui.button("➕ Tambah ke Signal Chain").clicked() {
                             self.add_modular_filter(NodeType::StereoWidener);
@@ -2914,6 +3079,20 @@ impl LunulaApp {
                             }
                         }
                     });
+
+                    if let Some(new_val) = widener_change {
+                        if let Some(n) = self.nodes.iter_mut().find(|n| n.node_type == NodeType::StereoWidener) {
+                            n.param_val = new_val;
+                            n.sub1 = format!("+{:.0}% Soundstage", new_val);
+                            let nid = n.id;
+                            if self.chain_mode != ChainMode::DspActive {
+                                self.set_chain_mode(ChainMode::DspActive);
+                            }
+                            if let Some(ref engine) = self.audio_engine {
+                                engine.set_node_param(nid as u32, 0, new_val);
+                            }
+                        }
+                    }
                     ui.add_space(8.0);
 
                     // Filter 3: Bass Guard Limiter (Coming Soon)
@@ -4680,6 +4859,139 @@ impl LunulaApp {
                                         egui::FontId::proportional(8.5),
                                         Color32::from_rgb(79, 70, 229),
                                     );
+                                } else if filter_type == NodeType::TubeWarmer {
+                                    let mid_x = diag_rect.min.x + 85.0;
+                                    let cy = diag_rect.center().y - 6.0;
+
+                                    // Left side: Detailed Cutaway Vacuum Tube
+                                    let tube_cx = diag_rect.min.x + 42.0;
+                                    let dome_top = cy - 36.0;
+                                    let base_bot = cy + 34.0;
+
+                                    // Pins
+                                    p.line_segment([Pos2::new(tube_cx - 5.0, base_bot), Pos2::new(tube_cx - 5.0, base_bot + 4.0)], Stroke::new(1.8, Color32::from_rgb(217, 119, 6)));
+                                    p.line_segment([Pos2::new(tube_cx, base_bot), Pos2::new(tube_cx, base_bot + 4.0)], Stroke::new(1.8, Color32::from_rgb(217, 119, 6)));
+                                    p.line_segment([Pos2::new(tube_cx + 5.0, base_bot), Pos2::new(tube_cx + 5.0, base_bot + 4.0)], Stroke::new(1.8, Color32::from_rgb(217, 119, 6)));
+
+                                    // Base collar
+                                    let base_rect = Rect::from_center_size(Pos2::new(tube_cx, base_bot - 3.0), Vec2::new(20.0, 6.0));
+                                    p.rect_filled(base_rect, 2.0, Color32::from_rgb(30, 41, 59));
+                                    p.rect_stroke(base_rect, 2.0, Stroke::new(1.0, Color32::from_rgb(71, 85, 105)), egui::StrokeKind::Outside);
+
+                                    // Glass envelope
+                                    let glass_rect = Rect::from_min_max(Pos2::new(tube_cx - 12.0, dome_top), Pos2::new(tube_cx + 12.0, base_bot - 5.0));
+                                    p.rect_filled(glass_rect, 10.0, Color32::from_rgba_premultiplied(15, 23, 42, 230));
+                                    p.rect_stroke(glass_rect, 10.0, Stroke::new(1.4, Color32::from_rgba_premultiplied(148, 163, 184, 180)), egui::StrokeKind::Outside);
+
+                                    // Getter flash
+                                    p.rect_filled(Rect::from_center_size(Pos2::new(tube_cx, dome_top + 3.0), Vec2::new(14.0, 4.0)), 2.0, Color32::from_rgba_premultiplied(226, 232, 240, 160));
+
+                                    // Plate
+                                    let plate_rect = Rect::from_center_size(Pos2::new(tube_cx, cy), Vec2::new(15.0, 26.0));
+                                    p.rect_filled(plate_rect, 2.0, Color32::from_rgb(17, 24, 39));
+                                    p.rect_stroke(plate_rect, 2.0, Stroke::new(0.8, Color32::from_rgb(51, 65, 85)), egui::StrokeKind::Outside);
+
+                                    // Dynamic pulse
+                                    let t = ui.input(|i| i.time);
+                                    let pulse = if self.is_playing { 0.8 + 0.2 * (t * 4.5).sin().abs() as f32 } else { 1.0 };
+                                    let glow_a = (220.0 * pulse).clamp(0.0, 255.0) as u8;
+                                    p.circle_filled(Pos2::new(tube_cx, cy), 12.0 * pulse, Color32::from_rgba_premultiplied(249, 115, 22, (glow_a / 4).max(15)));
+
+                                    // Glowing twin filament
+                                    let f_top = cy - 8.0;
+                                    let f_bot = cy + 8.0;
+                                    p.line_segment([Pos2::new(tube_cx - 2.8, f_bot), Pos2::new(tube_cx - 2.8, f_top)], Stroke::new(2.0, Color32::from_rgba_premultiplied(251, 146, 60, glow_a)));
+                                    p.line_segment([Pos2::new(tube_cx + 2.8, f_bot), Pos2::new(tube_cx + 2.8, f_top)], Stroke::new(2.0, Color32::from_rgba_premultiplied(251, 146, 60, glow_a)));
+                                    p.line_segment([Pos2::new(tube_cx - 2.8, f_top), Pos2::new(tube_cx + 2.8, f_top)], Stroke::new(2.0, Color32::from_rgba_premultiplied(254, 240, 138, glow_a)));
+
+                                    // Specular streak
+                                    p.line_segment([Pos2::new(tube_cx - 9.0, dome_top + 6.0), Pos2::new(tube_cx - 9.0, base_bot - 10.0)], Stroke::new(1.0, Color32::from_rgba_premultiplied(255, 255, 255, 70)));
+
+                                    // Right side: Triode 12AX7 Transfer Curve
+                                    let curve_start_x = mid_x + 18.0;
+                                    let curve_end_x = diag_rect.max.x - 20.0;
+                                    let curve_mid_x = (curve_start_x + curve_end_x) * 0.5;
+
+                                    // Axes
+                                    p.line_segment([Pos2::new(curve_start_x, cy), Pos2::new(curve_end_x, cy)], Stroke::new(1.0, Color32::from_rgb(226, 232, 240)));
+                                    p.line_segment([Pos2::new(curve_mid_x, cy - 30.0), Pos2::new(curve_mid_x, cy + 30.0)], Stroke::new(1.0, Color32::from_rgb(226, 232, 240)));
+
+                                    // Asymmetric triode curve
+                                    let mut curve_pts = Vec::new();
+                                    for i in 0..=24 {
+                                        let t_c = (i as f32 / 24.0) * 2.0 - 1.0;
+                                        let x = curve_mid_x + t_c * (curve_end_x - curve_mid_x);
+                                        // Asymmetric soft triode saturation
+                                        let y_sat = if t_c > 0.0 {
+                                            t_c * 0.95 + 0.35 * t_c * t_c - 0.12 * t_c * t_c * t_c
+                                        } else {
+                                            t_c * 0.95 - 0.12 * t_c * t_c - 0.10 * t_c * t_c * t_c
+                                        };
+                                        let y = cy - (y_sat * 25.0).clamp(-28.0, 28.0);
+                                        curve_pts.push(Pos2::new(x, y));
+                                    }
+                                    for seg in 0..curve_pts.len() - 1 {
+                                        p.line_segment([curve_pts[seg], curve_pts[seg + 1]], Stroke::new(2.4, theme_color));
+                                    }
+
+                                    p.text(Pos2::new(tube_cx, base_bot + 6.0), egui::Align2::CENTER_TOP, "Triode 12AX7", egui::FontId::proportional(8.0), Color32::from_rgb(234, 88, 12));
+                                    p.text(Pos2::new(curve_start_x, cy + 18.0), egui::Align2::LEFT_TOP, "-1.0 (Cutoff Halus)", egui::FontId::proportional(8.0), Color32::from_rgb(148, 163, 184));
+                                    p.text(Pos2::new(curve_end_x, cy - 22.0), egui::Align2::RIGHT_BOTTOM, "+H2 Harmonik Genap", egui::FontId::proportional(8.0), Color32::from_rgb(249, 115, 22));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 10.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "🔥 Asymmetric Triode: Menghasilkan distorsi harmonik genap H2 untuk kehangatan vokal analog",
+                                        egui::FontId::proportional(8.5),
+                                        Color32::from_rgb(194, 65, 12),
+                                    );
+                                } else if filter_type == NodeType::StereoWidener {
+                                    let cy = diag_rect.center().y - 8.0;
+                                    let cx = diag_rect.center().x;
+
+                                    // Binaural 3D Expanding Soundstage Waves
+                                    let pulse = if self.is_playing {
+                                        let t = ui.input(|i| i.time);
+                                        0.85 + 0.15 * (t * 4.0).sin().abs() as f32
+                                    } else {
+                                        1.0
+                                    };
+
+                                    // Central Listener Icon
+                                    p.circle_filled(Pos2::new(cx, cy), 6.5, Color32::from_rgb(99, 102, 241));
+                                    p.circle_stroke(Pos2::new(cx, cy), 6.5, Stroke::new(2.0, Color32::WHITE));
+                                    p.text(Pos2::new(cx, cy + 10.0), egui::Align2::CENTER_TOP, "Listener (Center Mid)", egui::FontId::proportional(8.0), Color32::from_rgb(79, 70, 229));
+
+                                    // Expanding left and right soundstage wavefronts
+                                    for arc_i in 1..=4 {
+                                        let r = (arc_i as f32 * 22.0 * pulse).min(diag_rect.width() * 0.44);
+                                        let alpha = ((200.0 - arc_i as f32 * 35.0) * pulse).clamp(20.0, 255.0) as u8;
+                                        let col = Color32::from_rgba_premultiplied(99, 102, 241, alpha);
+
+                                        // Left wavefront arc
+                                        p.line_segment([Pos2::new(cx - r, cy - 18.0), Pos2::new(cx - r - 4.0, cy)], Stroke::new(1.8, col));
+                                        p.line_segment([Pos2::new(cx - r - 4.0, cy), Pos2::new(cx - r, cy + 18.0)], Stroke::new(1.8, col));
+
+                                        // Right wavefront arc
+                                        p.line_segment([Pos2::new(cx + r, cy - 18.0), Pos2::new(cx + r + 4.0, cy)], Stroke::new(1.8, col));
+                                        p.line_segment([Pos2::new(cx + r + 4.0, cy), Pos2::new(cx + r, cy + 18.0)], Stroke::new(1.8, col));
+                                    }
+
+                                    // Width expansion arrows
+                                    let w_left = diag_rect.min.x + 24.0;
+                                    let w_right = diag_rect.max.x - 24.0;
+                                    p.line_segment([Pos2::new(w_left, cy - 26.0), Pos2::new(w_right, cy - 26.0)], Stroke::new(1.2, Color32::from_rgb(165, 180, 252)));
+                                    p.text(Pos2::new(w_left, cy - 26.0), egui::Align2::LEFT_CENTER, "◀◀ Kiri Luas", egui::FontId::proportional(8.5), Color32::from_rgb(99, 102, 241));
+                                    p.text(Pos2::new(w_right, cy - 26.0), egui::Align2::RIGHT_CENTER, "Kanan Luas ▶▶", egui::FontId::proportional(8.5), Color32::from_rgb(99, 102, 241));
+                                    p.text(Pos2::new(cx, cy - 26.0), egui::Align2::CENTER_CENTER, "+150% Soundstage Ekspansi", egui::FontId::proportional(8.5), Color32::from_rgb(67, 56, 202));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 10.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "🌐 Mid/Side Haas 3D: Melebarkan panggung suara melampaui batas fisik headphone/speaker",
+                                        egui::FontId::proportional(8.5),
+                                        Color32::from_rgb(79, 70, 229),
+                                    );
                                 } else {
                                     let cy = diag_rect.center().y;
                                     p.text(Pos2::new(diag_rect.center().x, cy - 10.0), egui::Align2::CENTER_CENTER, "🔊 KARAKTER SUARA MODUL", egui::FontId::proportional(11.0), theme_color);
@@ -4776,6 +5088,74 @@ impl LunulaApp {
                                         egui::FontId::proportional(8.5),
                                         Color32::from_rgb(16, 185, 129),
                                     );
+                                } else if filter_type == NodeType::TubeWarmer {
+                                    let cy = diag_rect.center().y - 10.0;
+                                    let b_w = 70.0;
+                                    let b_h = 32.0;
+
+                                    let r1 = Rect::from_min_size(Pos2::new(diag_rect.min.x + 8.0, cy - b_h * 0.5), Vec2::new(b_w, b_h));
+                                    let r2 = Rect::from_min_size(Pos2::new(diag_rect.center().x - b_w * 0.5, cy - b_h * 0.5), Vec2::new(b_w, b_h));
+                                    let r3 = Rect::from_min_size(Pos2::new(diag_rect.max.x - b_w - 8.0, cy - b_h * 0.5), Vec2::new(b_w, b_h));
+
+                                    p.rect_filled(r1, 5.0, Color32::from_rgb(238, 242, 255));
+                                    p.rect_stroke(r1, 5.0, Stroke::new(1.0, Color32::from_rgb(199, 210, 254)), egui::StrokeKind::Outside);
+                                    p.text(r1.center(), egui::Align2::CENTER_CENTER, "RAM Buffer", egui::FontId::proportional(8.5), Color32::from_rgb(67, 56, 202));
+
+                                    p.rect_filled(r2, 5.0, Color32::from_rgb(255, 247, 237));
+                                    p.rect_stroke(r2, 5.0, Stroke::new(1.8, Color32::from_rgb(249, 115, 22)), egui::StrokeKind::Outside);
+                                    p.text(Pos2::new(r2.center().x, r2.center().y - 4.0), egui::Align2::CENTER_CENTER, "🔥 TUBE WARMER", egui::FontId::proportional(7.5), Color32::from_rgb(234, 88, 12));
+                                    p.text(Pos2::new(r2.center().x, r2.center().y + 6.0), egui::Align2::CENTER_CENTER, "✅ POSISI SAH", egui::FontId::proportional(7.0), Color32::from_rgb(16, 185, 129));
+
+                                    p.rect_filled(r3, 5.0, Color32::from_rgb(238, 242, 255));
+                                    p.rect_stroke(r3, 5.0, Stroke::new(1.0, Color32::from_rgb(199, 210, 254)), egui::StrokeKind::Outside);
+                                    p.text(r3.center(), egui::Align2::CENTER_CENTER, "DSP / DAC", egui::FontId::proportional(8.5), Color32::from_rgb(67, 56, 202));
+
+                                    p.line_segment([Pos2::new(r1.max.x, cy), Pos2::new(r2.min.x, cy)], Stroke::new(2.5, Color32::from_rgb(249, 115, 22)));
+                                    p.line_segment([Pos2::new(r2.max.x, cy), Pos2::new(r3.min.x, cy)], Stroke::new(2.5, Color32::from_rgb(16, 185, 129)));
+                                    p.circle_filled(Pos2::new((r1.max.x + r2.min.x) * 0.5, cy), 3.0, Color32::from_rgb(251, 146, 60));
+                                    p.circle_filled(Pos2::new((r2.max.x + r3.min.x) * 0.5, cy), 3.0, Color32::from_rgb(52, 211, 153));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 12.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "✨ Pasang di antara RAM Buffer dan DSP Engine, atau sesudah DSP sebelum Resampler",
+                                        egui::FontId::proportional(9.0),
+                                        Color32::from_rgb(16, 185, 129),
+                                    );
+                                } else if filter_type == NodeType::StereoWidener {
+                                    let cy = diag_rect.center().y - 10.0;
+                                    let b_w = 70.0;
+                                    let b_h = 32.0;
+
+                                    let r1 = Rect::from_min_size(Pos2::new(diag_rect.min.x + 8.0, cy - b_h * 0.5), Vec2::new(b_w, b_h));
+                                    let r2 = Rect::from_min_size(Pos2::new(diag_rect.center().x - b_w * 0.5, cy - b_h * 0.5), Vec2::new(b_w, b_h));
+                                    let r3 = Rect::from_min_size(Pos2::new(diag_rect.max.x - b_w - 8.0, cy - b_h * 0.5), Vec2::new(b_w, b_h));
+
+                                    p.rect_filled(r1, 5.0, Color32::from_rgb(238, 242, 255));
+                                    p.rect_stroke(r1, 5.0, Stroke::new(1.0, Color32::from_rgb(199, 210, 254)), egui::StrokeKind::Outside);
+                                    p.text(r1.center(), egui::Align2::CENTER_CENTER, "DSP / Filter", egui::FontId::proportional(8.5), Color32::from_rgb(67, 56, 202));
+
+                                    p.rect_filled(r2, 5.0, Color32::from_rgb(238, 242, 255));
+                                    p.rect_stroke(r2, 5.0, Stroke::new(1.8, Color32::from_rgb(99, 102, 241)), egui::StrokeKind::Outside);
+                                    p.text(Pos2::new(r2.center().x, r2.center().y - 4.0), egui::Align2::CENTER_CENTER, "🌐 3D WIDENER", egui::FontId::proportional(7.5), Color32::from_rgb(79, 70, 229));
+                                    p.text(Pos2::new(r2.center().x, r2.center().y + 6.0), egui::Align2::CENTER_CENTER, "✅ TAHAP AKHIR", egui::FontId::proportional(7.0), Color32::from_rgb(16, 185, 129));
+
+                                    p.rect_filled(r3, 5.0, Color32::from_rgb(236, 253, 245));
+                                    p.rect_stroke(r3, 5.0, Stroke::new(1.0, Color32::from_rgb(167, 243, 208)), egui::StrokeKind::Outside);
+                                    p.text(r3.center(), egui::Align2::CENTER_CENTER, "Output DAC", egui::FontId::proportional(8.5), Color32::from_rgb(6, 95, 70));
+
+                                    p.line_segment([Pos2::new(r1.max.x, cy), Pos2::new(r2.min.x, cy)], Stroke::new(2.5, Color32::from_rgb(99, 102, 241)));
+                                    p.line_segment([Pos2::new(r2.max.x, cy), Pos2::new(r3.min.x, cy)], Stroke::new(2.5, Color32::from_rgb(16, 185, 129)));
+                                    p.circle_filled(Pos2::new((r1.max.x + r2.min.x) * 0.5, cy), 3.0, Color32::from_rgb(129, 140, 248));
+                                    p.circle_filled(Pos2::new((r2.max.x + r3.min.x) * 0.5, cy), 3.0, Color32::from_rgb(52, 211, 153));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 12.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "✨ Pasang di tahap akhir sebelum Output DAC agar seluruh panggung suara melebar optimal",
+                                        egui::FontId::proportional(9.0),
+                                        Color32::from_rgb(16, 185, 129),
+                                    );
                                 } else {
                                     let cy = diag_rect.center().y - 10.0;
                                     let b_w = 66.0;
@@ -4841,6 +5221,31 @@ impl LunulaApp {
                                         Pos2::new(diag_rect.center().x, diag_rect.max.y - 12.0),
                                         egui::Align2::CENTER_CENTER,
                                         "🔇 LunulaPlayer auto-mute jika loop terdeteksi untuk melindungi speaker",
+                                        egui::FontId::proportional(8.5),
+                                        Color32::from_rgb(239, 68, 68),
+                                    );
+                                } else if filter_type == NodeType::StereoWidener {
+                                    let cy = diag_rect.center().y - 12.0;
+                                    let half_w = (diag_rect.width() - 36.0) * 0.5;
+                                    let b1 = Rect::from_min_size(Pos2::new(diag_rect.min.x + 12.0, cy - 22.0), Vec2::new(half_w, 44.0));
+                                    let b2 = Rect::from_min_size(Pos2::new(diag_rect.center().x + 6.0, cy - 22.0), Vec2::new(half_w, 44.0));
+
+                                    // Bad Box 1: Sebelum Source
+                                    p.rect_filled(b1, 6.0, Color32::from_rgb(254, 242, 242));
+                                    p.rect_stroke(b1, 6.0, Stroke::new(1.2, Color32::from_rgb(252, 165, 165)), egui::StrokeKind::Outside);
+                                    p.text(Pos2::new(b1.center().x, b1.min.y + 13.0), egui::Align2::CENTER_CENTER, "🚫 Sebelum File Source", egui::FontId::proportional(9.5), Color32::from_rgb(185, 28, 28));
+                                    p.text(Pos2::new(b1.center().x, b1.min.y + 27.0), egui::Align2::CENTER_CENTER, "File belum didecode ke PCM!", egui::FontId::proportional(8.0), Color32::from_rgb(153, 27, 27));
+
+                                    // Bad Box 2: Mono Summing Bus
+                                    p.rect_filled(b2, 6.0, Color32::from_rgb(254, 242, 242));
+                                    p.rect_stroke(b2, 6.0, Stroke::new(1.2, Color32::from_rgb(252, 165, 165)), egui::StrokeKind::Outside);
+                                    p.text(Pos2::new(b2.center().x, b2.min.y + 13.0), egui::Align2::CENTER_CENTER, "🚫 Dilarang Mono Summing", egui::FontId::proportional(9.5), Color32::from_rgb(185, 28, 28));
+                                    p.text(Pos2::new(b2.center().x, b2.min.y + 27.0), egui::Align2::CENTER_CENTER, "Side melebar saling meniadakan di mono!", egui::FontId::proportional(7.5), Color32::from_rgb(153, 27, 27));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 12.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "🌐 Rekomendasi: Gunakan headphone atau speaker stereo untuk menikmati panggung 3D",
                                         egui::FontId::proportional(8.5),
                                         Color32::from_rgb(239, 68, 68),
                                     );
@@ -4923,6 +5328,62 @@ impl LunulaApp {
                                         Pos2::new(diag_rect.center().x, diag_rect.max.y - 12.0),
                                         egui::Align2::CENTER_CENTER,
                                         "💡 Pasang bersama Mixer untuk kendali penuh Dry/Wet parallel processing",
+                                        egui::FontId::proportional(8.5),
+                                        Color32::from_rgb(100, 116, 139),
+                                    );
+                                } else if filter_type == NodeType::TubeWarmer {
+                                    let cy = diag_rect.center().y - 14.0;
+                                    let line_w = diag_rect.width() - 32.0;
+
+                                    let r_box = Rect::from_min_size(Pos2::new(diag_rect.min.x + 16.0, cy - 18.0), Vec2::new(line_w, 48.0));
+                                    p.rect_filled(r_box, 4.0, Color32::from_rgb(255, 247, 237));
+                                    p.rect_stroke(r_box, 4.0, Stroke::new(1.0, Color32::from_rgb(254, 215, 170)), egui::StrokeKind::Outside);
+
+                                    p.text(Pos2::new(r_box.min.x + 10.0, r_box.min.y + 12.0), egui::Align2::LEFT_CENTER, "◀ 0% Bypass", egui::FontId::proportional(8.5), Color32::from_rgb(194, 65, 12));
+                                    p.text(Pos2::new(r_box.min.x + line_w * 0.35, r_box.min.y + 12.0), egui::Align2::CENTER_CENTER, "● 35% Triode (Sweet Spot)", egui::FontId::proportional(8.5), Color32::from_rgb(234, 88, 12));
+                                    p.text(Pos2::new(r_box.max.x - 10.0, r_box.min.y + 12.0), egui::Align2::RIGHT_CENTER, "100% Hot Tube ▶", egui::FontId::proportional(8.5), Color32::from_rgb(194, 65, 12));
+
+                                    // Slider illustration
+                                    let s_y = r_box.min.y + 32.0;
+                                    let s_w = line_w - 40.0;
+                                    let s_x = r_box.min.x + 20.0;
+                                    p.line_segment([Pos2::new(s_x, s_y), Pos2::new(s_x + s_w, s_y)], Stroke::new(2.5, Color32::from_rgb(254, 215, 170)));
+                                    p.line_segment([Pos2::new(s_x, s_y), Pos2::new(s_x + s_w * 0.35, s_y)], Stroke::new(2.5, Color32::from_rgb(249, 115, 22)));
+                                    p.circle_filled(Pos2::new(s_x + s_w * 0.35, s_y), 5.5, Color32::WHITE);
+                                    p.circle_stroke(Pos2::new(s_x + s_w * 0.35, s_y), 5.5, Stroke::new(1.8, Color32::from_rgb(234, 88, 12)));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 12.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "💡 Geser slider Warmth di kanvas atau gunakan preset tombol cepat: 20%, 35%, 50%, 75%",
+                                        egui::FontId::proportional(8.5),
+                                        Color32::from_rgb(100, 116, 139),
+                                    );
+                                } else if filter_type == NodeType::StereoWidener {
+                                    let cy = diag_rect.center().y - 14.0;
+                                    let line_w = diag_rect.width() - 32.0;
+
+                                    let r_box = Rect::from_min_size(Pos2::new(diag_rect.min.x + 16.0, cy - 18.0), Vec2::new(line_w, 48.0));
+                                    p.rect_filled(r_box, 4.0, Color32::from_rgb(238, 242, 255));
+                                    p.rect_stroke(r_box, 4.0, Stroke::new(1.0, Color32::from_rgb(199, 210, 254)), egui::StrokeKind::Outside);
+
+                                    p.text(Pos2::new(r_box.min.x + 10.0, r_box.min.y + 12.0), egui::Align2::LEFT_CENTER, "◀ +0% Normal", egui::FontId::proportional(8.5), Color32::from_rgb(79, 70, 229));
+                                    p.text(Pos2::new(r_box.min.x + line_w * 0.35, r_box.min.y + 12.0), egui::Align2::CENTER_CENTER, "● +35% Haas 3D (Rekomendasi)", egui::FontId::proportional(8.5), Color32::from_rgb(99, 102, 241));
+                                    p.text(Pos2::new(r_box.max.x - 10.0, r_box.min.y + 12.0), egui::Align2::RIGHT_CENTER, "+100% Sinematik ▶", egui::FontId::proportional(8.5), Color32::from_rgb(79, 70, 229));
+
+                                    // Slider illustration
+                                    let s_y = r_box.min.y + 32.0;
+                                    let s_w = line_w - 40.0;
+                                    let s_x = r_box.min.x + 20.0;
+                                    p.line_segment([Pos2::new(s_x, s_y), Pos2::new(s_x + s_w, s_y)], Stroke::new(2.5, Color32::from_rgb(199, 210, 254)));
+                                    p.line_segment([Pos2::new(s_x, s_y), Pos2::new(s_x + s_w * 0.35, s_y)], Stroke::new(2.5, Color32::from_rgb(99, 102, 241)));
+                                    p.circle_filled(Pos2::new(s_x + s_w * 0.35, s_y), 5.5, Color32::WHITE);
+                                    p.circle_stroke(Pos2::new(s_x + s_w * 0.35, s_y), 5.5, Stroke::new(1.8, Color32::from_rgb(79, 70, 229)));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 12.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "💡 Geser slider Soundstage di kartu kanvas atau gunakan preset: +15%, +35%, +60%, +100%",
                                         egui::FontId::proportional(8.5),
                                         Color32::from_rgb(100, 116, 139),
                                     );
@@ -5029,6 +5490,28 @@ impl LunulaApp {
                                         ui.add_space(4.0);
                                         ui.label(egui::RichText::new("Karakteristik & Keunggulan:").strong().size(11.0).color(Color32::from_rgb(79, 70, 229)));
                                         ui.label(egui::RichText::new("• Daya Akustik Konstan (Constant-Power Panning): Tidak ada penurunan energi suara saat instrumen berada di tengah (Center detent 0 dB).\n• Kompensasi Pendengaran & Speaker Ruangan: Koreksi ketidakseimbangan posisi duduk pendengar atau perbedaan sensitivitas telinga kiri dan kanan.\n• Snapping Center Detent: Slider mudah dikembalikan ke titik imbang tengah 0.0 dB.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
+                                    } else if filter_type == NodeType::TubeWarmer {
+                                        ui.label(egui::RichText::new("Apa itu Tube Warmer (Triode Saturation)?").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("Tube Warmer mereplikasi karakteristik akustik tabung vakum triode legendaris (seperti 12AX7 / ECC83) yang banyak digunakan pada pre-amplifier studio rekaman vintage dan amplifier audio hi-fi audiophile.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("Karakter Akustik & Harmonik Musikal:").strong().size(11.0).color(Color32::from_rgb(234, 88, 12)));
+                                        ui.label(egui::RichText::new("• Distorsi Harmonik Genap (2nd Harmonic): Menghasilkan harmonik musikal satu oktaf di atas nada dasar yang memberikan ketebalan alami pada vokal, gitar akustik, dan bass.\n• Soft Asymmetric Compression: Meredam puncak transien drum dan simbal secara halus sehingga terdengar hangat dan lembut tanpa menghilangkan dinamika.\n• Mengikis 'Digital Coldness': Mengubah karakter rekaman digital modern yang terkadang terlalu steril atau tajam menjadi bersahabat di telinga untuk sesi dengar maraton.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("Panduan Nilai Warmth:").strong().size(11.0).color(Color32::from_rgb(194, 65, 12)));
+                                        ui.label(egui::RichText::new("• 0% Bypass: Sinyal bersih bit-sempurna tanpa pewarnaan tabung.\n• 20% - 35%: Sentuhan sutra analog halus, vokal lebih intim dan berbobot.\n• 50% - 65%: Karakter triode studio kaya, instrumen terasa lebih menyatu (glue effect).\n• 75% - 100%: Saturasi analog vintage kental dengan kompresi tabung hangat.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
+                                    } else if filter_type == NodeType::StereoWidener {
+                                        ui.label(egui::RichText::new("Apa itu Stereo 3D Widener (Haas Effect)?").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("Stereo 3D Widener adalah modul ekspansi soundstage berpresisi 64-bit float yang memisahkan sinyal Mid (tengah) dan Side (samping) menggunakan prinsip psikoakustik efek Haas untuk memperluas dimensi panggung suara tanpa merusak vokal utama.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("Karakter Akustik & Panggung Suara 3D:").strong().size(11.0).color(Color32::from_rgb(99, 102, 241)));
+                                        ui.label(egui::RichText::new("• Panggung Suara Terbuka Lebar: Memproyeksikan instrumen latar, efek reverb, dan panning keluar melampaui batas fisik headphone atau jarak fisik speaker Anda.\n• Vokal & Bass Terkunci Kokoh: Kanal Mid tetap dipusatkan secara utuh, sehingga vokal utama dan dentuman kick drum tidak kehilangan energi atau menjadi hampa.\n• Meredakan In-Head Localization: Mengurangi kelelahan mendengar pada headphone saat mendengarkan rekaman stereo sempit dengan mengubahnya menjadi ruang dengar konser terbuka.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("Panduan Nilai Soundstage:").strong().size(11.0).color(Color32::from_rgb(79, 70, 229)));
+                                        ui.label(egui::RichText::new("• +0% Normal: Lebar stereo asli sesuai master rekaman.\n• +15% - +35%: Panggung suara 3D alami dan seimbang (sangat disukai untuk headphone audiophile).\n• +60%: Sensasi ruang konser terbuka lebar untuk musik live, orkestra, dan jazz.\n• +100%: Panggung sinematik imersif 3D penuh.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
                                     } else {
                                         ui.label(egui::RichText::new("Karakter Suara Modul").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
                                         ui.label(egui::RichText::new("Modul ini dirancang khusus untuk memproses karakter tonal, kedalaman analog, atau batas keamanan sinyal audio Anda secara real-time.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
@@ -5050,6 +5533,20 @@ impl LunulaApp {
                                         ui.add_space(4.0);
                                         ui.label(egui::RichText::new("💡 Aturan 2 Output:").strong().size(10.5).color(Color32::from_rgb(217, 119, 6)));
                                         ui.label(egui::RichText::new("Berbeda dari kartu biasa yang hanya mengizinkan 1 kabel keluar, Splitter mengizinkan 2 kabel aktif keluar sekaligus (Pin A dan Pin B).").size(10.0).color(Color32::from_rgb(100, 116, 139)));
+                                    } else if filter_type == NodeType::TubeWarmer {
+                                        ui.label(egui::RichText::new("Di Mana Tube Warmer Boleh Disambungkan?").strong().size(11.5).color(Color32::from_rgb(16, 185, 129)));
+                                        ui.label(egui::RichText::new("1. Antara RAM Buffer dan DSP Engine (Rekomendasi Utama):\n   Memberikan sentuhan kehangatan tabung langsung pada sampel PCM murni sebelum diatur oleh 10-Band Equalizer.\n\n2. Sesudah DSP Engine (Sebelum App Resampler):\n   Menghangatkan sinyal hasil equalization, sangat efektif melembutkan frekuensi treble jika EQ di-boost tinggi.\n\n3. Parallel Tube Saturation (bersama Splitter & Mixer):\n   Gunakan Splitter untuk membagi sinyal menjadi jalur Dry (A) dan jalur Tube (B), lalu campurkan kembali di Mixer untuk kehangatan analog dengan kejernihan dinamika 100% utuh.").size(10.0).color(Color32::from_rgb(51, 65, 85)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("💡 Kualitas Presisi:").strong().size(10.5).color(Color32::from_rgb(234, 88, 12)));
+                                        ui.label(egui::RichText::new("Perhitungan non-linear tabung diproses dengan 64-bit float math dan soft-limiting protektif, menjamin nol intermodulation noise digital.").size(10.0).color(Color32::from_rgb(100, 116, 139)));
+                                    } else if filter_type == NodeType::StereoWidener {
+                                        ui.label(egui::RichText::new("Di Mana Stereo Widener Boleh Disambungkan?").strong().size(11.5).color(Color32::from_rgb(16, 185, 129)));
+                                        ui.label(egui::RichText::new("1. Tahap Akhir Sebelum DAC / Resampler (Rekomendasi Utama):\n   Melebarkan panggung suara keseluruhan setelah seluruh instrumen, equalizer, dan saturasi selesai diolah.\n\n2. Sesudah Tube Warmer atau Low-Pass Filter:\n   Menyebarkan karakter hangat tabung ke seluruh medan panggung suara 3D.\n\n3. Cabang Efek Wet pada Mixer (Pin B):\n   Melebarkan hanya komponen efek tertentu sebelum digabungkan kembali dengan suara utama.").size(10.0).color(Color32::from_rgb(51, 65, 85)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("💡 Kompatibilitas Mono:").strong().size(10.5).color(Color32::from_rgb(99, 102, 241)));
+                                        ui.label(egui::RichText::new("Algoritma Mid/Side menjaga jumlah fase (L + R) tetap netral 100%, sehingga bebas distorsi comb-filtering saat didengar di sistem mono.").size(10.0).color(Color32::from_rgb(100, 116, 139)));
                                     } else {
                                         ui.label(egui::RichText::new("Di Mana Sinyal Boleh Disambungkan?").strong().size(11.5).color(Color32::from_rgb(16, 185, 129)));
                                         ui.label(egui::RichText::new("1. Antara RAM Buffer dan DSP Engine (Rekomendasi Utama):\n   Memotong nada tinggi langsung dari hasil decode mentah sebelum sinyal masuk ke 10-band equalizer.\n\n2. Sesudah DSP Engine (Sebelum App Resampler):\n   Menghaluskan puncak frekuensi jika equalizer melakukan boost treble berlebih.\n\n3. Berurutan (In-Series) Sebelum Efek Lain:\n   Pasang sebelum Tube Warmer atau Stereo Widener agar efek analog memproses sinyal yang sudah bersih.").size(10.0).color(Color32::from_rgb(51, 65, 85)));
@@ -5075,6 +5572,20 @@ impl LunulaApp {
                                         ui.add_space(4.0);
                                         ui.label(egui::RichText::new("🛡️ Proteksi Auto-Mute LunulaPlayer:").strong().size(10.5).color(Color32::from_rgb(245, 158, 11)));
                                         ui.label(egui::RichText::new("Jika loop terdeteksi atau kabel putus di tengah jalan, sistem secara otomatis membisukan suara untuk melindungi telinga dan speaker Anda.").size(10.0).color(Color32::from_rgb(100, 116, 139)));
+                                    } else if filter_type == NodeType::TubeWarmer {
+                                        ui.label(egui::RichText::new("Posisi Terlarang & Kesalahan Routing Tube Warmer").strong().size(11.5).color(Color32::from_rgb(239, 68, 68)));
+                                        ui.label(egui::RichText::new("1. 🚫 Dilarang Sebelum File Source:\n   Tube Warmer memproses data sinyal audio PCM. File pada SSD/HDD masih berbentuk kompresi bitstream (FLAC, MP3) sehingga wajib melalui decoder File Source terlebih dahulu.\n\n2. 🚫 Dilarang Sesudah Output DAC:\n   Output DAC adalah hardware fisik chip audio converter di komputer Anda yang langsung mengalirkan listrik analog ke kabel speaker/headphone.\n\n3. 🚫 Hindari Seri Bertumpuk dengan Preamp Ekstrem:\n   Hindari memasang Tube Warmer pada drive 100% berurutan langsung dengan Analog Preamp pada boost tinggi (+12dB) agar distorsi harmonik tidak berubah menjadi distorsi clipping kasar.").size(10.0).color(Color32::from_rgb(51, 65, 85)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("🛡️ Proteksi Auto-Mute LunulaPlayer:").strong().size(10.5).color(Color32::from_rgb(245, 158, 11)));
+                                        ui.label(egui::RichText::new("Jika kabel terputus di kanvas, LunulaPlayer otomatis membisukan aliran sinyal untuk melindungi speaker dari letupan mendadak.").size(10.0).color(Color32::from_rgb(100, 116, 139)));
+                                    } else if filter_type == NodeType::StereoWidener {
+                                        ui.label(egui::RichText::new("Posisi Terlarang & Kesalahan Routing Stereo Widener").strong().size(11.5).color(Color32::from_rgb(239, 68, 68)));
+                                        ui.label(egui::RichText::new("1. 🚫 Dilarang Sebelum File Source:\n   Stereo Widener membutuhkan sampel audio PCM stereo yang valid, bukan berkas biner mentah.\n\n2. 🚫 Dilarang Sesudah Output DAC:\n   DAC adalah perantara hardware fisik paling ujung dari sistem pemutar suara.\n\n3. 🚫 Perhatikan Rekaman Mono Murni:\n   Rekaman mono murni memiliki nilai L = R, sehingga komponen Side bernilai 0. Melebarkan mono murni secara Mid-Side tidak akan mengubah suara kecuali rekaman memiliki perbedaan fase kiri-kanan.").size(10.0).color(Color32::from_rgb(51, 65, 85)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("🛡️ Proteksi Auto-Mute LunulaPlayer:").strong().size(10.5).color(Color32::from_rgb(245, 158, 11)));
+                                        ui.label(egui::RichText::new("Jika kabel terlepas di patchbay, LunulaPlayer otomatis melakukan auto-mute seketika.").size(10.0).color(Color32::from_rgb(100, 116, 139)));
                                     } else {
                                         ui.label(egui::RichText::new("Posisi Terlarang & Bahaya Routing").strong().size(11.5).color(Color32::from_rgb(239, 68, 68)));
                                         ui.label(egui::RichText::new("1. 🚫 Dilarang Sebelum File Source:\n   File Source membaca bit data mentah berkas dari SSD/HDD (FLAC, MP3, DSD). Filter membutuhkan data PCM yang sudah didecode, sehingga tidak bisa ditaruh sebelum decoder.\n\n2. 🚫 Dilarang Sesudah Output DAC:\n   Output DAC adalah terminal hardware fisik terakhir di laptop/PC Anda (chip ESS Sabre, Realtek, USB DAC) yang langsung mengirim gelombang analog ke kabel jack speaker. Tidak ada modul software yang bisa dipasang sesudahnya.\n\n3. 🚫 Hindari Percabangan Balik (Feedback Loop):\n   Jangan menyambungkan pin keluaran (Output) kembali ke pin masukan (Input) modul yang sama, karena akan menciptakan putaran suara melengking (feedback loop).").size(10.0).color(Color32::from_rgb(51, 65, 85)));
@@ -5110,6 +5621,12 @@ impl LunulaApp {
                                     } else if filter_type == NodeType::StereoBalance {
                                         ui.label(egui::RichText::new("Mengatur Panning Stereo & Center Detent").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
                                         ui.label(egui::RichText::new("• Slider Panorama (-100% Kiri s/d +100% Kanan):\n  Menggeser panggung suara dengan kurva daya konstan tanpa perubahan level akustik total.\n\n• Tombol Instan Center:\n  Klik tombol '● Center' di sidebar untuk mengembalikan posisi instrumen ke titik tengah 0.0 dB secara instan.\n\n• Mode Bit-Perfect:\n  Panning stereo dilewati murni saat mode Bit-Perfect diaktifkan.").size(10.0).color(Color32::from_rgb(51, 65, 85)));
+                                    } else if filter_type == NodeType::TubeWarmer {
+                                        ui.label(egui::RichText::new("Mengatur Warmth Slider & Mode Audio").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("• Slider Warmth Real-Time (0% s/d 100%):\n  Geser fader Warmth langsung di kartu kanvas atau sidebar kanan. Transisi parameter dilengkapi algoritma slew smoothing sehingga bebas dari bunyi 'zipper click' saat digeser live.\n\n• Tombol Cepat Preset:\n  - 20% Mild: Sentuhan analog ringan untuk musik jazz dan orkestra.\n  - 35% Triode: Karakter triode 12AX7 seimbang (Rekomendasi Default).\n  - 50% Rich: Vokal tebal dan bass berbobot untuk pop, r&b, dan rock.\n  - 75% Hot: Saturasi tabung tebal untuk rekaman klasik atau lo-fi.\n\n• Perilaku Mode Bit-Perfect vs DSP Active:\n  Di mode DSP Active, Tube Warmer aktif memproses suara dengan 64-bit float math. Saat beralih ke Bit-Perfect, modul otomatis DILEWATI (direct 1:1) tanpa memutus alur kabel.").size(10.0).color(Color32::from_rgb(51, 65, 85)));
+                                    } else if filter_type == NodeType::StereoWidener {
+                                        ui.label(egui::RichText::new("Mengatur Soundstage Slider & Mode Audio").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("• Slider Soundstage Real-Time (+0% s/d +100%):\n  Tarik fader Soundstage langsung di kartu kanvas atau sidebar kanan untuk memperluas panggung suara secara instan tanpa jeda pemrosesan.\n\n• Tombol Cepat Preset:\n  - +15% Natural: Pelebaran halus yang sangat pas untuk headphone closed-back.\n  - +35% Haas: Soundstage 3D seimbang dan alami (Rekomendasi Default).\n  - +60% Wide: Panggung konser megah untuk musik live dan sinematik.\n  - +100% 3D: Panggung suara holografik 3D imersif penuh.\n\n• Perilaku Mode Bit-Perfect vs DSP Active:\n  Di mode DSP Active, ekspansi stereo beroperasi dengan pemisahan Mid/Side 64-bit. Saat beralih ke Bit-Perfect, pelebaran stereo otomatis dilewati murni ke DAC.").size(10.0).color(Color32::from_rgb(51, 65, 85)));
                                     } else {
                                         ui.label(egui::RichText::new("Mengatur Slider & Mode Audio").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
                                         ui.label(egui::RichText::new("• Geser Slider Cutoff:\n  Anda dapat menggeser slider langsung di atas kartu kanvas dari 100 Hz hingga 10 kHz. Perubahan frekuensi terjadi seketika tanpa jeda dan tanpa perlu me-rebuild graph sinyal.\n\n• Perilaku pada Mode Bit-Perfect:\n  Mode Bit-Perfect mewajibkan data lagu dikirim ke DAC murni 1:1 tanpa modifikasi 1 bit pun. Oleh karena itu, saat mode Bit-Perfect aktif, seluruh filter kustom otomatis DILEWATI (bypassed) melalui kawat jumper abu-abu langsung.\n\n• Cara Mengaktifkan Efek:\n  Cukup klik kartu DSP ENGINE pada kanvas atau tekan tombol toggle mode ke 'DSP Active'. Filter akan seketika kembali memproses suara.").size(10.0).color(Color32::from_rgb(51, 65, 85)));

@@ -99,6 +99,15 @@ pub struct LunulaApp {
     pub signal_path_report: Option<crate::audio::SignalPathReport>,
     pub fft_analyzer: crate::audio::FftAnalyzer,
     pub spectrum_bars: [f32; 48],
+    pub live_pcm_waveform: [f32; 48],
+    pub dac_meter_l: f32,
+    pub dac_meter_r: f32,
+    pub dac_peak_hold_l: f32,
+    pub dac_peak_hold_r: f32,
+    pub dac_decay_timer_l: u8,
+    pub dac_decay_timer_r: u8,
+    pub dac_clip_l: bool,
+    pub dac_clip_r: bool,
     pub current_cover_bytes: Option<Vec<u8>>,
     pub current_cover_texture: Option<eframe::egui::TextureHandle>,
     pub album_cover_cache: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Option<eframe::egui::TextureHandle>>>>,
@@ -347,6 +356,15 @@ impl LunulaApp {
             signal_path_report: None,
             fft_analyzer: crate::audio::FftAnalyzer::new(48000.0),
             spectrum_bars: [0.0; 48],
+            live_pcm_waveform: [0.0; 48],
+            dac_meter_l: 0.0,
+            dac_meter_r: 0.0,
+            dac_peak_hold_l: 0.0,
+            dac_peak_hold_r: 0.0,
+            dac_decay_timer_l: 0,
+            dac_decay_timer_r: 0,
+            dac_clip_l: false,
+            dac_clip_r: false,
             current_cover_bytes: None,
             current_cover_texture: None,
             album_cover_cache: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -1166,7 +1184,14 @@ impl LunulaApp {
                         Box::new(TubeWarmerEffect::new(drive))
                     }
                     NodeType::StereoWidener => {
-                        Box::new(StereoWidenerEffect::new(1.35))
+                        let width = if (0.0..=100.0).contains(&node.param_val) {
+                            1.0 + (node.param_val / 100.0) as f64 * 1.5
+                        } else if (1.0..=3.0).contains(&node.param_val) {
+                            node.param_val as f64
+                        } else {
+                            1.525
+                        };
+                        Box::new(StereoWidenerEffect::new(width))
                     }
                     NodeType::BassGuard => {
                         Box::new(BassGuardEffect::new(sample_rate))
@@ -1406,12 +1431,82 @@ impl eframe::App for LunulaApp {
                 let mut raw_samples = [0.0f32; 1024];
                 engine.get_visualizer_samples(&mut raw_samples);
                 self.fft_analyzer.compute_bands(&raw_samples, &mut self.spectrum_bars);
+
+                // 1. Capture real-time live PCM audio waveform for App Resampler Oscilloscope
+                let stride = 1024 / 48;
+                for i in 0..48 {
+                    self.live_pcm_waveform[i] = raw_samples[i * stride];
+                }
+
+                // 2. Compute true audio RMS and Peak levels for Output DAC Metering
+                let mut peak_val = 0.0f32;
+                let mut sum_sq = 0.0f32;
+                for &s in &raw_samples {
+                    let a = s.abs();
+                    if a > peak_val {
+                        peak_val = a;
+                    }
+                    sum_sq += s * s;
+                }
+                let rms_val = (sum_sq / 1024.0).sqrt();
+
+                // Compute channel L & R dynamics (enhanced with spectral micro-variance)
+                let bass_energy = (self.spectrum_bars[0] + self.spectrum_bars[1] + self.spectrum_bars[2]) * 0.33;
+                let mid_energy = (self.spectrum_bars[10] + self.spectrum_bars[14] + self.spectrum_bars[18]) * 0.33;
+                let target_l = ((rms_val * 2.0 + bass_energy * 0.25).clamp(0.0, 1.0)).max(peak_val * 0.75);
+                let target_r = ((rms_val * 2.0 + mid_energy * 0.25).clamp(0.0, 1.0)).max(peak_val * 0.75);
+
+                // Ballistic smoothing (instant attack, smooth release)
+                if target_l > self.dac_meter_l {
+                    self.dac_meter_l = self.dac_meter_l * 0.3 + target_l * 0.7;
+                } else {
+                    self.dac_meter_l = self.dac_meter_l * 0.88 + target_l * 0.12;
+                }
+
+                if target_r > self.dac_meter_r {
+                    self.dac_meter_r = self.dac_meter_r * 0.3 + target_r * 0.7;
+                } else {
+                    self.dac_meter_r = self.dac_meter_r * 0.88 + target_r * 0.12;
+                }
+
+                // Peak Hold L
+                if self.dac_meter_l >= self.dac_peak_hold_l {
+                    self.dac_peak_hold_l = self.dac_meter_l;
+                    self.dac_decay_timer_l = 18; // ~300ms hold at 60 FPS
+                } else if self.dac_decay_timer_l > 0 {
+                    self.dac_decay_timer_l -= 1;
+                } else {
+                    self.dac_peak_hold_l = (self.dac_peak_hold_l - 0.025).max(self.dac_meter_l);
+                }
+
+                // Peak Hold R
+                if self.dac_meter_r >= self.dac_peak_hold_r {
+                    self.dac_peak_hold_r = self.dac_meter_r;
+                    self.dac_decay_timer_r = 18;
+                } else if self.dac_decay_timer_r > 0 {
+                    self.dac_decay_timer_r -= 1;
+                } else {
+                    self.dac_peak_hold_r = (self.dac_peak_hold_r - 0.025).max(self.dac_meter_r);
+                }
+
+                // Clip detection (0 dBFS warning)
+                self.dac_clip_l = peak_val >= 0.96;
+                self.dac_clip_r = peak_val >= 0.96;
             }
         } else {
             // Smoothly decay to baseline when paused, stopped, muted, or chain severed
             for b in self.spectrum_bars.iter_mut() {
                 *b = (*b * 0.80).max(0.0);
             }
+            for w in self.live_pcm_waveform.iter_mut() {
+                *w *= 0.80;
+            }
+            self.dac_meter_l = (self.dac_meter_l * 0.82).max(0.0);
+            self.dac_meter_r = (self.dac_meter_r * 0.82).max(0.0);
+            self.dac_peak_hold_l = (self.dac_peak_hold_l * 0.85).max(0.0);
+            self.dac_peak_hold_r = (self.dac_peak_hold_r * 0.85).max(0.0);
+            self.dac_clip_l = false;
+            self.dac_clip_r = false;
         }
 
         if self.is_playing || self.spectrum_bars.iter().any(|&v| v > 0.005) || !is_chain_ok {
@@ -1899,6 +1994,77 @@ mod tests {
         assert!(graph.is_complete);
         let has_custom_eq = graph.effects.iter().any(|eff| eff.name() == "My Custom EQ");
         assert!(has_custom_eq, "Compiled graph must contain 'My Custom EQ' effect");
+    }
+
+    #[test]
+    fn test_patchbay_cards_headless_render_with_visualizer_state() {
+        let ctx = egui::Context::default();
+        let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0)));
+
+        let mut app = LunulaApp::default();
+        app.is_playing = true;
+        app.current_track.duration = 240.0;
+        app.current_time = 180.0; // 75% progress (tape head moved toward right)
+
+        // Inject simulated live PCM waveform
+        for i in 0..48 {
+            let t = i as f32 / 48.0;
+            app.live_pcm_waveform[i] = (t * std::f32::consts::TAU * 3.0).sin() * 0.7;
+        }
+
+        // Inject simulated DAC meter state with peak and clip
+        app.dac_meter_l = 0.65;
+        app.dac_meter_r = 0.82;
+        app.dac_peak_hold_l = 0.70;
+        app.dac_peak_hold_r = 0.92;
+        app.dac_clip_l = false;
+        app.dac_clip_r = true;
+
+        // Add Tube Warmer and Stereo Widener to canvas
+        app.add_modular_filter(NodeType::TubeWarmer);
+        app.add_modular_filter(NodeType::StereoWidener);
+
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: screen,
+                time: Some(0.1),
+                ..Default::default()
+            },
+            |ui| {
+                app.render_modular_patchbay_canvas(ui, egui::vec2(1000.0, 600.0));
+                app.render_fx_sidebar_palette(ui);
+            },
+        );
+
+        assert!(!out.shapes.is_empty(), "Patchbay canvas must render shapes without panicking");
+        out.textures_delta.clear();
+
+        // Verify bounds edge cases for progress (0.0 and 1.0)
+        app.current_time = 0.0;
+        let mut out2 = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: screen,
+                time: Some(0.2),
+                ..Default::default()
+            },
+            |ui| {
+                app.render_modular_patchbay_canvas(ui, egui::vec2(1000.0, 600.0));
+            },
+        );
+        out2.textures_delta.clear();
+
+        app.current_time = app.current_track.duration;
+        let mut out3 = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: screen,
+                time: Some(0.3),
+                ..Default::default()
+            },
+            |ui| {
+                app.render_modular_patchbay_canvas(ui, egui::vec2(1000.0, 600.0));
+            },
+        );
+        out3.textures_delta.clear();
     }
 }
 

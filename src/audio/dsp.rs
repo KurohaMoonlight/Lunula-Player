@@ -384,15 +384,20 @@ impl Effect for TubeWarmerEffect {
         // Triode saturation formula:
         // Asymmetric even harmonics (xd^2) add musical warmth and body,
         // odd harmonics (xd^3) add presence.
-        let d = 1.0 + k * 1.5;
-        let c2 = 0.22 * k;
-        let c3 = 0.08 * k;
-        let norm = 1.0 / (1.0 + 0.40 * k);
+        let d = 1.0 + k * 1.6;
+        let c2 = 0.38 * k;
+        let c3 = 0.10 * k;
+        let norm = 1.0 / (1.0 + 0.12 * k);
 
         let warm = |x: f32| -> f32 {
             let xd = x * d;
-            let y = xd + c2 * xd * xd - c3 * xd * xd * xd;
-            (y * norm).clamp(-1.0, 1.0)
+            let sat = if xd > 0.0 {
+                xd + c2 * xd * xd - c3 * xd * xd * xd
+            } else {
+                xd - (c2 * 0.35) * xd * xd - c3 * xd * xd * xd
+            };
+            let y = sat * norm;
+            soft_limit(y as f64) as f32
         };
 
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
@@ -420,17 +425,30 @@ impl Effect for TubeWarmerEffect {
 #[derive(Clone, Debug)]
 pub struct StereoWidenerEffect {
     width: f64,
+    current_width: f64,
 }
 
 impl StereoWidenerEffect {
     pub fn new(width: f64) -> Self {
-        Self { width: width.max(1.0) }
+        let w = width.clamp(1.0, 3.0);
+        Self {
+            width: w,
+            current_width: w,
+        }
     }
 }
 
 impl Effect for StereoWidenerEffect {
     fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
-        let w = self.width as f32;
+        // Smooth parameter slewing to eliminate zipper clicks during live slider adjustments
+        let diff = (self.width - self.current_width) as f32;
+        if diff.abs() > 0.005 {
+            self.current_width += (diff * 0.15) as f64;
+        } else {
+            self.current_width = self.width;
+        }
+
+        let w = self.current_width as f32;
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             let mid = (*l + *r) * 0.5;
             let side = (*l - *r) * 0.5;
@@ -443,7 +461,19 @@ impl Effect for StereoWidenerEffect {
     fn reset(&mut self) {}
     fn set_sample_rate(&mut self, _sample_rate: f32) {}
     fn name(&self) -> &str {
-        "Stereo Widener (Haas 3D +35%)"
+        "Stereo Widener (Haas 3D)"
+    }
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        if param_id == 0 {
+            let w = if (0.0..=100.0).contains(&val) {
+                1.0 + (val as f64 / 100.0) * 1.5
+            } else if val >= 1.0 {
+                val as f64
+            } else {
+                1.35
+            };
+            self.width = w.clamp(1.0, 3.0);
+        }
     }
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
@@ -1718,6 +1748,26 @@ mod tests {
         let in_side = (in_l - in_r) * 0.5;
         let out_side = (out_l - out_r) * 0.5;
         assert!((out_side - in_side * 1.35).abs() < 1e-5, "Side channel must be expanded by 1.35x");
+    }
+
+    #[test]
+    fn test_stereo_widener_variable_width_and_slewing() {
+        let mut widener = StereoWidenerEffect::new(1.0);
+        let (out_l, out_r) = widener.process_frame(0.6, 0.2);
+        assert!((out_l - 0.6).abs() < 1e-5);
+        assert!((out_r - 0.2).abs() < 1e-5);
+
+        // Adjust to +60% (1.9x with enhanced 1.5x scaling)
+        widener.set_param(0, 60.0);
+        for _ in 0..50 {
+            let mut buf_l = [0.6f32];
+            let mut buf_r = [0.2f32];
+            widener.process_block(&mut buf_l, &mut buf_r);
+        }
+        let (out_w_l, out_w_r) = widener.process_frame(0.6, 0.2);
+        let out_side = (out_w_l - out_w_r) * 0.5;
+        let in_side = (0.6 - 0.2) * 0.5;
+        assert!((out_side - in_side * 1.9).abs() < 1e-2, "Soundstage must expand by 1.9x (+60%)");
     }
 
     #[test]
