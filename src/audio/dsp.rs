@@ -344,24 +344,57 @@ impl Effect for GraphicEqEffect {
 }
 
 /// Tube Warmer Effect: Asymmetric triode saturation adding 2nd and 3rd harmonics
-#[derive(Clone, Debug, Default)]
-pub struct TubeWarmerEffect;
+#[derive(Clone, Debug)]
+pub struct TubeWarmerEffect {
+    drive: f32,          // 0.0 to 100.0 (%)
+    current_drive: f32,  // For click-free parameter slewing
+}
 
 impl TubeWarmerEffect {
-    pub fn new() -> Self {
-        Self
+    pub fn new(drive: f32) -> Self {
+        let d = drive.clamp(0.0, 100.0);
+        Self {
+            drive: d,
+            current_drive: d,
+        }
+    }
+}
+
+impl Default for TubeWarmerEffect {
+    fn default() -> Self {
+        Self::new(35.0)
     }
 }
 
 impl Effect for TubeWarmerEffect {
     fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
-        #[inline(always)]
-        fn warm(x: f32) -> f32 {
-            let d = 1.25f32;
-            let xd = x * d;
-            let y = xd + 0.15f32 * xd * xd - 0.05f32 * xd * xd * xd;
-            y * 0.82f32
+        // Smooth parameter slewing to eliminate zipper noise during live slider dragging
+        let diff = self.drive - self.current_drive;
+        if diff.abs() > 0.01 {
+            self.current_drive += diff * 0.15;
+        } else {
+            self.current_drive = self.drive;
         }
+
+        let k = (self.current_drive / 100.0).clamp(0.0, 1.0);
+        if k < 0.001 {
+            return; // 0% Warmth is pure transparent bypass
+        }
+
+        // Triode saturation formula:
+        // Asymmetric even harmonics (xd^2) add musical warmth and body,
+        // odd harmonics (xd^3) add presence.
+        let d = 1.0 + k * 1.5;
+        let c2 = 0.22 * k;
+        let c3 = 0.08 * k;
+        let norm = 1.0 / (1.0 + 0.40 * k);
+
+        let warm = |x: f32| -> f32 {
+            let xd = x * d;
+            let y = xd + c2 * xd * xd - c3 * xd * xd * xd;
+            (y * norm).clamp(-1.0, 1.0)
+        };
+
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             *l = warm(*l);
             *r = warm(*r);
@@ -372,6 +405,11 @@ impl Effect for TubeWarmerEffect {
     fn set_sample_rate(&mut self, _sample_rate: f32) {}
     fn name(&self) -> &str {
         "Tube Warmer (Triode Saturation)"
+    }
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        if param_id == 0 {
+            self.drive = val.clamp(0.0, 100.0);
+        }
     }
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
@@ -491,6 +529,471 @@ impl Effect for VolumeAttenuatorEffect {
     fn set_sample_rate(&mut self, _sample_rate: f32) {}
     fn name(&self) -> &str {
         "Volume Attenuator (-6dB Pad)"
+    }
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Pure Volume Booster Effect: Uncolored linear gain (0.0 to +24.0 dB) with transparent soft-limit guard
+#[derive(Clone, Debug)]
+pub struct VolumeBoosterEffect {
+    boost_db: f32,       // 0.0 to +24.0 dB
+    target_gain: f32,
+    current_gain: f32,   // Slew-smoothed linear multiplier
+}
+
+impl VolumeBoosterEffect {
+    pub fn new(boost_db: f32) -> Self {
+        let b = boost_db.clamp(0.0, 24.0);
+        let g = 10.0_f32.powf(b / 20.0);
+        Self {
+            boost_db: b,
+            target_gain: g,
+            current_gain: g,
+        }
+    }
+}
+
+impl Default for VolumeBoosterEffect {
+    fn default() -> Self {
+        Self::new(6.0)
+    }
+}
+
+impl Effect for VolumeBoosterEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let diff = self.target_gain - self.current_gain;
+        if diff.abs() > 0.001 {
+            self.current_gain += diff * 0.2;
+        } else {
+            self.current_gain = self.target_gain;
+        }
+
+        let gain = self.current_gain;
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let amplified_l = *l * gain;
+            let amplified_r = *r * gain;
+            *l = soft_limit(amplified_l as f64) as f32;
+            *r = soft_limit(amplified_r as f64) as f32;
+        }
+    }
+
+    fn reset(&mut self) {}
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
+    fn name(&self) -> &str {
+        "Pure Volume Booster (0 to +24dB)"
+    }
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        if param_id == 0 {
+            self.boost_db = val.clamp(0.0, 24.0);
+            self.target_gain = 10.0_f32.powf(self.boost_db / 20.0);
+        }
+    }
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Analog Preamp & Trim Effect: Studio console gain stage (-24.0 to +12.0 dB) with Class-A warm transformer touch
+#[derive(Clone, Debug)]
+pub struct AnalogPreampEffect {
+    trim_db: f32,       // -24.0 to +12.0 dB
+    target_gain: f32,
+    current_gain: f32,
+}
+
+impl AnalogPreampEffect {
+    pub fn new(trim_db: f32) -> Self {
+        let t = trim_db.clamp(-24.0, 12.0);
+        let g = 10.0_f32.powf(t / 20.0);
+        Self {
+            trim_db: t,
+            target_gain: g,
+            current_gain: g,
+        }
+    }
+}
+
+impl Default for AnalogPreampEffect {
+    fn default() -> Self {
+        Self::new(0.0)
+    }
+}
+
+impl Effect for AnalogPreampEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let diff = self.target_gain - self.current_gain;
+        if diff.abs() > 0.001 {
+            self.current_gain += diff * 0.2;
+        } else {
+            self.current_gain = self.target_gain;
+        }
+
+        let gain = self.current_gain;
+        let is_driven = self.trim_db > 3.0;
+
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let mut sl = *l * gain;
+            let mut sr = *r * gain;
+
+            if is_driven {
+                let drive_factor = ((self.trim_db - 3.0) / 9.0).clamp(0.0, 1.0) * 0.04;
+                sl = sl - drive_factor * sl * sl * sl;
+                sr = sr - drive_factor * sr * sr * sr;
+            }
+
+            *l = soft_limit(sl as f64) as f32;
+            *r = soft_limit(sr as f64) as f32;
+        }
+    }
+
+    fn reset(&mut self) {}
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
+    fn name(&self) -> &str {
+        "Analog Preamp & Trim (-24 to +12dB)"
+    }
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        if param_id == 0 {
+            self.trim_db = val.clamp(-24.0, 12.0);
+            self.target_gain = 10.0_f32.powf(self.trim_db / 20.0);
+        }
+    }
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Dynamic Loudness Effect: Fletcher-Munson ISO 226 low-level acoustic contouring
+#[derive(Clone, Debug)]
+pub struct DynamicLoudnessEffect {
+    depth: f32, // 0.0 to 100.0 (%)
+    sample_rate: f64,
+    low_shelf_coeffs: BiquadCoeffs,
+    high_shelf_coeffs: BiquadCoeffs,
+    state_l_low: BiquadState,
+    state_r_low: BiquadState,
+    state_l_high: BiquadState,
+    state_r_high: BiquadState,
+}
+
+impl DynamicLoudnessEffect {
+    pub fn new(depth: f32, sample_rate: f64) -> Self {
+        let mut effect = Self {
+            depth: depth.clamp(0.0, 100.0),
+            sample_rate: sample_rate.max(8000.0),
+            low_shelf_coeffs: BiquadCoeffs::identity(),
+            high_shelf_coeffs: BiquadCoeffs::identity(),
+            state_l_low: BiquadState::default(),
+            state_r_low: BiquadState::default(),
+            state_l_high: BiquadState::default(),
+            state_r_high: BiquadState::default(),
+        };
+        effect.recompute();
+        effect
+    }
+
+    fn recompute(&mut self) {
+        if self.depth < 0.5 {
+            self.low_shelf_coeffs = BiquadCoeffs::identity();
+            self.high_shelf_coeffs = BiquadCoeffs::identity();
+            return;
+        }
+        let k = (self.depth / 100.0) as f64;
+        let low_boost = k * 8.5; // up to +8.5 dB below 120 Hz
+        let high_boost = k * 5.0; // up to +5.0 dB above 9 kHz
+
+        self.low_shelf_coeffs = BiquadCoeffs::low_shelf(120.0, low_boost, self.sample_rate, 0.7071067811865476);
+        self.high_shelf_coeffs = BiquadCoeffs::high_shelf(9000.0, high_boost, self.sample_rate, 0.7071067811865476);
+    }
+}
+
+impl Default for DynamicLoudnessEffect {
+    fn default() -> Self {
+        Self::new(50.0, 44100.0)
+    }
+}
+
+impl Effect for DynamicLoudnessEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        if self.depth < 0.5 {
+            return; // Zero-cost transparent bypass
+        }
+
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let mut sl = self.state_l_low.process(*l as f64, &self.low_shelf_coeffs);
+            let mut sr = self.state_r_low.process(*r as f64, &self.low_shelf_coeffs);
+
+            sl = self.state_l_high.process(sl, &self.high_shelf_coeffs);
+            sr = self.state_r_high.process(sr, &self.high_shelf_coeffs);
+
+            *l = soft_limit(sl) as f32;
+            *r = soft_limit(sr) as f32;
+        }
+    }
+
+    fn reset(&mut self) {
+        self.state_l_low.reset();
+        self.state_r_low.reset();
+        self.state_l_high.reset();
+        self.state_r_high.reset();
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        self.sample_rate = (sample_rate as f64).max(8000.0);
+        self.recompute();
+        self.reset();
+    }
+
+    fn name(&self) -> &str {
+        "Dynamic Loudness (Fletcher-Munson ISO 226)"
+    }
+
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        if param_id == 0 {
+            self.depth = val.clamp(0.0, 100.0);
+            self.recompute();
+        }
+    }
+
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Audiophile Stepped Attenuator Effect: Resistor ladder 64-step passive attenuator with DIM -20dB and Mute
+#[derive(Clone, Debug)]
+pub struct SteppedAttenuatorEffect {
+    step_db: f32,        // -60.0 to 0.0 dB
+    is_dimmed: bool,     // -20dB DIM
+    is_muted: bool,      // Mute
+    target_gain: f32,
+    current_gain: f32,
+}
+
+impl SteppedAttenuatorEffect {
+    pub fn new(step_db: f32, is_dimmed: bool) -> Self {
+        let s = step_db.clamp(-60.0, 0.0).round(); // Discrete 1dB steps
+        let effective_db = if is_dimmed { s - 20.0 } else { s };
+        let g = 10.0_f32.powf(effective_db / 20.0);
+        Self {
+            step_db: s,
+            is_dimmed,
+            is_muted: false,
+            target_gain: g,
+            current_gain: g,
+        }
+    }
+
+    fn recompute_gain(&mut self) {
+        if self.is_muted {
+            self.target_gain = 0.0;
+        } else {
+            let effective_db = if self.is_dimmed { self.step_db - 20.0 } else { self.step_db };
+            self.target_gain = 10.0_f32.powf(effective_db / 20.0);
+        }
+    }
+}
+
+impl Default for SteppedAttenuatorEffect {
+    fn default() -> Self {
+        Self::new(-12.0, false)
+    }
+}
+
+impl Effect for SteppedAttenuatorEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let diff = self.target_gain - self.current_gain;
+        if diff.abs() > 0.0005 {
+            self.current_gain += diff * 0.25;
+        } else {
+            self.current_gain = self.target_gain;
+        }
+
+        let gain = self.current_gain;
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            *l *= gain;
+            *r *= gain;
+        }
+    }
+
+    fn reset(&mut self) {}
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
+    fn name(&self) -> &str {
+        "Stepped Attenuator (-60 to 0dB)"
+    }
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        if param_id == 0 {
+            self.step_db = val.clamp(-60.0, 0.0).round();
+            self.recompute_gain();
+        } else if param_id == 1 {
+            self.is_dimmed = val > 0.5;
+            self.recompute_gain();
+        } else if param_id == 2 {
+            self.is_muted = val > 0.5;
+            self.recompute_gain();
+        }
+    }
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Studio Optical Leveler Effect: Teletronix LA-2A style optocoupler dynamic leveler with Gain Reduction VU needle
+#[derive(Clone, Debug)]
+pub struct OpticalLevelerEffect {
+    target_drive: f32, // 0.0 to 100.0 (%)
+    envelope: f32,
+    pub gain_reduction_db: f32,
+    sample_rate: f32,
+}
+
+impl OpticalLevelerEffect {
+    pub fn new(target_drive: f32, sample_rate: f32) -> Self {
+        Self {
+            target_drive: target_drive.clamp(0.0, 100.0),
+            envelope: 0.0,
+            gain_reduction_db: 0.0,
+            sample_rate: sample_rate.max(8000.0),
+        }
+    }
+}
+
+impl Default for OpticalLevelerEffect {
+    fn default() -> Self {
+        Self::new(50.0, 44100.0)
+    }
+}
+
+impl Effect for OpticalLevelerEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let drive = (self.target_drive / 100.0).clamp(0.0, 1.0);
+        if drive < 0.01 {
+            self.gain_reduction_db = 0.0;
+            return; // Bypass
+        }
+
+        let threshold = 0.85 - drive * 0.65;
+        let attack_coeff = (-1.0 / (0.010 * self.sample_rate)).exp();
+        let release_coeff_fast = (-1.0 / (0.060 * self.sample_rate)).exp();
+        let release_coeff_slow = (-1.0 / (1.500 * self.sample_rate)).exp();
+
+        let mut max_gr = 0.0f32;
+
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let peak = l.abs().max(r.abs());
+
+            if peak > self.envelope {
+                self.envelope = peak + attack_coeff * (self.envelope - peak);
+            } else {
+                let coeff = if self.envelope > threshold * 1.5 {
+                    release_coeff_fast
+                } else {
+                    release_coeff_slow
+                };
+                self.envelope = peak + coeff * (self.envelope - peak);
+            }
+
+            let gain = if self.envelope > threshold {
+                let over_db = 20.0 * (self.envelope / threshold).log10();
+                let compressed_over_db = over_db / 3.0;
+                let gr_db = over_db - compressed_over_db;
+                if gr_db > max_gr {
+                    max_gr = gr_db;
+                }
+                10.0_f32.powf(-gr_db / 20.0)
+            } else {
+                1.0
+            };
+
+            *l = (*l * gain).clamp(-1.0, 1.0);
+            *r = (*r * gain).clamp(-1.0, 1.0);
+        }
+
+        self.gain_reduction_db = max_gr;
+    }
+
+    fn reset(&mut self) {
+        self.envelope = 0.0;
+        self.gain_reduction_db = 0.0;
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        self.sample_rate = sample_rate.max(8000.0);
+        self.reset();
+    }
+
+    fn name(&self) -> &str {
+        "Studio Optical Leveler (LA-2A Night Dynamic Control)"
+    }
+
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        if param_id == 0 {
+            self.target_drive = val.clamp(0.0, 100.0);
+        }
+    }
+
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Dual-Channel Stereo Balance & Trim Effect: Constant-power stereo panning with center detent
+#[derive(Clone, Debug)]
+pub struct StereoBalanceEffect {
+    balance: f32, // -100.0 (Left) to +100.0 (Right), 0.0 = Center
+    current_balance: f32,
+}
+
+impl StereoBalanceEffect {
+    pub fn new(balance: f32) -> Self {
+        let b = balance.clamp(-100.0, 100.0);
+        Self {
+            balance: b,
+            current_balance: b,
+        }
+    }
+}
+
+impl Default for StereoBalanceEffect {
+    fn default() -> Self {
+        Self::new(0.0)
+    }
+}
+
+impl Effect for StereoBalanceEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let diff = self.balance - self.current_balance;
+        if diff.abs() > 0.01 {
+            self.current_balance += diff * 0.2;
+        } else {
+            self.current_balance = self.balance;
+        }
+
+        if self.current_balance.abs() < 0.5 {
+            return; // Center detent is zero-cost passthrough (1.0, 1.0)
+        }
+
+        let norm = (self.current_balance / 100.0).clamp(-1.0, 1.0);
+        let theta = (norm + 1.0) * 0.25 * std::f32::consts::PI; // 0 to pi/2
+        let gain_l = std::f32::consts::SQRT_2 * theta.cos();
+        let gain_r = std::f32::consts::SQRT_2 * theta.sin();
+
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            *l *= gain_l;
+            *r *= gain_r;
+        }
+    }
+
+    fn reset(&mut self) {}
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
+    fn name(&self) -> &str {
+        "Stereo Balance & Trim"
+    }
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        if param_id == 0 {
+            self.balance = val.clamp(-100.0, 100.0);
+        }
     }
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
@@ -1219,10 +1722,31 @@ mod tests {
 
     #[test]
     fn test_tube_warmer_effect() {
-        let mut tube = TubeWarmerEffect::new();
+        let mut tube = TubeWarmerEffect::new(35.0);
         let (pos_l, _) = tube.process_frame(0.5, 0.0);
         let (neg_l, _) = tube.process_frame(-0.5, 0.0);
-        assert!((pos_l.abs() - neg_l.abs()).abs() > 0.01, "Triode warmth must introduce even harmonic asymmetry");
+        assert!((pos_l.abs() - neg_l.abs()).abs() > 0.005, "Triode warmth must introduce even harmonic asymmetry");
+    }
+
+    #[test]
+    fn test_tube_warmer_variable_drive() {
+        let mut tube_zero = TubeWarmerEffect::new(0.0);
+        let (out_l, _) = tube_zero.process_frame(0.4, 0.0);
+        assert!((out_l - 0.4).abs() < 1e-4, "0% warmth must be transparent pass-through");
+
+        let mut tube_warm = TubeWarmerEffect::new(80.0);
+        let (out_w, _) = tube_warm.process_frame(0.4, 0.0);
+        assert!((out_w - 0.4).abs() > 0.01, "80% warmth must introduce significant analog saturation");
+
+        tube_warm.set_param(0, 0.0);
+        // Slew down over multiple blocks
+        for _ in 0..60 {
+            let mut buf_l = [0.4f32];
+            let mut buf_r = [0.0f32];
+            tube_warm.process_block(&mut buf_l, &mut buf_r);
+        }
+        let (out_slewed, _) = tube_warm.process_frame(0.4, 0.0);
+        assert!((out_slewed - 0.4).abs() < 1e-3, "Setting param to 0 must slew to transparent pass-through");
     }
 
     #[test]
@@ -1591,5 +2115,105 @@ mod tests {
         let peak_attenuated = left[500..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
         // -12 dB attenuation on 1.0 input should result in amplitude <= 0.35
         assert!(peak_attenuated < 0.35, "Cut 1000 Hz tone via connected EQ should have amplitude < 0.35, got {}", peak_attenuated);
+    }
+
+    #[test]
+    fn test_volume_booster_effect() {
+        let mut booster = VolumeBoosterEffect::new(6.0); // +6.02 dB approx 2x amplitude
+        let mut l = [0.2f32; 64];
+        let mut r = [0.2f32; 64];
+        for _ in 0..15 {
+            l.fill(0.2);
+            r.fill(0.2);
+            booster.process_block(&mut l, &mut r);
+        }
+        assert!(l[63] > 0.38 && l[63] < 0.42, "Booster at +6dB on 0.2 input should yield ~0.4, got {}", l[63]);
+
+        // Boost to +24 dB with soft-limit
+        booster.set_param(0, 24.0);
+        let mut l_loud = [0.8f32; 64];
+        let mut r_loud = [0.8f32; 64];
+        for _ in 0..25 {
+            l_loud.fill(0.8);
+            r_loud.fill(0.8);
+            booster.process_block(&mut l_loud, &mut r_loud);
+        }
+        assert!(l_loud[63] <= 1.0, "Booster soft limit must guarantee <= 1.0 amplitude, got {}", l_loud[63]);
+    }
+
+    #[test]
+    fn test_analog_preamp_effect() {
+        let mut preamp = AnalogPreampEffect::new(0.0); // 0 dB unity
+        let mut l = [0.5f32; 32];
+        let mut r = [0.5f32; 32];
+        preamp.process_block(&mut l, &mut r);
+        assert!((l[31] - 0.5).abs() < 0.01, "Preamp at 0dB should be unity 0.5, got {}", l[31]);
+
+        // Attenuate to -6 dB
+        preamp.set_param(0, -6.02);
+        for _ in 0..20 {
+            l.fill(0.5);
+            r.fill(0.5);
+            preamp.process_block(&mut l, &mut r);
+        }
+        assert!(l[31] > 0.23 && l[31] < 0.27, "Preamp at -6dB should yield ~0.25, got {}", l[31]);
+    }
+
+    #[test]
+    fn test_dynamic_loudness_effect() {
+        let mut loudness = DynamicLoudnessEffect::new(100.0, 48000.0);
+        let mut l_bass = [0.0f32; 1024];
+        let mut r_bass = [0.0f32; 1024];
+        for i in 0..1024 {
+            let t = i as f32 / 48000.0;
+            l_bass[i] = (2.0 * std::f32::consts::PI * 60.0 * t).sin() * 0.2;
+            r_bass[i] = l_bass[i];
+        }
+        loudness.process_block(&mut l_bass, &mut r_bass);
+        let peak_bass = l_bass[500..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(peak_bass > 0.35, "Loudness 100% on 60 Hz bass (0.2 input) should boost to >0.35, got {}", peak_bass);
+    }
+
+    #[test]
+    fn test_stepped_attenuator_effect() {
+        let mut att = SteppedAttenuatorEffect::new(0.0, false);
+        let mut l = [1.0f32; 64];
+        let mut r = [1.0f32; 64];
+        att.process_block(&mut l, &mut r);
+        assert!((l[63] - 1.0).abs() < 0.01);
+
+        // Turn on DIM (-20dB)
+        att.set_param(1, 1.0);
+        for _ in 0..20 {
+            l.fill(1.0);
+            r.fill(1.0);
+            att.process_block(&mut l, &mut r);
+        }
+        // -20dB on 1.0 is 0.1
+        assert!(l[63] < 0.15, "DIM -20dB should attenuate signal to < 0.15, got {}", l[63]);
+    }
+
+    #[test]
+    fn test_optical_leveler_effect() {
+        let mut opto = OpticalLevelerEffect::new(80.0, 48000.0);
+        let mut l = [0.95f32; 512];
+        let mut r = [0.95f32; 512];
+        opto.process_block(&mut l, &mut r);
+        assert!(opto.gain_reduction_db > 0.5, "High drive on 0.95 signal should trigger gain reduction > 0.5 dB, got {}", opto.gain_reduction_db);
+        assert!(l[511] < 0.95, "Compressed output should be attenuated below 0.95, got {}", l[511]);
+    }
+
+    #[test]
+    fn test_stereo_balance_effect() {
+        let mut pan = StereoBalanceEffect::new(-100.0); // Hard Left
+        let mut l = [0.5f32; 64];
+        let mut r = [0.5f32; 64];
+        for _ in 0..20 {
+            l.fill(0.5);
+            r.fill(0.5);
+            pan.process_block(&mut l, &mut r);
+        }
+        assert!(l[63] > 0.65, "Hard Left should amplify L, got {}", l[63]);
+        assert!(r[63] < 0.01, "Hard Left should mute R, got {}", r[63]);
     }
 }

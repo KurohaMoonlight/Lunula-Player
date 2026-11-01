@@ -45,15 +45,85 @@ fn render_routing_help_button(
     btn.on_hover_text(format!("Klik untuk membuka panduan slide & routing {}", title));
 }
 
+fn get_interactive_slider_bounds_and_val(node_type: &NodeType, world_rect: Rect, node_width: f32, pos_x: f32) -> Option<(Rect, f32)> {
+    match node_type {
+        NodeType::LowPassFilter => {
+            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 8.0, world_rect.min.y + 19.0), Vec2::new(node_width - 16.0, 22.0));
+            let track_min_x = world_rect.min.x + 14.0;
+            let track_w = (node_width - 28.0).max(10.0);
+            let norm = ((pos_x - track_min_x) / track_w).clamp(0.0, 1.0);
+            let val = (100.0 * (100.0_f32).powf(norm)).clamp(100.0, 10000.0);
+            Some((hit, val))
+        }
+        NodeType::Mixer => {
+            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 8.0, world_rect.min.y + 19.0), Vec2::new(node_width - 16.0, 22.0));
+            let track_min_x = world_rect.min.x + 24.0;
+            let track_w = (node_width - 48.0).max(10.0);
+            let norm = ((pos_x - track_min_x) / track_w).clamp(0.0, 1.0);
+            Some((hit, norm))
+        }
+        NodeType::TubeWarmer => {
+            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 40.0, world_rect.min.y + 19.0), Vec2::new(node_width - 48.0, 22.0));
+            let track_min_x = world_rect.min.x + 42.0;
+            let track_w = (node_width - 54.0).max(10.0);
+            let norm = ((pos_x - track_min_x) / track_w).clamp(0.0, 1.0);
+            Some((hit, (norm * 100.0).clamp(0.0, 100.0)))
+        }
+        NodeType::VolumeBooster => {
+            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 34.0, world_rect.min.y + 19.0), Vec2::new(node_width - 42.0, 22.0));
+            let track_min_x = world_rect.min.x + 36.0;
+            let track_w = (node_width - 50.0).max(10.0);
+            let norm = ((pos_x - track_min_x) / track_w).clamp(0.0, 1.0);
+            Some((hit, (norm * 24.0).clamp(0.0, 24.0)))
+        }
+        NodeType::AnalogPreamp => {
+            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 34.0, world_rect.min.y + 19.0), Vec2::new(node_width - 50.0, 22.0));
+            let track_min_x = world_rect.min.x + 42.0;
+            let track_w = (node_width - 66.0).max(10.0);
+            let norm = ((pos_x - track_min_x) / track_w).clamp(0.0, 1.0);
+            Some((hit, (-24.0 + norm * 36.0).clamp(-24.0, 12.0)))
+        }
+        NodeType::DynamicLoudness => {
+            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 8.0, world_rect.min.y + 19.0), Vec2::new(node_width - 16.0, 22.0));
+            let track_min_x = world_rect.min.x + 32.0;
+            let track_w = (node_width - 44.0).max(10.0);
+            let norm = ((pos_x - track_min_x) / track_w).clamp(0.0, 1.0);
+            Some((hit, (norm * 100.0).clamp(0.0, 100.0)))
+        }
+        NodeType::SteppedAttenuator => {
+            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 8.0, world_rect.min.y + 19.0), Vec2::new(node_width - 48.0, 22.0));
+            let track_min_x = world_rect.min.x + 14.0;
+            let track_w = (node_width - 56.0).max(10.0);
+            let norm = ((pos_x - track_min_x) / track_w).clamp(0.0, 1.0);
+            Some((hit, (-60.0 + norm * 60.0).clamp(-60.0, 0.0).round()))
+        }
+        NodeType::OpticalLeveler => {
+            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 32.0, world_rect.min.y + 19.0), Vec2::new(node_width - 40.0, 22.0));
+            let track_min_x = world_rect.min.x + 36.0;
+            let track_w = (node_width - 48.0).max(10.0);
+            let norm = ((pos_x - track_min_x) / track_w).clamp(0.0, 1.0);
+            Some((hit, (norm * 100.0).clamp(0.0, 100.0)))
+        }
+        NodeType::StereoBalance => {
+            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 8.0, world_rect.min.y + 19.0), Vec2::new(node_width - 16.0, 22.0));
+            let track_min_x = world_rect.min.x + 20.0;
+            let track_w = (node_width - 40.0).max(10.0);
+            let norm = ((pos_x - track_min_x) / track_w).clamp(0.0, 1.0);
+            Some((hit, (-100.0 + norm * 200.0).clamp(-100.0, 100.0)))
+        }
+        _ => None,
+    }
+}
+
 impl LunulaApp {
     // Reset layout of nodes and center canvas view
     pub fn reset_patchbay_layout(&mut self, canvas_width: f32, canvas_height: f32) {
         self.patchbay_pan = Vec2::ZERO;
-        let node_width = 136.0;
+        let node_width = 144.0;
         let margin = 20.0;
         let available = (canvas_width - margin * 2.0 - 5.0 * node_width).max(12.0 * 4.0);
         let spacing = (available / 4.0).clamp(16.0, 44.0);
-        let center_y = (canvas_height * 0.40 - 27.0).max(36.0);
+        let center_y = (canvas_height * 0.40 - 29.0).max(36.0);
 
         for (i, node) in self.nodes.iter_mut().take(5).enumerate() {
             node.pos = Pos2::new(margin + i as f32 * (node_width + spacing), center_y);
@@ -66,7 +136,7 @@ impl LunulaApp {
         self.next_node_id += 1;
 
         let (title, sub1, sub2) = match &node_type {
-            NodeType::TubeWarmer => ("TUBE WARMER".to_string(), "2nd Harmonic".to_string(), "Analog Warmth".to_string()),
+            NodeType::TubeWarmer => ("TUBE WARMER".to_string(), "Warmth 35%".to_string(), "Triode 12AX7".to_string()),
             NodeType::StereoWidener => ("STEREO WIDENER".to_string(), "Haas Effect 3D".to_string(), "+35% Soundstage".to_string()),
             NodeType::BassGuard => ("BASS GUARD".to_string(), "Sub-sonic Limiter".to_string(), "Protects Woofer".to_string()),
             NodeType::VolumeAttenuator => ("ATTENUATOR".to_string(), "Volume -6 dB".to_string(), "Passive Pad".to_string()),
@@ -74,6 +144,12 @@ impl LunulaApp {
             NodeType::Mixer => ("MIXER / SUMMING".to_string(), "Mix: 50% A • 50% B".to_string(), "Dual-Bus Gerbang".to_string()),
             NodeType::Splitter => ("SPLITTER / Y-BRANCH".to_string(), "Dual-Out (Pin A & B)".to_string(), "Dual-Bus Gerbang".to_string()),
             NodeType::SavedEqPreset(name) => ("🎛️ EQ PRESET".to_string(), name.clone(), "Klik untuk Buka".to_string()),
+            NodeType::VolumeBooster => ("VOLUME BOOSTER".to_string(), "+6.0 dB Gain".to_string(), "Pure Clean Amp".to_string()),
+            NodeType::AnalogPreamp => ("ANALOG PREAMP".to_string(), "0.0 dB Drive".to_string(), "Class-A Warmth".to_string()),
+            NodeType::DynamicLoudness => ("DYNAMIC LOUDNESS".to_string(), "Loudness 50%".to_string(), "ISO 226 Contour".to_string()),
+            NodeType::SteppedAttenuator => ("STEPPED ATTENUATOR".to_string(), "-12 dB".to_string(), "64-Step Resistor".to_string()),
+            NodeType::OpticalLeveler => ("OPTICAL LEVELER".to_string(), "Peak Red 30%".to_string(), "LA-2A Opto".to_string()),
+            NodeType::StereoBalance => ("STEREO BALANCE".to_string(), "Center 0.0 dB".to_string(), "Pan & Trim".to_string()),
             _ => ("AUDIO FILTER".to_string(), "DSP Unit".to_string(), "Active".to_string()),
         };
 
@@ -85,8 +161,14 @@ impl LunulaApp {
             NodeType::Mixer => 0.5,
             NodeType::StereoWidener => 1.35,
             NodeType::VolumeAttenuator => -6.02,
-            NodeType::TubeWarmer => 1.0,
+            NodeType::TubeWarmer => 35.0,
             NodeType::BassGuard => 24.0,
+            NodeType::VolumeBooster => 6.0,
+            NodeType::AnalogPreamp => 0.0,
+            NodeType::DynamicLoudness => 50.0,
+            NodeType::SteppedAttenuator => -12.0,
+            NodeType::OpticalLeveler => 30.0,
+            NodeType::StereoBalance => 0.0,
             _ => 0.0,
         };
         let new_node = ModularNode {
@@ -158,8 +240,8 @@ impl LunulaApp {
             gx += grid_size;
         }
 
-        let node_width = 136.0;
-        let node_height = 54.0;
+        let node_width = 144.0;
+        let node_height = 58.0;
         let pin_radius = 5.0;
 
         let is_mouse_down = ui.input(|i| i.pointer.is_decidedly_dragging());
@@ -195,23 +277,27 @@ impl LunulaApp {
             pointer_pos.map_or(false, |p| r.contains(p))
         });
 
-        // 0a. Check hover & active drag on interactive node sliders (LowPassFilter cutoff or Mixer crossfader)
+        // 0a. Check hover & active drag on interactive node sliders
         let mut is_hovering_slider = false;
         if !is_interacting_with_tutorial {
             for node in &self.nodes {
-                if node.node_type == NodeType::LowPassFilter || node.node_type == NodeType::Mixer {
-                    let world_rect = Rect::from_min_size(
-                        Pos2::new(
-                            canvas_rect.min.x + self.patchbay_pan.x + node.pos.x,
-                            canvas_rect.min.y + self.patchbay_pan.y + node.pos.y,
-                        ),
-                        Vec2::new(node_width, node_height),
-                    );
-                    let s_hit = Rect::from_min_size(
-                        Pos2::new(world_rect.min.x + 8.0, world_rect.min.y + 19.0),
-                        Vec2::new(node_width - 16.0, 20.0),
-                    );
+                let world_rect = Rect::from_min_size(
+                    Pos2::new(
+                        canvas_rect.min.x + self.patchbay_pan.x + node.pos.x,
+                        canvas_rect.min.y + self.patchbay_pan.y + node.pos.y,
+                    ),
+                    Vec2::new(node_width, node_height),
+                );
+                if let Some((s_hit, _)) = get_interactive_slider_bounds_and_val(&node.node_type, world_rect, node_width, 0.0) {
                     if pointer_pos.map_or(false, |p| s_hit.contains(p)) {
+                        is_hovering_slider = true;
+                        break;
+                    }
+                }
+                // SteppedAttenuator DIM button hover
+                if node.node_type == NodeType::SteppedAttenuator {
+                    let dim_hit = Rect::from_min_size(Pos2::new(world_rect.max.x - 38.0, world_rect.min.y + 20.0), Vec2::new(30.0, 16.0));
+                    if pointer_pos.map_or(false, |p| dim_hit.contains(p)) {
                         is_hovering_slider = true;
                         break;
                     }
@@ -227,34 +313,32 @@ impl LunulaApp {
         if is_left_pressed && !is_interacting_with_tutorial {
             if let Some(pos) = pointer_pos {
                 for node in &self.nodes {
-                    if node.node_type == NodeType::LowPassFilter || node.node_type == NodeType::Mixer {
-                        let world_rect = Rect::from_min_size(
-                            Pos2::new(
-                                canvas_rect.min.x + self.patchbay_pan.x + node.pos.x,
-                                canvas_rect.min.y + self.patchbay_pan.y + node.pos.y,
-                            ),
-                            Vec2::new(node_width, node_height),
-                        );
-                        let s_hit = Rect::from_min_size(
-                            Pos2::new(world_rect.min.x + 8.0, world_rect.min.y + 19.0),
-                            Vec2::new(node_width - 16.0, 20.0),
-                        );
+                    let world_rect = Rect::from_min_size(
+                        Pos2::new(
+                            canvas_rect.min.x + self.patchbay_pan.x + node.pos.x,
+                            canvas_rect.min.y + self.patchbay_pan.y + node.pos.y,
+                        ),
+                        Vec2::new(node_width, node_height),
+                    );
+                    // Check DIM button toggle on Stepped Attenuator
+                    if node.node_type == NodeType::SteppedAttenuator {
+                        let dim_hit = Rect::from_min_size(Pos2::new(world_rect.max.x - 38.0, world_rect.min.y + 20.0), Vec2::new(30.0, 16.0));
+                        if dim_hit.contains(pos) {
+                            let new_val = if (node.param_val - (-20.0)).abs() < 0.5 { 0.0 } else { -20.0 };
+                            param_change = Some((node.id, new_val));
+                            self.selected_node = Some(node.id);
+                            clicked_slider = true;
+                            break;
+                        }
+                    }
+                    if let Some((s_hit, val)) = get_interactive_slider_bounds_and_val(&node.node_type, world_rect, node_width, pos.x) {
                         if s_hit.contains(pos) {
                             self.dragging_slider_node = Some(node.id);
                             self.dragging_node = None;
                             self.is_panning_canvas = false;
                             self.connecting_from_node = None;
                             self.selected_node = Some(node.id);
-
-                            let track_min_x = world_rect.min.x + 14.0;
-                            let track_width = (node_width - 28.0).max(10.0);
-                            let norm = ((pos.x - track_min_x) / track_width).clamp(0.0, 1.0);
-                            let new_val = if node.node_type == NodeType::Mixer {
-                                norm
-                            } else {
-                                (100.0 * (100.0_f32).powf(norm)).clamp(100.0, 10000.0)
-                            };
-                            param_change = Some((node.id, new_val));
+                            param_change = Some((node.id, val));
                             clicked_slider = true;
                             break;
                         }
@@ -275,17 +359,11 @@ impl LunulaApp {
                             ),
                             Vec2::new(node_width, node_height),
                         );
-                        let track_min_x = world_rect.min.x + 14.0;
-                        let track_width = (node_width - 28.0).max(10.0);
-                        let norm = ((pos.x - track_min_x) / track_width).clamp(0.0, 1.0);
-                        let new_val = if node.node_type == NodeType::Mixer {
-                            norm
-                        } else {
-                            (100.0 * (100.0_f32).powf(norm)).clamp(100.0, 10000.0)
-                        };
-                        param_change = Some((drag_node_id, new_val));
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                        ui.ctx().request_repaint();
+                        if let Some((_, val)) = get_interactive_slider_bounds_and_val(&node.node_type, world_rect, node_width, pos.x) {
+                            param_change = Some((drag_node_id, val));
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            ui.ctx().request_repaint();
+                        }
                     }
                 }
             }
@@ -1181,6 +1259,430 @@ impl LunulaApp {
                         Color32::from_rgb(148, 163, 184),
                     );
                 }
+            } else if node.node_type == NodeType::VolumeBooster {
+                let gain = (node.param_val).clamp(0.0, 24.0);
+                let active_gain = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(gain);
+
+                if !is_bypassed_effect {
+                    let cy = node_rect.min.y + 28.0;
+                    let badge_rect = Rect::from_center_size(Pos2::new(node_rect.min.x + 20.0, cy), Vec2::new(22.0, 18.0));
+                    painter.rect_filled(badge_rect, 4.0, Color32::from_rgb(30, 27, 75));
+                    painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER, "⚡", egui::FontId::proportional(11.0), Color32::from_rgb(250, 204, 21));
+
+                    let track_min_x = node_rect.min.x + 36.0;
+                    let track_w = (node_width - 50.0).max(10.0);
+                    let norm = (active_gain / 24.0).clamp(0.0, 1.0);
+                    let fill_w = track_w * norm;
+                    let thumb_x = track_min_x + fill_w;
+
+                    painter.rect_filled(Rect::from_min_size(Pos2::new(track_min_x, cy - 3.0), Vec2::new(track_w, 6.0)), 3.0, Color32::from_rgb(243, 232, 255));
+                    let thrust_color = if norm > 0.75 {
+                        Color32::from_rgb(239, 68, 68)
+                    } else if norm > 0.4 {
+                        Color32::from_rgb(139, 92, 246)
+                    } else {
+                        Color32::from_rgb(6, 182, 212)
+                    };
+                    painter.rect_filled(Rect::from_min_size(Pos2::new(track_min_x, cy - 3.0), Vec2::new(fill_w, 6.0)), 3.0, thrust_color);
+
+                    let led_pos = Pos2::new(track_min_x + track_w + 6.0, cy);
+                    let led_color = if norm > 0.75 { Color32::from_rgb(239, 68, 68) } else { Color32::from_rgb(34, 197, 94) };
+                    painter.circle_filled(led_pos, 2.5, led_color);
+
+                    painter.circle_filled(Pos2::new(thumb_x, cy), 5.5, Color32::WHITE);
+                    painter.circle_stroke(Pos2::new(thumb_x, cy), 5.5, Stroke::new(1.8, thrust_color));
+
+                    if self.is_playing && is_flowing {
+                        let t = ui.input(|i| i.time);
+                        let spark_x = track_min_x + ((t * 40.0) as f32 % fill_w.max(1.0));
+                        painter.circle_filled(Pos2::new(spark_x, cy - 5.0), 1.2, Color32::from_rgb(250, 204, 21));
+                        ui.ctx().request_repaint();
+                    }
+
+                    let readout = format!("+{:.1} dB Boost • Clean Amp", active_gain);
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 44.5),
+                        egui::Align2::CENTER_CENTER,
+                        readout,
+                        egui::FontId::proportional(9.0),
+                        thrust_color,
+                    );
+                } else {
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        egui::Align2::CENTER_CENTER,
+                        "DILEWATI (Bypassed)",
+                        egui::FontId::proportional(10.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 41.5),
+                        egui::Align2::CENTER_CENTER,
+                        "Nonaktif di Bit-Perfect",
+                        egui::FontId::proportional(9.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                }
+            } else if node.node_type == NodeType::AnalogPreamp {
+                let gain = (node.param_val).clamp(-24.0, 12.0);
+                let active_gain = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(gain);
+
+                if !is_bypassed_effect {
+                    let cy = node_rect.min.y + 28.0;
+                    let dial_center = Pos2::new(node_rect.min.x + 22.0, cy);
+                    let dial_radius = 11.5;
+                    painter.circle_filled(dial_center, dial_radius, Color32::from_rgb(226, 232, 240));
+                    painter.circle_stroke(dial_center, dial_radius, Stroke::new(1.5, Color32::from_rgb(148, 163, 184)));
+
+                    let norm = ((active_gain - (-24.0)) / 36.0).clamp(0.0, 1.0);
+                    let angle = std::f32::consts::PI * 0.75 + norm * (std::f32::consts::PI * 1.5);
+                    let pointer_len = dial_radius - 2.5;
+                    let p_tip = Pos2::new(
+                        dial_center.x + angle.cos() * pointer_len,
+                        dial_center.y + angle.sin() * pointer_len,
+                    );
+                    painter.line_segment([dial_center, p_tip], Stroke::new(2.2, Color32::from_rgb(234, 88, 12)));
+                    painter.circle_filled(dial_center, 2.5, Color32::from_rgb(249, 115, 22));
+
+                    let track_min_x = node_rect.min.x + 42.0;
+                    let track_w = (node_width - 66.0).max(10.0);
+                    let thumb_x = track_min_x + track_w * norm;
+
+                    painter.rect_filled(Rect::from_min_size(Pos2::new(track_min_x, cy - 2.5), Vec2::new(track_w, 5.0)), 2.5, Color32::from_rgb(254, 243, 199));
+                    let detent_x = track_min_x + track_w * (24.0 / 36.0);
+                    painter.line_segment([Pos2::new(detent_x, cy - 4.5), Pos2::new(detent_x, cy + 4.5)], Stroke::new(1.2, Color32::from_rgb(217, 119, 6)));
+
+                    painter.circle_filled(Pos2::new(thumb_x, cy), 5.0, Color32::WHITE);
+                    painter.circle_stroke(Pos2::new(thumb_x, cy), 5.0, Stroke::new(1.8, Color32::from_rgb(234, 88, 12)));
+
+                    let led_x = node_rect.max.x - 12.0;
+                    let leds = [
+                        (-12.0, Color32::from_rgb(34, 197, 94)),
+                        (-3.0, Color32::from_rgb(34, 197, 94)),
+                        (0.0, Color32::from_rgb(234, 179, 8)),
+                        (6.0, Color32::from_rgb(239, 68, 68)),
+                    ];
+                    for (idx, (thresh, active_col)) in leds.iter().enumerate() {
+                        let ly = cy + 9.0 - (idx as f32 * 6.0);
+                        let is_on = active_gain >= *thresh;
+                        let col = if is_on { *active_col } else { Color32::from_rgb(226, 232, 240) };
+                        painter.circle_filled(Pos2::new(led_x, ly), 2.0, col);
+                    }
+
+                    let readout = format!("{:+0.1} dB • Class-A SAT", active_gain);
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 44.5),
+                        egui::Align2::CENTER_CENTER,
+                        readout,
+                        egui::FontId::proportional(9.0),
+                        Color32::from_rgb(194, 65, 12),
+                    );
+                } else {
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        egui::Align2::CENTER_CENTER,
+                        "DILEWATI (Bypassed)",
+                        egui::FontId::proportional(10.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 41.5),
+                        egui::Align2::CENTER_CENTER,
+                        "Nonaktif di Bit-Perfect",
+                        egui::FontId::proportional(9.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                }
+            } else if node.node_type == NodeType::DynamicLoudness {
+                let depth = (node.param_val).clamp(0.0, 100.0);
+                let active_depth = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(depth);
+
+                if !is_bypassed_effect {
+                    let cy = node_rect.min.y + 28.0;
+                    let moon_pos = Pos2::new(node_rect.min.x + 18.0, cy);
+                    painter.text(moon_pos, egui::Align2::CENTER_CENTER, "🌙", egui::FontId::proportional(12.0), Color32::from_rgb(245, 158, 11));
+
+                    let crt_w = (node_width - 44.0).max(10.0);
+                    let crt_rect = Rect::from_min_size(Pos2::new(node_rect.min.x + 32.0, cy - 9.0), Vec2::new(crt_w, 18.0));
+                    painter.rect_filled(crt_rect, 3.0, Color32::from_rgb(15, 23, 42));
+                    painter.rect_stroke(crt_rect, 3.0, Stroke::new(1.0, Color32::from_rgb(51, 65, 85)), egui::StrokeKind::Outside);
+
+                    let norm = active_depth / 100.0;
+                    let c_painter = painter.with_clip_rect(crt_rect);
+                    let mut curve_pts = Vec::new();
+                    let steps = 12;
+                    let y_mid = crt_rect.center().y;
+                    for s in 0..=steps {
+                        let t = s as f32 / steps as f32;
+                        let x = crt_rect.min.x + crt_rect.width() * t;
+                        let lift = if t < 0.3 {
+                            (1.0 - t / 0.3) * 5.0 * norm
+                        } else if t > 0.7 {
+                            ((t - 0.7) / 0.3) * 3.5 * norm
+                        } else {
+                            0.0
+                        };
+                        let y = y_mid - lift + 1.0;
+                        curve_pts.push(Pos2::new(x, y));
+                    }
+                    for i in 0..curve_pts.len() - 1 {
+                        c_painter.line_segment([curve_pts[i], curve_pts[i + 1]], Stroke::new(1.5, Color32::from_rgb(251, 191, 36)));
+                    }
+
+                    let thumb_x = crt_rect.min.x + crt_rect.width() * norm;
+                    c_painter.circle_filled(Pos2::new(thumb_x, crt_rect.max.y - 2.0), 2.5, Color32::WHITE);
+
+                    let readout = format!("Loudness {:.0}% • ISO 226 Contour", active_depth);
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 44.5),
+                        egui::Align2::CENTER_CENTER,
+                        readout,
+                        egui::FontId::proportional(9.0),
+                        Color32::from_rgb(217, 119, 6),
+                    );
+                } else {
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        egui::Align2::CENTER_CENTER,
+                        "DILEWATI (Bypassed)",
+                        egui::FontId::proportional(10.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 41.5),
+                        egui::Align2::CENTER_CENTER,
+                        "Nonaktif di Bit-Perfect",
+                        egui::FontId::proportional(9.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                }
+            } else if node.node_type == NodeType::SteppedAttenuator {
+                let db = (node.param_val).clamp(-60.0, 0.0);
+                let active_db = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(db);
+
+                if !is_bypassed_effect {
+                    let cy = node_rect.min.y + 28.0;
+                    let dial_center = Pos2::new(node_rect.min.x + 20.0, cy);
+                    let dial_r = 10.0;
+                    painter.circle_filled(dial_center, dial_r, Color32::from_rgb(241, 245, 249));
+                    painter.circle_stroke(dial_center, dial_r, Stroke::new(1.2, Color32::from_rgb(148, 163, 184)));
+                    for d in 0..8 {
+                        let ang = d as f32 * (std::f32::consts::PI * 2.0 / 8.0);
+                        let dot_p = Pos2::new(dial_center.x + ang.cos() * (dial_r - 2.5), dial_center.y + ang.sin() * (dial_r - 2.5));
+                        painter.circle_filled(dot_p, 1.0, Color32::from_rgb(100, 116, 139));
+                    }
+
+                    let nixie_w = 48.0;
+                    let nixie_rect = Rect::from_min_size(Pos2::new(node_rect.min.x + 36.0, cy - 8.0), Vec2::new(nixie_w, 16.0));
+                    painter.rect_filled(nixie_rect, 3.0, Color32::from_rgb(15, 23, 42));
+                    painter.rect_stroke(nixie_rect, 3.0, Stroke::new(1.0, Color32::from_rgb(6, 182, 212)), egui::StrokeKind::Outside);
+                    painter.text(nixie_rect.center(), egui::Align2::CENTER_CENTER, format!("{:.0} dB", active_db), egui::FontId::monospace(9.5), Color32::from_rgb(34, 211, 238));
+
+                    let is_dim = (active_db - (-20.0)).abs() < 0.5;
+                    let dim_rect = Rect::from_min_size(Pos2::new(node_rect.max.x - 38.0, cy - 8.0), Vec2::new(30.0, 16.0));
+                    let (dim_bg, dim_fg) = if is_dim {
+                        (Color32::from_rgb(6, 182, 212), Color32::WHITE)
+                    } else {
+                        (Color32::from_rgb(241, 245, 249), Color32::from_rgb(100, 116, 139))
+                    };
+                    painter.rect_filled(dim_rect, 3.0, dim_bg);
+                    painter.rect_stroke(dim_rect, 3.0, Stroke::new(1.0, Color32::from_rgb(203, 213, 225)), egui::StrokeKind::Outside);
+                    painter.text(dim_rect.center(), egui::Align2::CENTER_CENTER, "DIM", egui::FontId::proportional(8.5), dim_fg);
+
+                    let step_num = (((active_db - (-60.0)) / 60.0) * 63.0).round() as i32 + 1;
+                    let readout = format!("Step {}/64 • Resistor Ladder", step_num);
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 44.5),
+                        egui::Align2::CENTER_CENTER,
+                        readout,
+                        egui::FontId::proportional(9.0),
+                        Color32::from_rgb(14, 116, 144),
+                    );
+                } else {
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        egui::Align2::CENTER_CENTER,
+                        "DILEWATI (Bypassed)",
+                        egui::FontId::proportional(10.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 41.5),
+                        egui::Align2::CENTER_CENTER,
+                        "Nonaktif di Bit-Perfect",
+                        egui::FontId::proportional(9.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                }
+            } else if node.node_type == NodeType::OpticalLeveler {
+                let peak_red = (node.param_val).clamp(0.0, 100.0);
+                let active_red = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(peak_red);
+
+                if !is_bypassed_effect {
+                    let cy = node_rect.min.y + 28.0;
+                    let bulb_center = Pos2::new(node_rect.min.x + 20.0, cy);
+                    let norm = active_red / 100.0;
+                    let glow_alpha = (100.0 + norm * 155.0) as u8;
+                    painter.circle_filled(bulb_center, 8.5, Color32::from_rgba_premultiplied(234, 88, 12, glow_alpha));
+                    painter.circle_filled(bulb_center, 5.0, Color32::from_rgba_premultiplied(254, 215, 170, 220));
+                    painter.circle_stroke(bulb_center, 8.5, Stroke::new(1.0, Color32::from_rgb(194, 65, 12)));
+
+                    let vu_w = (node_width - 48.0).max(10.0);
+                    let vu_rect = Rect::from_min_size(Pos2::new(node_rect.min.x + 36.0, cy - 9.0), Vec2::new(vu_w, 18.0));
+                    painter.rect_filled(vu_rect, 3.0, Color32::from_rgb(254, 243, 199));
+                    painter.rect_stroke(vu_rect, 3.0, Stroke::new(1.0, Color32::from_rgb(217, 119, 6)), egui::StrokeKind::Outside);
+
+                    let vu_painter = painter.with_clip_rect(vu_rect);
+                    for t in 0..=4 {
+                        let tx = vu_rect.min.x + vu_rect.width() * (t as f32 / 4.0);
+                        vu_painter.line_segment([Pos2::new(tx, vu_rect.min.y), Pos2::new(tx, vu_rect.min.y + 3.0)], Stroke::new(0.8, Color32::from_rgb(120, 53, 15)));
+                    }
+
+                    let needle_deflect = if self.is_playing {
+                        let t = ui.input(|i| i.time);
+                        norm * 0.7 + (t * 6.0).sin().abs() as f32 * norm * 0.3
+                    } else {
+                        norm
+                    };
+                    let needle_pivot = Pos2::new(vu_rect.center().x, vu_rect.max.y + 6.0);
+                    let n_ang = -std::f32::consts::PI * 0.5 - (0.5 - needle_deflect) * 0.8;
+                    let n_tip = Pos2::new(needle_pivot.x + n_ang.cos() * 22.0, needle_pivot.y + n_ang.sin() * 22.0);
+                    vu_painter.line_segment([needle_pivot, n_tip], Stroke::new(1.4, Color32::from_rgb(185, 28, 28)));
+
+                    let readout = format!("Peak Red {:.0}% • LA-2A Opto", active_red);
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 44.5),
+                        egui::Align2::CENTER_CENTER,
+                        readout,
+                        egui::FontId::proportional(9.0),
+                        Color32::from_rgb(180, 83, 9),
+                    );
+                } else {
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        egui::Align2::CENTER_CENTER,
+                        "DILEWATI (Bypassed)",
+                        egui::FontId::proportional(10.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 41.5),
+                        egui::Align2::CENTER_CENTER,
+                        "Nonaktif di Bit-Perfect",
+                        egui::FontId::proportional(9.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                }
+            } else if node.node_type == NodeType::StereoBalance {
+                let bal = (node.param_val).clamp(-100.0, 100.0);
+                let active_bal = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(bal);
+
+                if !is_bypassed_effect {
+                    let cy = node_rect.min.y + 28.0;
+                    let track_min_x = node_rect.min.x + 20.0;
+                    let track_w = (node_width - 40.0).max(10.0);
+                    let norm = ((active_bal - (-100.0)) / 200.0).clamp(0.0, 1.0);
+                    let thumb_x = track_min_x + track_w * norm;
+
+                    let l_col = if active_bal < -5.0 { Color32::from_rgb(99, 102, 241) } else { Color32::from_rgb(148, 163, 184) };
+                    painter.text(Pos2::new(track_min_x - 5.0, cy), egui::Align2::RIGHT_CENTER, "L", egui::FontId::proportional(9.0), l_col);
+
+                    let r_col = if active_bal > 5.0 { Color32::from_rgb(99, 102, 241) } else { Color32::from_rgb(148, 163, 184) };
+                    painter.text(Pos2::new(track_min_x + track_w + 5.0, cy), egui::Align2::LEFT_CENTER, "R", egui::FontId::proportional(9.0), r_col);
+
+                    painter.rect_filled(Rect::from_min_size(Pos2::new(track_min_x, cy - 2.5), Vec2::new(track_w, 5.0)), 2.5, Color32::from_rgb(238, 242, 255));
+                    let center_x = track_min_x + track_w * 0.5;
+                    painter.line_segment([Pos2::new(center_x, cy - 5.0), Pos2::new(center_x, cy + 5.0)], Stroke::new(1.3, Color32::from_rgb(99, 102, 241)));
+
+                    painter.circle_filled(Pos2::new(thumb_x, cy), 5.5, Color32::WHITE);
+                    painter.circle_stroke(Pos2::new(thumb_x, cy), 5.5, Stroke::new(1.8, Color32::from_rgb(79, 70, 229)));
+
+                    let readout = if active_bal.abs() < 1.0 {
+                        "Center (0.0 dB)".to_string()
+                    } else if active_bal < 0.0 {
+                        format!("L {:.0}% / R {:.0}%", 50.0 + active_bal.abs() * 0.5, 50.0 - active_bal.abs() * 0.5)
+                    } else {
+                        format!("L {:.0}% / R {:.0}%", 50.0 - active_bal * 0.5, 50.0 + active_bal * 0.5)
+                    };
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 44.5),
+                        egui::Align2::CENTER_CENTER,
+                        readout,
+                        egui::FontId::proportional(9.0),
+                        Color32::from_rgb(79, 70, 229),
+                    );
+                } else {
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        egui::Align2::CENTER_CENTER,
+                        "DILEWATI (Bypassed)",
+                        egui::FontId::proportional(10.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 41.5),
+                        egui::Align2::CENTER_CENTER,
+                        "Nonaktif di Bit-Perfect",
+                        egui::FontId::proportional(9.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                }
+            } else if node.node_type == NodeType::TubeWarmer {
+                let warmth = (node.param_val).clamp(0.0, 100.0);
+                let active_warmth = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(warmth);
+
+                if !is_bypassed_effect {
+                    let cy = node_rect.min.y + 28.0;
+                    let tube_rect = Rect::from_center_size(Pos2::new(node_rect.min.x + 22.0, cy), Vec2::new(18.0, 24.0));
+                    painter.rect_filled(tube_rect, 6.0, Color32::from_rgb(30, 27, 75));
+                    painter.rect_stroke(tube_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(79, 70, 229)), egui::StrokeKind::Outside);
+
+                    let norm = active_warmth / 100.0;
+                    let glow_pulse = if self.is_playing {
+                        let t = ui.input(|i| i.time);
+                        0.8 + 0.2 * (t * 4.0).sin().abs() as f32
+                    } else {
+                        1.0
+                    };
+                    let glow_alpha = ((120.0 + norm * 135.0) * glow_pulse).clamp(0.0, 255.0) as u8;
+                    let f1 = Pos2::new(tube_rect.center().x - 3.5, tube_rect.center().y);
+                    let f2 = Pos2::new(tube_rect.center().x + 3.5, tube_rect.center().y);
+                    painter.circle_filled(f1, 2.5, Color32::from_rgba_premultiplied(249, 115, 22, glow_alpha));
+                    painter.circle_filled(f2, 2.5, Color32::from_rgba_premultiplied(251, 146, 60, glow_alpha));
+
+                    let track_min_x = node_rect.min.x + 42.0;
+                    let track_w = (node_width - 54.0).max(10.0);
+                    let thumb_x = track_min_x + track_w * norm;
+
+                    painter.rect_filled(Rect::from_min_size(Pos2::new(track_min_x, cy - 2.5), Vec2::new(track_w, 5.0)), 2.5, Color32::from_rgb(255, 237, 213));
+                    painter.rect_filled(Rect::from_min_size(Pos2::new(track_min_x, cy - 2.5), Vec2::new(thumb_x - track_min_x, 5.0)), 2.5, Color32::from_rgb(249, 115, 22));
+                    painter.circle_filled(Pos2::new(thumb_x, cy), 5.5, Color32::WHITE);
+                    painter.circle_stroke(Pos2::new(thumb_x, cy), 5.5, Stroke::new(1.8, Color32::from_rgb(234, 88, 12)));
+
+                    let readout = format!("Warmth {:.0}% • Triode 12AX7", active_warmth);
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 44.5),
+                        egui::Align2::CENTER_CENTER,
+                        readout,
+                        egui::FontId::proportional(9.0),
+                        Color32::from_rgb(194, 65, 12),
+                    );
+                } else {
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        egui::Align2::CENTER_CENTER,
+                        "DILEWATI (Bypassed)",
+                        egui::FontId::proportional(10.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 41.5),
+                        egui::Align2::CENTER_CENTER,
+                        "Nonaktif di Bit-Perfect",
+                        egui::FontId::proportional(9.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                }
             } else {
                 // Sublabels: Dynamic based on bypassed vs flowing vs broken
                 let (sub1_txt, sub1_col, sub2_txt, sub2_col) = if is_bypassed_effect {
@@ -1323,16 +1825,47 @@ impl LunulaApp {
         if let Some((node_id, new_val)) = param_change {
             if let Some(n) = self.nodes.iter_mut().find(|n| n.id == node_id) {
                 n.param_val = new_val;
-                if n.node_type == NodeType::LowPassFilter {
-                    n.sub1 = if new_val >= 1000.0 {
-                        format!("Cutoff {:.1} kHz", new_val / 1000.0)
-                    } else {
-                        format!("Cutoff {:.0} Hz", new_val)
-                    };
-                } else if n.node_type == NodeType::Mixer {
-                    let a_pct = (1.0 - new_val) * 100.0;
-                    let b_pct = new_val * 100.0;
-                    n.sub1 = format!("Mix: {:.0}% A • {:.0}% B", a_pct, b_pct);
+                match n.node_type {
+                    NodeType::LowPassFilter => {
+                        n.sub1 = if new_val >= 1000.0 {
+                            format!("Cutoff {:.1} kHz", new_val / 1000.0)
+                        } else {
+                            format!("Cutoff {:.0} Hz", new_val)
+                        };
+                    }
+                    NodeType::Mixer => {
+                        let a_pct = (1.0 - new_val) * 100.0;
+                        let b_pct = new_val * 100.0;
+                        n.sub1 = format!("Mix: {:.0}% A • {:.0}% B", a_pct, b_pct);
+                    }
+                    NodeType::TubeWarmer => {
+                        n.sub1 = format!("Warmth {:.0}%", new_val);
+                    }
+                    NodeType::VolumeBooster => {
+                        n.sub1 = format!("+{:.1} dB Gain", new_val);
+                    }
+                    NodeType::AnalogPreamp => {
+                        n.sub1 = format!("{:+0.1} dB Drive", new_val);
+                    }
+                    NodeType::DynamicLoudness => {
+                        n.sub1 = format!("Loudness {:.0}%", new_val);
+                    }
+                    NodeType::SteppedAttenuator => {
+                        n.sub1 = format!("{:.0} dB", new_val);
+                    }
+                    NodeType::OpticalLeveler => {
+                        n.sub1 = format!("Peak Red {:.0}%", new_val);
+                    }
+                    NodeType::StereoBalance => {
+                        if new_val.abs() < 1.0 {
+                            n.sub1 = "Center 0.0 dB".to_string();
+                        } else if new_val < 0.0 {
+                            n.sub1 = format!("L {:.0}% / R {:.0}%", 50.0 + new_val.abs() * 0.5, 50.0 - new_val.abs() * 0.5);
+                        } else {
+                            n.sub1 = format!("L {:.0}% / R {:.0}%", 50.0 - new_val * 0.5, 50.0 + new_val * 0.5);
+                        }
+                    }
+                    _ => {}
                 }
             }
             if self.chain_mode != ChainMode::DspActive {
@@ -1507,6 +2040,32 @@ impl LunulaApp {
                 }
                 if ui.button("🔉 Volume Attenuator (-6dB)").clicked() {
                     self.add_modular_filter(NodeType::VolumeAttenuator);
+                    ui.close();
+                }
+                ui.separator();
+                ui.label(egui::RichText::new("🔊 Manipulasi Volume & Gain:").size(10.5).color(Color32::from_rgb(100, 116, 139)));
+                if ui.button("⚡ Volume Booster (0 s/d +24dB)").clicked() {
+                    self.add_modular_filter(NodeType::VolumeBooster);
+                    ui.close();
+                }
+                if ui.button("🎛️ Analog Preamp & Trim (-24 s/d +12dB)").clicked() {
+                    self.add_modular_filter(NodeType::AnalogPreamp);
+                    ui.close();
+                }
+                if ui.button("🌙 Dynamic Loudness (ISO 226 Contour)").clicked() {
+                    self.add_modular_filter(NodeType::DynamicLoudness);
+                    ui.close();
+                }
+                if ui.button("🔘 Stepped Attenuator (64-Step Resistor)").clicked() {
+                    self.add_modular_filter(NodeType::SteppedAttenuator);
+                    ui.close();
+                }
+                if ui.button("🛡️ Optical Leveler (LA-2A Opto)").clicked() {
+                    self.add_modular_filter(NodeType::OpticalLeveler);
+                    ui.close();
+                }
+                if ui.button("⚖️ Stereo Balance & Trim (Pan Stage)").clicked() {
+                    self.add_modular_filter(NodeType::StereoBalance);
                     ui.close();
                 }
                 ui.separator();
@@ -2127,6 +2686,507 @@ impl LunulaApp {
                             }
                         }
                     });
+                    ui.add_space(8.0);
+
+                    // Volume Suite Section Header
+                    ui.separator();
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("🔊 MANIPULASI VOLUME & GAIN (6 FILTER)").strong().size(12.5).color(Color32::from_rgb(15, 23, 42)));
+                    });
+                    ui.label(egui::RichText::new("Gain staging presisi, saturasi Class-A, kontur ISO 226, attenuator pasif, opto leveling, dan stereo balance.").size(10.0).color(Color32::from_rgb(100, 116, 139)));
+                    ui.add_space(6.0);
+
+                    // 1. Pure Volume Booster
+                    let vb_node = self.nodes.iter().find(|n| n.node_type == NodeType::VolumeBooster);
+                    let has_vb = vb_node.is_some();
+                    let current_vb_gain = vb_node.map(|n| n.param_val).unwrap_or(6.0);
+                    let mut vb_change: Option<f32> = None;
+
+                    let g_vb = ui.group(|ui| {
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("⚡ Pure Volume Booster").strong().size(12.0).color(Color32::from_rgb(15, 23, 42)));
+                                ui.label(egui::RichText::new(format!("+{:.1} dB", current_vb_gain)).strong().size(10.5).color(Color32::from_rgb(139, 92, 246)));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    render_routing_help_button(
+                                        ui,
+                                        "Volume Booster",
+                                        NodeType::VolumeBooster,
+                                        &mut self.active_filter_tutorial,
+                                        &mut self.filter_tutorial_step,
+                                    );
+                                });
+                            });
+                            ui.label(egui::RichText::new("Penguat gain bersih 0 s/d +24dB berpresisi f64 tanpa saturasi pewarnaan nada.").size(10.0).color(Color32::from_rgb(100, 116, 139)));
+
+                            if has_vb {
+                                let mut val = current_vb_gain;
+                                if ui.add(egui::Slider::new(&mut val, 0.0..=24.0).suffix(" dB").show_value(false)).changed() {
+                                    vb_change = Some(val);
+                                }
+                                ui.horizontal(|ui| {
+                                    for (lbl, p_val) in [("+3dB", 3.0), ("+6dB", 6.0), ("+12dB", 12.0), ("+18dB", 18.0)] {
+                                        if ui.button(egui::RichText::new(lbl).size(9.0)).clicked() {
+                                            vb_change = Some(p_val);
+                                        }
+                                    }
+                                });
+                            }
+
+                            ui.horizontal(|ui| {
+                                if ui.button(egui::RichText::new("➕ Tambah ke Chain").strong()).clicked() {
+                                    self.add_modular_filter(NodeType::VolumeBooster);
+                                }
+                                if has_vb {
+                                    if ui.button(egui::RichText::new("🗑️").size(11.0).color(Color32::from_rgb(239, 68, 68))).on_hover_text("Hapus modul ini dari canvas").clicked() {
+                                        delete_filter_type = Some(NodeType::VolumeBooster);
+                                    }
+                                }
+                            });
+                        });
+                    });
+                    g_vb.response.context_menu(|ui| {
+                        ui.label(egui::RichText::new("⚡ Pure Volume Booster").strong());
+                        ui.separator();
+                        if ui.button("➕ Tambah ke Signal Chain").clicked() {
+                            self.add_modular_filter(NodeType::VolumeBooster);
+                            ui.close();
+                        }
+                        if has_vb {
+                            if ui.button("🗑️ Hapus Semua dari Canvas").clicked() {
+                                delete_filter_type = Some(NodeType::VolumeBooster);
+                                ui.close();
+                            }
+                        }
+                    });
+
+                    if let Some(new_val) = vb_change {
+                        if let Some(n) = self.nodes.iter_mut().find(|n| n.node_type == NodeType::VolumeBooster) {
+                            n.param_val = new_val;
+                            n.sub1 = format!("+{:.1} dB Gain", new_val);
+                            let nid = n.id;
+                            if self.chain_mode != ChainMode::DspActive {
+                                self.set_chain_mode(ChainMode::DspActive);
+                            }
+                            if let Some(ref engine) = self.audio_engine {
+                                engine.set_node_param(nid as u32, 0, new_val);
+                            }
+                        }
+                    }
+                    ui.add_space(6.0);
+
+                    // 2. Analog Preamp & Trim
+                    let preamp_node = self.nodes.iter().find(|n| n.node_type == NodeType::AnalogPreamp);
+                    let has_preamp = preamp_node.is_some();
+                    let current_preamp_gain = preamp_node.map(|n| n.param_val).unwrap_or(0.0);
+                    let mut preamp_change: Option<f32> = None;
+
+                    let g_preamp = ui.group(|ui| {
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("🎛️ Analog Preamp & Trim").strong().size(12.0).color(Color32::from_rgb(15, 23, 42)));
+                                ui.label(egui::RichText::new(format!("{:+0.1} dB", current_preamp_gain)).strong().size(10.5).color(Color32::from_rgb(234, 88, 12)));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    render_routing_help_button(
+                                        ui,
+                                        "Analog Preamp",
+                                        NodeType::AnalogPreamp,
+                                        &mut self.active_filter_tutorial,
+                                        &mut self.filter_tutorial_step,
+                                    );
+                                });
+                            });
+                            ui.label(egui::RichText::new("Gain staging studio -24 s/d +12dB dengan saturasi trafo analog Class-A halus.").size(10.0).color(Color32::from_rgb(100, 116, 139)));
+
+                            if has_preamp {
+                                let mut val = current_preamp_gain;
+                                if ui.add(egui::Slider::new(&mut val, -24.0..=12.0).suffix(" dB").show_value(false)).changed() {
+                                    preamp_change = Some(val);
+                                }
+                                ui.horizontal(|ui| {
+                                    for (lbl, p_val) in [("-6dB Trim", -6.0), ("0dB Unity", 0.0), ("+3dB Warm", 3.0), ("+6dB Sat", 6.0)] {
+                                        if ui.button(egui::RichText::new(lbl).size(9.0)).clicked() {
+                                            preamp_change = Some(p_val);
+                                        }
+                                    }
+                                });
+                            }
+
+                            ui.horizontal(|ui| {
+                                if ui.button(egui::RichText::new("➕ Tambah ke Chain").strong()).clicked() {
+                                    self.add_modular_filter(NodeType::AnalogPreamp);
+                                }
+                                if has_preamp {
+                                    if ui.button(egui::RichText::new("🗑️").size(11.0).color(Color32::from_rgb(239, 68, 68))).on_hover_text("Hapus modul ini dari canvas").clicked() {
+                                        delete_filter_type = Some(NodeType::AnalogPreamp);
+                                    }
+                                }
+                            });
+                        });
+                    });
+                    g_preamp.response.context_menu(|ui| {
+                        ui.label(egui::RichText::new("🎛️ Analog Preamp & Trim").strong());
+                        ui.separator();
+                        if ui.button("➕ Tambah ke Signal Chain").clicked() {
+                            self.add_modular_filter(NodeType::AnalogPreamp);
+                            ui.close();
+                        }
+                        if has_preamp {
+                            if ui.button("🗑️ Hapus Semua dari Canvas").clicked() {
+                                delete_filter_type = Some(NodeType::AnalogPreamp);
+                                ui.close();
+                            }
+                        }
+                    });
+
+                    if let Some(new_val) = preamp_change {
+                        if let Some(n) = self.nodes.iter_mut().find(|n| n.node_type == NodeType::AnalogPreamp) {
+                            n.param_val = new_val;
+                            n.sub1 = format!("{:+0.1} dB Drive", new_val);
+                            let nid = n.id;
+                            if self.chain_mode != ChainMode::DspActive {
+                                self.set_chain_mode(ChainMode::DspActive);
+                            }
+                            if let Some(ref engine) = self.audio_engine {
+                                engine.set_node_param(nid as u32, 0, new_val);
+                            }
+                        }
+                    }
+                    ui.add_space(6.0);
+
+                    // 3. Dynamic Loudness
+                    let loud_node = self.nodes.iter().find(|n| n.node_type == NodeType::DynamicLoudness);
+                    let has_loudness = loud_node.is_some();
+                    let current_loud_depth = loud_node.map(|n| n.param_val).unwrap_or(50.0);
+                    let mut loud_change: Option<f32> = None;
+
+                    let g_loud = ui.group(|ui| {
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("🌙 Dynamic Loudness").strong().size(12.0).color(Color32::from_rgb(15, 23, 42)));
+                                ui.label(egui::RichText::new(format!("{:.0}%", current_loud_depth)).strong().size(10.5).color(Color32::from_rgb(245, 158, 11)));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    render_routing_help_button(
+                                        ui,
+                                        "Dynamic Loudness",
+                                        NodeType::DynamicLoudness,
+                                        &mut self.active_filter_tutorial,
+                                        &mut self.filter_tutorial_step,
+                                    );
+                                });
+                            });
+                            ui.label(egui::RichText::new("Kompensasi kontur equal-loudness ISO 226 untuk bass dan treble penuh di volume rendah.").size(10.0).color(Color32::from_rgb(100, 116, 139)));
+
+                            if has_loudness {
+                                let mut val = current_loud_depth;
+                                if ui.add(egui::Slider::new(&mut val, 0.0..=100.0).suffix("%").show_value(false)).changed() {
+                                    loud_change = Some(val);
+                                }
+                                ui.horizontal(|ui| {
+                                    for (lbl, p_val) in [("25% Mild", 25.0), ("50% Night", 50.0), ("75% Deep", 75.0), ("100% Full", 100.0)] {
+                                        if ui.button(egui::RichText::new(lbl).size(9.0)).clicked() {
+                                            loud_change = Some(p_val);
+                                        }
+                                    }
+                                });
+                            }
+
+                            ui.horizontal(|ui| {
+                                if ui.button(egui::RichText::new("➕ Tambah ke Chain").strong()).clicked() {
+                                    self.add_modular_filter(NodeType::DynamicLoudness);
+                                }
+                                if has_loudness {
+                                    if ui.button(egui::RichText::new("🗑️").size(11.0).color(Color32::from_rgb(239, 68, 68))).on_hover_text("Hapus modul ini dari canvas").clicked() {
+                                        delete_filter_type = Some(NodeType::DynamicLoudness);
+                                    }
+                                }
+                            });
+                        });
+                    });
+                    g_loud.response.context_menu(|ui| {
+                        ui.label(egui::RichText::new("🌙 Dynamic Loudness (ISO 226)").strong());
+                        ui.separator();
+                        if ui.button("➕ Tambah ke Signal Chain").clicked() {
+                            self.add_modular_filter(NodeType::DynamicLoudness);
+                            ui.close();
+                        }
+                        if has_loudness {
+                            if ui.button("🗑️ Hapus Semua dari Canvas").clicked() {
+                                delete_filter_type = Some(NodeType::DynamicLoudness);
+                                ui.close();
+                            }
+                        }
+                    });
+
+                    if let Some(new_val) = loud_change {
+                        if let Some(n) = self.nodes.iter_mut().find(|n| n.node_type == NodeType::DynamicLoudness) {
+                            n.param_val = new_val;
+                            n.sub1 = format!("Loudness {:.0}%", new_val);
+                            let nid = n.id;
+                            if self.chain_mode != ChainMode::DspActive {
+                                self.set_chain_mode(ChainMode::DspActive);
+                            }
+                            if let Some(ref engine) = self.audio_engine {
+                                engine.set_node_param(nid as u32, 0, new_val);
+                            }
+                        }
+                    }
+                    ui.add_space(6.0);
+
+                    // 4. Audiophile Stepped Attenuator
+                    let att_node = self.nodes.iter().find(|n| n.node_type == NodeType::SteppedAttenuator);
+                    let has_att = att_node.is_some();
+                    let current_att_db = att_node.map(|n| n.param_val).unwrap_or(-12.0);
+                    let mut att_change: Option<f32> = None;
+
+                    let g_att = ui.group(|ui| {
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("🔘 Stepped Attenuator").strong().size(12.0).color(Color32::from_rgb(15, 23, 42)));
+                                ui.label(egui::RichText::new(format!("{:.0} dB", current_att_db)).strong().size(10.5).color(Color32::from_rgb(6, 182, 212)));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    render_routing_help_button(
+                                        ui,
+                                        "Stepped Attenuator",
+                                        NodeType::SteppedAttenuator,
+                                        &mut self.active_filter_tutorial,
+                                        &mut self.filter_tutorial_step,
+                                    );
+                                });
+                            });
+                            ui.label(egui::RichText::new("Resistor ladder 64-step passive attenuator (-60 s/d 0dB) dengan tombol instan DIM -20dB.").size(10.0).color(Color32::from_rgb(100, 116, 139)));
+
+                            if has_att {
+                                let mut val = current_att_db;
+                                if ui.add(egui::Slider::new(&mut val, -60.0..=0.0).suffix(" dB").step_by(1.0).show_value(false)).changed() {
+                                    att_change = Some(val);
+                                }
+                                ui.horizontal(|ui| {
+                                    for (lbl, p_val) in [("0dB Max", 0.0), ("-12dB", -12.0), ("DIM -20dB", -20.0), ("-36dB", -36.0)] {
+                                        let btn = if (current_att_db - p_val).abs() < 0.5 {
+                                            ui.add(egui::Button::new(egui::RichText::new(lbl).size(9.0).color(Color32::WHITE)).fill(Color32::from_rgb(6, 182, 212)))
+                                        } else {
+                                            ui.button(egui::RichText::new(lbl).size(9.0))
+                                        };
+                                        if btn.clicked() {
+                                            att_change = Some(p_val);
+                                        }
+                                    }
+                                });
+                            }
+
+                            ui.horizontal(|ui| {
+                                if ui.button(egui::RichText::new("➕ Tambah ke Chain").strong()).clicked() {
+                                    self.add_modular_filter(NodeType::SteppedAttenuator);
+                                }
+                                if has_att {
+                                    if ui.button(egui::RichText::new("🗑️").size(11.0).color(Color32::from_rgb(239, 68, 68))).on_hover_text("Hapus modul ini dari canvas").clicked() {
+                                        delete_filter_type = Some(NodeType::SteppedAttenuator);
+                                    }
+                                }
+                            });
+                        });
+                    });
+                    g_att.response.context_menu(|ui| {
+                        ui.label(egui::RichText::new("🔘 Stepped Attenuator").strong());
+                        ui.separator();
+                        if ui.button("➕ Tambah ke Signal Chain").clicked() {
+                            self.add_modular_filter(NodeType::SteppedAttenuator);
+                            ui.close();
+                        }
+                        if has_att {
+                            if ui.button("🗑️ Hapus Semua dari Canvas").clicked() {
+                                delete_filter_type = Some(NodeType::SteppedAttenuator);
+                                ui.close();
+                            }
+                        }
+                    });
+
+                    if let Some(new_val) = att_change {
+                        if let Some(n) = self.nodes.iter_mut().find(|n| n.node_type == NodeType::SteppedAttenuator) {
+                            n.param_val = new_val;
+                            n.sub1 = format!("{:.0} dB", new_val);
+                            let nid = n.id;
+                            if self.chain_mode != ChainMode::DspActive {
+                                self.set_chain_mode(ChainMode::DspActive);
+                            }
+                            if let Some(ref engine) = self.audio_engine {
+                                engine.set_node_param(nid as u32, 0, new_val);
+                            }
+                        }
+                    }
+                    ui.add_space(6.0);
+
+                    // 5. Studio Optical Leveler (LA-2A Opto)
+                    let opt_node = self.nodes.iter().find(|n| n.node_type == NodeType::OpticalLeveler);
+                    let has_opt = opt_node.is_some();
+                    let current_opt_red = opt_node.map(|n| n.param_val).unwrap_or(30.0);
+                    let mut opt_change: Option<f32> = None;
+
+                    let g_opt = ui.group(|ui| {
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("🛡️ Studio Optical Leveler").strong().size(12.0).color(Color32::from_rgb(15, 23, 42)));
+                                ui.label(egui::RichText::new(format!("{:.0}%", current_opt_red)).strong().size(10.5).color(Color32::from_rgb(180, 83, 9)));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    render_routing_help_button(
+                                        ui,
+                                        "Optical Leveler",
+                                        NodeType::OpticalLeveler,
+                                        &mut self.active_filter_tutorial,
+                                        &mut self.filter_tutorial_step,
+                                    );
+                                });
+                            });
+                            ui.label(egui::RichText::new("Leveler optocoupler bergaya LA-2A vintage dengan pelepasan 2-tahap halus tanpa pumping.").size(10.0).color(Color32::from_rgb(100, 116, 139)));
+
+                            if has_opt {
+                                let mut val = current_opt_red;
+                                if ui.add(egui::Slider::new(&mut val, 0.0..=100.0).suffix("% Red").show_value(false)).changed() {
+                                    opt_change = Some(val);
+                                }
+                                ui.horizontal(|ui| {
+                                    for (lbl, p_val) in [("20% Light", 20.0), ("40% Classic", 40.0), ("65% Heavy", 65.0), ("85% Max", 85.0)] {
+                                        if ui.button(egui::RichText::new(lbl).size(9.0)).clicked() {
+                                            opt_change = Some(p_val);
+                                        }
+                                    }
+                                });
+                            }
+
+                            ui.horizontal(|ui| {
+                                if ui.button(egui::RichText::new("➕ Tambah ke Chain").strong()).clicked() {
+                                    self.add_modular_filter(NodeType::OpticalLeveler);
+                                }
+                                if has_opt {
+                                    if ui.button(egui::RichText::new("🗑️").size(11.0).color(Color32::from_rgb(239, 68, 68))).on_hover_text("Hapus modul ini dari canvas").clicked() {
+                                        delete_filter_type = Some(NodeType::OpticalLeveler);
+                                    }
+                                }
+                            });
+                        });
+                    });
+                    g_opt.response.context_menu(|ui| {
+                        ui.label(egui::RichText::new("🛡️ Studio Optical Leveler").strong());
+                        ui.separator();
+                        if ui.button("➕ Tambah ke Signal Chain").clicked() {
+                            self.add_modular_filter(NodeType::OpticalLeveler);
+                            ui.close();
+                        }
+                        if has_opt {
+                            if ui.button("🗑️ Hapus Semua dari Canvas").clicked() {
+                                delete_filter_type = Some(NodeType::OpticalLeveler);
+                                ui.close();
+                            }
+                        }
+                    });
+
+                    if let Some(new_val) = opt_change {
+                        if let Some(n) = self.nodes.iter_mut().find(|n| n.node_type == NodeType::OpticalLeveler) {
+                            n.param_val = new_val;
+                            n.sub1 = format!("Peak Red {:.0}%", new_val);
+                            let nid = n.id;
+                            if self.chain_mode != ChainMode::DspActive {
+                                self.set_chain_mode(ChainMode::DspActive);
+                            }
+                            if let Some(ref engine) = self.audio_engine {
+                                engine.set_node_param(nid as u32, 0, new_val);
+                            }
+                        }
+                    }
+                    ui.add_space(6.0);
+
+                    // 6. Dual-Channel Stereo Balance & Trim
+                    let bal_node = self.nodes.iter().find(|n| n.node_type == NodeType::StereoBalance);
+                    let has_bal = bal_node.is_some();
+                    let current_bal = bal_node.map(|n| n.param_val).unwrap_or(0.0);
+                    let mut bal_change: Option<f32> = None;
+
+                    let g_bal = ui.group(|ui| {
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("⚖️ Stereo Balance & Trim").strong().size(12.0).color(Color32::from_rgb(15, 23, 42)));
+                                let bal_lbl = if current_bal.abs() < 1.0 {
+                                    "Center".to_string()
+                                } else if current_bal < 0.0 {
+                                    format!("L {:.0}%", current_bal.abs())
+                                } else {
+                                    format!("R {:.0}%", current_bal)
+                                };
+                                ui.label(egui::RichText::new(bal_lbl).strong().size(10.5).color(Color32::from_rgb(79, 70, 229)));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    render_routing_help_button(
+                                        ui,
+                                        "Stereo Balance",
+                                        NodeType::StereoBalance,
+                                        &mut self.active_filter_tutorial,
+                                        &mut self.filter_tutorial_step,
+                                    );
+                                });
+                            });
+                            ui.label(egui::RichText::new("Panning kurva daya konstan sinus/kosinus dari -100% (Kiri) ke +100% (Kanan).").size(10.0).color(Color32::from_rgb(100, 116, 139)));
+
+                            if has_bal {
+                                let mut val = current_bal;
+                                if ui.add(egui::Slider::new(&mut val, -100.0..=100.0).suffix("%").show_value(false)).changed() {
+                                    bal_change = Some(val);
+                                }
+                                ui.horizontal(|ui| {
+                                    for (lbl, p_val) in [("◀ L 50%", -50.0), ("● Center", 0.0), ("R 50% ▶", 50.0)] {
+                                        if ui.button(egui::RichText::new(lbl).size(9.0)).clicked() {
+                                            bal_change = Some(p_val);
+                                        }
+                                    }
+                                });
+                            }
+
+                            ui.horizontal(|ui| {
+                                if ui.button(egui::RichText::new("➕ Tambah ke Chain").strong()).clicked() {
+                                    self.add_modular_filter(NodeType::StereoBalance);
+                                }
+                                if has_bal {
+                                    if ui.button(egui::RichText::new("🗑️").size(11.0).color(Color32::from_rgb(239, 68, 68))).on_hover_text("Hapus modul ini dari canvas").clicked() {
+                                        delete_filter_type = Some(NodeType::StereoBalance);
+                                    }
+                                }
+                            });
+                        });
+                    });
+                    g_bal.response.context_menu(|ui| {
+                        ui.label(egui::RichText::new("⚖️ Stereo Balance & Trim").strong());
+                        ui.separator();
+                        if ui.button("➕ Tambah ke Signal Chain").clicked() {
+                            self.add_modular_filter(NodeType::StereoBalance);
+                            ui.close();
+                        }
+                        if has_bal {
+                            if ui.button("🗑️ Hapus Semua dari Canvas").clicked() {
+                                delete_filter_type = Some(NodeType::StereoBalance);
+                                ui.close();
+                            }
+                        }
+                    });
+
+                    if let Some(new_val) = bal_change {
+                        if let Some(n) = self.nodes.iter_mut().find(|n| n.node_type == NodeType::StereoBalance) {
+                            n.param_val = new_val;
+                            if new_val.abs() < 1.0 {
+                                n.sub1 = "Center 0.0 dB".to_string();
+                            } else if new_val < 0.0 {
+                                n.sub1 = format!("L {:.0}% / R {:.0}%", 50.0 + new_val.abs() * 0.5, 50.0 - new_val.abs() * 0.5);
+                            } else {
+                                n.sub1 = format!("L {:.0}% / R {:.0}%", 50.0 - new_val * 0.5, 50.0 + new_val * 0.5);
+                            }
+                            let nid = n.id;
+                            if self.chain_mode != ChainMode::DspActive {
+                                self.set_chain_mode(ChainMode::DspActive);
+                            }
+                            if let Some(ref engine) = self.audio_engine {
+                                engine.set_node_param(nid as u32, 0, new_val);
+                            }
+                        }
+                    }
                     ui.add_space(8.0);
 
                     // Filter 5: Equalizer Presets Card (Matches Filter 1-4 anatomy perfectly)
@@ -2887,6 +3947,12 @@ impl LunulaApp {
                     NodeType::SavedEqPreset(_) => Color32::from_rgb(168, 85, 247),
                     NodeType::Mixer => Color32::from_rgb(147, 51, 234),
                     NodeType::Splitter => Color32::from_rgb(245, 158, 11),
+                    NodeType::VolumeBooster => Color32::from_rgb(139, 92, 246),
+                    NodeType::AnalogPreamp => Color32::from_rgb(234, 88, 12),
+                    NodeType::DynamicLoudness => Color32::from_rgb(245, 158, 11),
+                    NodeType::SteppedAttenuator => Color32::from_rgb(6, 182, 212),
+                    NodeType::OpticalLeveler => Color32::from_rgb(180, 83, 9),
+                    NodeType::StereoBalance => Color32::from_rgb(79, 70, 229),
                     _ => Color32::from_rgb(14, 165, 233),
                 };
 
@@ -2916,6 +3982,12 @@ impl LunulaApp {
                             NodeType::SavedEqPreset(name) => ("🎛️", "EQUALIZER PRESET", self.nodes.iter().any(|n| matches!(&n.node_type, NodeType::SavedEqPreset(p) if p == name))),
                             NodeType::Mixer => ("🎚️", "MIXER / SUMMING BUS", self.nodes.iter().any(|n| n.node_type == NodeType::Mixer)),
                             NodeType::Splitter => ("🔀", "SPLITTER / Y-BRANCH BUS", self.nodes.iter().any(|n| n.node_type == NodeType::Splitter)),
+                            NodeType::VolumeBooster => ("⚡", "VOLUME BOOSTER (+24dB)", self.nodes.iter().any(|n| n.node_type == NodeType::VolumeBooster)),
+                            NodeType::AnalogPreamp => ("🎛️", "ANALOG PREAMP & TRIM", self.nodes.iter().any(|n| n.node_type == NodeType::AnalogPreamp)),
+                            NodeType::DynamicLoudness => ("🌙", "DYNAMIC LOUDNESS (ISO 226)", self.nodes.iter().any(|n| n.node_type == NodeType::DynamicLoudness)),
+                            NodeType::SteppedAttenuator => ("🔘", "STEPPED ATTENUATOR (64-STEP)", self.nodes.iter().any(|n| n.node_type == NodeType::SteppedAttenuator)),
+                            NodeType::OpticalLeveler => ("🛡️", "OPTICAL LEVELER (LA-2A)", self.nodes.iter().any(|n| n.node_type == NodeType::OpticalLeveler)),
+                            NodeType::StereoBalance => ("⚖️", "STEREO BALANCE & TRIM", self.nodes.iter().any(|n| n.node_type == NodeType::StereoBalance)),
                             _ => ("🎛️", "FILTER MODULAR", true),
                         };
 
@@ -3086,6 +4158,206 @@ impl LunulaApp {
                                         "🔀 Lossless Duplication: Kedua output menerima aliran audio bitstream identik tanpa latensi",
                                         egui::FontId::proportional(8.5),
                                         Color32::from_rgb(217, 119, 6),
+                                    );
+                                } else if filter_type == NodeType::VolumeBooster {
+                                    let x_start = diag_rect.min.x + 24.0;
+                                    let x_end = diag_rect.max.x - 24.0;
+                                    let y_bot = diag_rect.max.y - 24.0;
+                                    let y_top = diag_rect.min.y + 22.0;
+
+                                    // Unity gain baseline (dashed)
+                                    p.line_segment([Pos2::new(x_start, y_bot - 8.0), Pos2::new(x_end, y_bot - 8.0)], Stroke::new(1.0, Color32::from_rgb(203, 213, 225)));
+                                    p.text(Pos2::new(x_start, y_bot - 14.0), egui::Align2::LEFT_BOTTOM, "0.0 dB (Unity)", egui::FontId::proportional(8.0), Color32::from_rgb(148, 163, 184));
+
+                                    // Linear clean amplification ramp
+                                    let p_ramp_start = Pos2::new(x_start, y_bot - 8.0);
+                                    let p_ramp_end = Pos2::new(x_end, y_top + 4.0);
+                                    p.line_segment([p_ramp_start, p_ramp_end], Stroke::new(2.5, theme_color));
+                                    p.circle_filled(p_ramp_end, 4.0, Color32::from_rgb(139, 92, 246));
+                                    p.text(Pos2::new(x_end, y_top - 2.0), egui::Align2::RIGHT_BOTTOM, "+24.0 dB Max (Uncolored)", egui::FontId::proportional(8.5), Color32::from_rgb(139, 92, 246));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 10.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "⚡ Pure Uncolored Clean Amp: Penguatan sinyal linier murni tanpa distorsi",
+                                        egui::FontId::proportional(8.5),
+                                        Color32::from_rgb(124, 58, 237),
+                                    );
+                                } else if filter_type == NodeType::AnalogPreamp {
+                                    let x_start = diag_rect.min.x + 24.0;
+                                    let x_mid = diag_rect.center().x;
+                                    let x_end = diag_rect.max.x - 24.0;
+                                    let y_mid = diag_rect.center().y - 6.0;
+
+                                    // Class-A soft saturation transfer curve (tanh curve)
+                                    let mut pts = Vec::new();
+                                    for i in 0..=20 {
+                                        let t = (i as f32 / 20.0) * 2.0 - 1.0;
+                                        let x = x_mid + t * (x_end - x_mid);
+                                        let y = y_mid - (t * 1.5).tanh() * 28.0;
+                                        pts.push(Pos2::new(x, y));
+                                    }
+                                    for seg in 0..pts.len() - 1 {
+                                        p.line_segment([pts[seg], pts[seg + 1]], Stroke::new(2.2, theme_color));
+                                    }
+
+                                    p.text(Pos2::new(x_start, y_mid + 20.0), egui::Align2::LEFT_TOP, "-24 dB Clean Trim", egui::FontId::proportional(8.0), Color32::from_rgb(148, 163, 184));
+                                    p.text(Pos2::new(x_mid, y_mid + 16.0), egui::Align2::CENTER_TOP, "0 dB Detent", egui::FontId::proportional(8.0), Color32::from_rgb(217, 119, 6));
+                                    p.text(Pos2::new(x_end, y_mid - 24.0), egui::Align2::RIGHT_BOTTOM, "+12 dB Class-A Saturation", egui::FontId::proportional(8.5), Color32::from_rgb(234, 88, 12));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 10.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "🎛️ Transformer Iron Core Warmth: Lembut meredam transient dengan harmonik musikal",
+                                        egui::FontId::proportional(8.5),
+                                        Color32::from_rgb(194, 65, 12),
+                                    );
+                                } else if filter_type == NodeType::DynamicLoudness {
+                                    let x_start = diag_rect.min.x + 20.0;
+                                    let x_mid = diag_rect.center().x;
+                                    let x_end = diag_rect.max.x - 20.0;
+                                    let y_mid = diag_rect.center().y - 4.0;
+
+                                    // ISO 226 Fletcher-Munson Smiley Curve
+                                    let mut pts = Vec::new();
+                                    for i in 0..=24 {
+                                        let t = i as f32 / 24.0;
+                                        let x = x_start + t * (x_end - x_start);
+                                        let lift = if t < 0.3 {
+                                            (1.0 - t / 0.3) * 16.0
+                                        } else if t > 0.7 {
+                                            ((t - 0.7) / 0.3) * 11.0
+                                        } else {
+                                            0.0
+                                        };
+                                        let y = y_mid - lift;
+                                        pts.push(Pos2::new(x, y));
+                                    }
+                                    for seg in 0..pts.len() - 1 {
+                                        p.line_segment([pts[seg], pts[seg + 1]], Stroke::new(2.4, theme_color));
+                                    }
+
+                                    p.text(Pos2::new(x_start, y_mid - 18.0), egui::Align2::LEFT_BOTTOM, "+8.5 dB Sub-Bass (<120Hz)", egui::FontId::proportional(8.0), Color32::from_rgb(217, 119, 6));
+                                    p.text(Pos2::new(x_mid, y_mid + 8.0), egui::Align2::CENTER_TOP, "Mid 1kHz (Flat 0dB)", egui::FontId::proportional(8.0), Color32::from_rgb(148, 163, 184));
+                                    p.text(Pos2::new(x_end, y_mid - 13.0), egui::Align2::RIGHT_BOTTOM, "+5.0 dB Air (>9kHz)", egui::FontId::proportional(8.0), Color32::from_rgb(217, 119, 6));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 10.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "🌙 Equal-Loudness Contour: Mengangkat bass & treble di malam hari / volume rendah",
+                                        egui::FontId::proportional(8.5),
+                                        Color32::from_rgb(217, 119, 6),
+                                    );
+                                } else if filter_type == NodeType::SteppedAttenuator {
+                                    let x_start = diag_rect.min.x + 20.0;
+                                    let x_end = diag_rect.max.x - 20.0;
+                                    let y_top = diag_rect.min.y + 24.0;
+                                    let y_bot = diag_rect.max.y - 28.0;
+
+                                    // Discrete stair-step descent (64-step illustration)
+                                    let num_steps = 12;
+                                    let step_w = (x_end - x_start) / num_steps as f32;
+                                    let step_h = (y_bot - y_top) / num_steps as f32;
+                                    for s in 0..num_steps {
+                                        let sx = x_start + s as f32 * step_w;
+                                        let sy = y_top + s as f32 * step_h;
+                                        p.line_segment([Pos2::new(sx, sy), Pos2::new(sx + step_w, sy)], Stroke::new(2.0, theme_color));
+                                        if s < num_steps - 1 {
+                                            p.line_segment([Pos2::new(sx + step_w, sy), Pos2::new(sx + step_w, sy + step_h)], Stroke::new(2.0, theme_color));
+                                        }
+                                    }
+
+                                    // DIM -20dB marker
+                                    let dim_x = x_start + 4.0 * step_w;
+                                    let dim_y = y_top + 4.0 * step_h;
+                                    p.circle_filled(Pos2::new(dim_x, dim_y), 4.0, Color32::from_rgb(6, 182, 212));
+                                    p.text(Pos2::new(dim_x + 8.0, dim_y), egui::Align2::LEFT_CENTER, "DIM -20 dB Quick Drop", egui::FontId::proportional(8.5), Color32::from_rgb(14, 116, 144));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 10.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "🔘 64-Step Discrete Ladder: Redaman pasif presisi tinggi tanpa kebocoran bit",
+                                        egui::FontId::proportional(8.5),
+                                        Color32::from_rgb(14, 116, 144),
+                                    );
+                                } else if filter_type == NodeType::OpticalLeveler {
+                                    let x_start = diag_rect.min.x + 24.0;
+                                    let x_end = diag_rect.max.x - 24.0;
+                                    let y_top = diag_rect.min.y + 22.0;
+                                    let y_bot = diag_rect.max.y - 26.0;
+
+                                    // Fast Stage 1 release curve (first 50% in 60ms) + Slow Stage 2 release (smooth tail)
+                                    let x_stage1 = x_start + (x_end - x_start) * 0.35;
+                                    let y_stage1 = y_top + (y_bot - y_top) * 0.55;
+
+                                    let cp1 = Pos2::new(x_start + 20.0, y_top + 2.0);
+                                    let cp2 = Pos2::new(x_stage1 - 10.0, y_stage1);
+                                    let curve1 = egui::epaint::CubicBezierShape::from_points_stroke(
+                                        [Pos2::new(x_start, y_top), cp1, cp2, Pos2::new(x_stage1, y_stage1)],
+                                        false,
+                                        Color32::TRANSPARENT,
+                                        Stroke::new(2.4, theme_color),
+                                    );
+                                    p.add(curve1);
+
+                                    let cp3 = Pos2::new(x_stage1 + 30.0, y_stage1 + 5.0);
+                                    let cp4 = Pos2::new(x_end - 20.0, y_bot);
+                                    let curve2 = egui::epaint::CubicBezierShape::from_points_stroke(
+                                        [Pos2::new(x_stage1, y_stage1), cp3, cp4, Pos2::new(x_end, y_bot)],
+                                        false,
+                                        Color32::TRANSPARENT,
+                                        Stroke::new(2.4, Color32::from_rgb(217, 119, 6)),
+                                    );
+                                    p.add(curve2);
+
+                                    p.circle_filled(Pos2::new(x_stage1, y_stage1), 3.5, Color32::from_rgb(180, 83, 9));
+                                    p.text(Pos2::new(x_start + 10.0, y_top - 2.0), egui::Align2::LEFT_BOTTOM, "Tahap 1: Cepat 60ms", egui::FontId::proportional(8.0), theme_color);
+                                    p.text(Pos2::new(x_end, y_stage1), egui::Align2::RIGHT_CENTER, "Tahap 2: Pelepasan Halus 1-5 Detik", egui::FontId::proportional(8.0), Color32::from_rgb(180, 83, 9));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 10.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "🛡️ Dual-Stage Optical Release: Leveling alami instrumen & vokal bebas efek pumping",
+                                        egui::FontId::proportional(8.5),
+                                        Color32::from_rgb(180, 83, 9),
+                                    );
+                                } else if filter_type == NodeType::StereoBalance {
+                                    let x_start = diag_rect.min.x + 24.0;
+                                    let x_mid = diag_rect.center().x;
+                                    let x_end = diag_rect.max.x - 24.0;
+                                    let y_mid = diag_rect.center().y - 6.0;
+
+                                    // Dual Sine / Cosine Constant-Power Panning Curves
+                                    let mut l_pts = Vec::new();
+                                    let mut r_pts = Vec::new();
+                                    for i in 0..=20 {
+                                        let t = i as f32 / 20.0;
+                                        let x = x_start + t * (x_end - x_start);
+                                        // Left channel power: cos(t * pi / 2)
+                                        let l_y = y_mid + 16.0 - (t * std::f32::consts::PI * 0.5).cos() * 26.0;
+                                        // Right channel power: sin(t * pi / 2)
+                                        let r_y = y_mid + 16.0 - (t * std::f32::consts::PI * 0.5).sin() * 26.0;
+                                        l_pts.push(Pos2::new(x, l_y));
+                                        r_pts.push(Pos2::new(x, r_y));
+                                    }
+                                    for seg in 0..l_pts.len() - 1 {
+                                        p.line_segment([l_pts[seg], l_pts[seg + 1]], Stroke::new(2.2, Color32::from_rgb(99, 102, 241)));
+                                        p.line_segment([r_pts[seg], r_pts[seg + 1]], Stroke::new(2.2, Color32::from_rgb(168, 85, 247)));
+                                    }
+
+                                    // Center detent point
+                                    p.circle_filled(Pos2::new(x_mid, y_mid - 2.5), 3.5, Color32::WHITE);
+                                    p.circle_stroke(Pos2::new(x_mid, y_mid - 2.5), 3.5, Stroke::new(1.5, theme_color));
+                                    p.text(Pos2::new(x_start, y_mid - 12.0), egui::Align2::LEFT_BOTTOM, "Left Channel", egui::FontId::proportional(8.5), Color32::from_rgb(79, 70, 229));
+                                    p.text(Pos2::new(x_mid, y_mid + 16.0), egui::Align2::CENTER_TOP, "Center: Power Konstan", egui::FontId::proportional(8.0), Color32::from_rgb(100, 116, 139));
+                                    p.text(Pos2::new(x_end, y_mid - 12.0), egui::Align2::RIGHT_BOTTOM, "Right Channel", egui::FontId::proportional(8.5), Color32::from_rgb(147, 51, 234));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 10.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "⚖️ Constant-Power Pan: Daya akustik konstan tanpa penurunan volume di tengah",
+                                        egui::FontId::proportional(8.5),
+                                        Color32::from_rgb(79, 70, 229),
                                     );
                                 } else {
                                     let cy = diag_rect.center().y;
@@ -3394,6 +4666,48 @@ impl LunulaApp {
                                         ui.add_space(4.0);
                                         ui.label(egui::RichText::new("Fungsi Utama & Keunggulan:").strong().size(11.0).color(Color32::from_rgb(217, 119, 6)));
                                         ui.label(egui::RichText::new("• Pasangan Sejati Modul Mixer: Memungkinkan routing Dry/Wet paralel tanpa merusak kabel sinyal utama.\n• Zero Phase Delay (Fase Sinkron): Kedua pin memancarkan sampel bitstream yang sinkron mikrodetik yang sama, mencegah distorsi fase (comb filtering) saat disatukan kembali di Mixer.\n• Bit-Accurate Clone: Tidak ada penurunan gain maupun penurunan dynamic range sinyal.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
+                                    } else if filter_type == NodeType::VolumeBooster {
+                                        ui.label(egui::RichText::new("Apa itu Pure Volume Booster?").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("Pure Volume Booster adalah modul penguat gain murni berpresisi 64-bit float (f64) dari 0.0 dB hingga +24.0 dB tanpa pewarnaan atau degradasi akustik.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("Karakteristik & Keunggulan:").strong().size(11.0).color(Color32::from_rgb(139, 92, 246)));
+                                        ui.label(egui::RichText::new("• 100% Transparent Amp: Penguatan sinyal murni tanpa saturasi trafo atau perubahan respon frekuensi.\n• Soft-Limit Guard: Dilengkapi algoritma proteksi batas lembut di ambang digital peak agar tidak terjadi distorsi keras (harsh digital clipping).\n• Sangat Ideal untuk Lagu Rekaman Rendah: Mengangkat rekaman vinyl atau master audio klasik yang terlalu pelan.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
+                                    } else if filter_type == NodeType::AnalogPreamp {
+                                        ui.label(egui::RichText::new("Apa itu Analog Preamp & Trim?").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("Analog Preamp & Trim adalah tahap penguatan gain studio (-24.0 dB s/d +12.0 dB) yang mereplikasi saturasi trafo analog diskrit Class-A.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("Karakteristik & Keunggulan:").strong().size(11.0).color(Color32::from_rgb(234, 88, 12)));
+                                        ui.label(egui::RichText::new("• Transformer Core Saturation: Saat gain dinaikkan di atas 0 dB, gelombang transient instrumen dan vokal dibulatkan dengan kehangatan harmonik musikal.\n• Input Trim Attenuation: Menurunkan level gain hingga -24 dB untuk rekaman modern yang terlalu panas guna memulihkan headroom DAC.\n• Indikator Headroom Ladder: 4-LED meter visual memberi tahu status aman sinyal.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
+                                    } else if filter_type == NodeType::DynamicLoudness {
+                                        ui.label(egui::RichText::new("Apa itu Dynamic Loudness (ISO 226)?").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("Dynamic Loudness menerapkan kontur kurva equal-loudness standar internasional ISO 226 (Fletcher-Munson) untuk mengompensasi kelemahan sensitivitas pendengaran manusia pada volume rendah.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("Karakteristik & Keunggulan:").strong().size(11.0).color(Color32::from_rgb(245, 158, 11)));
+                                        ui.label(egui::RichText::new("• Bass & Treble Tetap Terdengar Penuh: Mengangkat bass (<120 Hz hingga +8.5 dB) dan treble (>9 kHz hingga +5.0 dB) saat mendengarkan musik di malam hari.\n• Mode Santai Malam Hari: Nikmati musik favorit dengan detail kaya tanpa harus menyetel volume speaker keras-keras.\n• Kendali Kedalaman (Depth 0-100%): Sesuaikan kekuatan kompensasi kontur sesuai headphone atau speaker Anda.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
+                                    } else if filter_type == NodeType::SteppedAttenuator {
+                                        ui.label(egui::RichText::new("Apa itu Stepped Attenuator?").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("Stepped Attenuator mereplikasi rotary attenuator pasif 64-langkah berbasis resistor ladder presisi tinggi (rentang -60.0 dB hingga 0.0 dB).").size(10.0).color(Color32::from_rgb(71, 85, 105)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("Karakteristik & Keunggulan:").strong().size(11.0).color(Color32::from_rgb(6, 182, 212)));
+                                        ui.label(egui::RichText::new("• Resolusi Diskrit 1.0 dB: Menghilangkan distorsi resolusi dan ketidakseimbangan channel yang sering terjadi pada potensiometer analog murah.\n• Tombol Cepat [DIM -20dB]: Redam volume seketika sebesar 20 dB saat Anda perlu berbicara atau menerima panggilan telepon.\n• Zero Jitter & Bit-Accurate: Sinyal diturunkan dengan perkalian f64 bit-sempurna tanpa truncation noise.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
+                                    } else if filter_type == NodeType::OpticalLeveler {
+                                        ui.label(egui::RichText::new("Apa itu Studio Optical Leveler?").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("Studio Optical Leveler adalah dynamic leveler legendaris berbasis sel photocell optocoupler (terinspirasi dari kompresor studio Teletronix LA-2A).").size(10.0).color(Color32::from_rgb(71, 85, 105)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("Karakteristik & Keunggulan:").strong().size(11.0).color(Color32::from_rgb(180, 83, 9)));
+                                        ui.label(egui::RichText::new("• Pelepasan 2-Tahap Alami (Two-Stage Release): Pelepasan cepat 50% awal dalam 60 ms, disusul pelepasan lambat bertahap selama beberapa detik. Sangat transparan tanpa efek napas/pumping.\n• Menjinakkan Dinamika Vokal & Akustik: Meratakan lonjakan vokal mendadak sehingga vokal terdengar konsisten dan intim di telinga.\n• Indikator Jarum VU Meter: Jarum meter bergerak secara visual menunjukkan reduksi puncak sinyal.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
+                                    } else if filter_type == NodeType::StereoBalance {
+                                        ui.label(egui::RichText::new("Apa itu Stereo Balance & Trim?").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("Stereo Balance & Trim adalah kendali posisi panorama panggung suara stereo menggunakan kurva panning Constant-Power sinus dan kosinus (-100% Kiri s/d +100% Kanan).").size(10.0).color(Color32::from_rgb(71, 85, 105)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("Karakteristik & Keunggulan:").strong().size(11.0).color(Color32::from_rgb(79, 70, 229)));
+                                        ui.label(egui::RichText::new("• Daya Akustik Konstan (Constant-Power Panning): Tidak ada penurunan energi suara saat instrumen berada di tengah (Center detent 0 dB).\n• Kompensasi Pendengaran & Speaker Ruangan: Koreksi ketidakseimbangan posisi duduk pendengar atau perbedaan sensitivitas telinga kiri dan kanan.\n• Snapping Center Detent: Slider mudah dikembalikan ke titik imbang tengah 0.0 dB.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
                                     } else {
                                         ui.label(egui::RichText::new("Karakter Suara Modul").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
                                         ui.label(egui::RichText::new("Modul ini dirancang khusus untuk memproses karakter tonal, kedalaman analog, atau batas keamanan sinyal audio Anda secara real-time.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
@@ -3457,6 +4771,24 @@ impl LunulaApp {
                                     } else if filter_type == NodeType::Splitter {
                                         ui.label(egui::RichText::new("Karakteristik Operasional & Mode Audio").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
                                         ui.label(egui::RichText::new("• Otomatis & Bebas Penyetelan:\n  Splitter tidak membutuhkan slider atau kenop karena bertugas menduplikasi sinyal 100% secara akurat dan transparan.\n\n• Pasangan Sempurna dengan Mixer (Diamond Loop):\n  - Splitter: Gerbang Pembagi (1 In ➔ 2 Out)\n  - Mixer: Gerbang Penggabung (2 In ➔ 1 Out)\n  Kombinasi keduanya menciptakan arsitektur parallel processing profesional standar studio rekaman!\n\n• Mode Bit-Perfect:\n  Saat beralih ke Bit-Perfect, seluruh modul termasuk Splitter dilewati (direct stream 1:1) ke DAC hardware.").size(10.0).color(Color32::from_rgb(51, 65, 85)));
+                                    } else if filter_type == NodeType::VolumeBooster {
+                                        ui.label(egui::RichText::new("Mengatur Volume Booster & Mode Audio").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("• Slider Real-Time (0 s/d +24 dB):\n  Tarik fader langsung di kartu kanvas atau sidebar kanan. Gain bertambah mulus tanpa bunyi 'zipper click'.\n\n• Tombol Cepat Preset (+3dB, +6dB, +12dB, +18dB):\n  Gunakan preset cepat untuk memilih penguatan standar tanpa perlu menggeser manual.\n\n• Mode Bit-Perfect:\n  Saat beralih ke Bit-Perfect, booster otomatis dilewati demi integritas 1:1 data stream.").size(10.0).color(Color32::from_rgb(51, 65, 85)));
+                                    } else if filter_type == NodeType::AnalogPreamp {
+                                        ui.label(egui::RichText::new("Mengatur Preamp & Saturasi Class-A").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("• Dial Putar & Slider (-24 s/d +12 dB):\n  Putar dial aluminium atau gunakan slider trim. Titik tengah 0 dB merupakan detent netral (unity gain).\n\n• Preset Studio Cepat:\n  - -6dB Trim: Mengamankan lagu modern dari inter-sample peak.\n  - 0dB Unity: Penyangga linier murni.\n  - +3dB / +6dB: Mengaktifkan saturasi trafo analog Class-A untuk vokal hangat.\n\n• Mode Bit-Perfect:\n  Preamp otomatis di-bypass saat Bit-Perfect diaktifkan.").size(10.0).color(Color32::from_rgb(51, 65, 85)));
+                                    } else if filter_type == NodeType::DynamicLoudness {
+                                        ui.label(egui::RichText::new("Mengatur Kontur Loudness ISO 226").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("• Slider Kedalaman (0% s/d 100%):\n  Atur intensitas senyum kurva frekuensi dari 0% (datar) hingga 100% (penuh).\n\n• Rekomendasi Penggunaan:\n  - 25% Mild: Untuk speaker desktop jarak dekat (near-field).\n  - 50% Night: Rekomendasi standar mendengarkan musik santai di malam hari.\n  - 75% - 100%: Untuk headphone berkarakter dingin/tipis atau rekaman lama yang minim bass.\n\n• Mode Bit-Perfect:\n  Kompensasi loudness otomatis dilewati saat beralih ke Bit-Perfect.").size(10.0).color(Color32::from_rgb(51, 65, 85)));
+                                    } else if filter_type == NodeType::SteppedAttenuator {
+                                        ui.label(egui::RichText::new("Mengatur Stepped Attenuator & DIM").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("• Stepped Slider (-60 dB s/d 0 dB):\n  Melompat presisi 1.0 dB per step, meniru klik mekanis resistor ladder audiophile.\n\n• Tombol Cepat [DIM -20dB]:\n  Klik tombol DIM langsung di kartu kanvas atau sidebar untuk menurunkan level ke -20 dB seketika, dan klik lagi untuk kembali ke volume awal.\n\n• Mode Bit-Perfect:\n  Saat mode Bit-Perfect aktif, seluruh peredaman digital dilewati murni ke DAC.").size(10.0).color(Color32::from_rgb(51, 65, 85)));
+                                    } else if filter_type == NodeType::OpticalLeveler {
+                                        ui.label(egui::RichText::new("Mengatur Peak Reduction LA-2A").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("• Slider Peak Reduction (0% s/d 100%):\n  Mengatur ambang sensitivitas kompresi optik. Semakin tinggi persentase, semakin intim dan rata dinamika suaranya.\n\n• Rekomendasi Preset:\n  - 20% Light: Leveling transparan untuk musik orkestra dan jazz.\n  - 40% Classic: Karakter LA-2A klasik untuk vokal pop dan akustik.\n  - 65% Heavy: Mengunci vokal di depan panggung suara (in-your-face vocal).\n\n• Mode Bit-Perfect:\n  Leveler otomatis di-bypass saat beralih ke Bit-Perfect.").size(10.0).color(Color32::from_rgb(51, 65, 85)));
+                                    } else if filter_type == NodeType::StereoBalance {
+                                        ui.label(egui::RichText::new("Mengatur Panning Stereo & Center Detent").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("• Slider Panorama (-100% Kiri s/d +100% Kanan):\n  Menggeser panggung suara dengan kurva daya konstan tanpa perubahan level akustik total.\n\n• Tombol Instan Center:\n  Klik tombol '● Center' di sidebar untuk mengembalikan posisi instrumen ke titik tengah 0.0 dB secara instan.\n\n• Mode Bit-Perfect:\n  Panning stereo dilewati murni saat mode Bit-Perfect diaktifkan.").size(10.0).color(Color32::from_rgb(51, 65, 85)));
                                     } else {
                                         ui.label(egui::RichText::new("Mengatur Slider & Mode Audio").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
                                         ui.label(egui::RichText::new("• Geser Slider Cutoff:\n  Anda dapat menggeser slider langsung di atas kartu kanvas dari 100 Hz hingga 10 kHz. Perubahan frekuensi terjadi seketika tanpa jeda dan tanpa perlu me-rebuild graph sinyal.\n\n• Perilaku pada Mode Bit-Perfect:\n  Mode Bit-Perfect mewajibkan data lagu dikirim ke DAC murni 1:1 tanpa modifikasi 1 bit pun. Oleh karena itu, saat mode Bit-Perfect aktif, seluruh filter kustom otomatis DILEWATI (bypassed) melalui kawat jumper abu-abu langsung.\n\n• Cara Mengaktifkan Efek:\n  Cukup klik kartu DSP ENGINE pada kanvas atau tekan tombol toggle mode ke 'DSP Active'. Filter akan seketika kembali memproses suara.").size(10.0).color(Color32::from_rgb(51, 65, 85)));

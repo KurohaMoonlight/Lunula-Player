@@ -1102,8 +1102,9 @@ impl LunulaApp {
         use std::collections::{HashMap, VecDeque};
         use crate::models::NodeType;
         use crate::audio::{
-            BassGuardEffect, Effect, GraphicEqEffect, LowPassFilterEffect, MixerEffect, PassthroughEffect, PresetEqEffect, SplitterEffect, StereoWidenerEffect,
-            TubeWarmerEffect, VolumeAttenuatorEffect,
+            AnalogPreampEffect, BassGuardEffect, DynamicLoudnessEffect, Effect, GraphicEqEffect, LowPassFilterEffect, MixerEffect, OpticalLevelerEffect,
+            PassthroughEffect, PresetEqEffect, SplitterEffect, SteppedAttenuatorEffect, StereoBalanceEffect, StereoWidenerEffect,
+            TubeWarmerEffect, VolumeAttenuatorEffect, VolumeBoosterEffect,
         };
 
         let chain_eval = self.evaluate_signal_chain();
@@ -1169,7 +1170,8 @@ impl LunulaApp {
                         Box::new(GraphicEqEffect::new(self.eq_bands, sample_rate))
                     }
                     NodeType::TubeWarmer => {
-                        Box::new(TubeWarmerEffect::new())
+                        let drive = if (0.0..=100.0).contains(&node.param_val) { node.param_val } else { 35.0 };
+                        Box::new(TubeWarmerEffect::new(drive))
                     }
                     NodeType::StereoWidener => {
                         Box::new(StereoWidenerEffect::new(1.35))
@@ -1193,6 +1195,30 @@ impl LunulaApp {
                     }
                     NodeType::SavedEqPreset(name) => {
                         Box::new(PresetEqEffect::from_preset(name, sample_rate))
+                    }
+                    NodeType::VolumeBooster => {
+                        let boost = if (0.0..=24.0).contains(&node.param_val) { node.param_val } else { 6.0 };
+                        Box::new(VolumeBoosterEffect::new(boost))
+                    }
+                    NodeType::AnalogPreamp => {
+                        let trim = if (-24.0..=12.0).contains(&node.param_val) { node.param_val } else { 0.0 };
+                        Box::new(AnalogPreampEffect::new(trim))
+                    }
+                    NodeType::DynamicLoudness => {
+                        let depth = if (0.0..=100.0).contains(&node.param_val) { node.param_val } else { 50.0 };
+                        Box::new(DynamicLoudnessEffect::new(depth, sample_rate))
+                    }
+                    NodeType::SteppedAttenuator => {
+                        let step = if (-60.0..=0.0).contains(&node.param_val) { node.param_val } else { -12.0 };
+                        Box::new(SteppedAttenuatorEffect::new(step, false))
+                    }
+                    NodeType::OpticalLeveler => {
+                        let drive = if (0.0..=100.0).contains(&node.param_val) { node.param_val } else { 50.0 };
+                        Box::new(OpticalLevelerEffect::new(drive, sample_rate as f32))
+                    }
+                    NodeType::StereoBalance => {
+                        let bal = if (-100.0..=100.0).contains(&node.param_val) { node.param_val } else { 0.0 };
+                        Box::new(StereoBalanceEffect::new(bal))
                     }
                     _ => {
                         Box::new(PassthroughEffect)

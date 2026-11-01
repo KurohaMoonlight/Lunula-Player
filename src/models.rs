@@ -255,6 +255,13 @@ pub enum NodeType {
     LowPassFilter,
     Mixer,
     Splitter,
+    // Volume Manipulation Suite
+    VolumeBooster,
+    AnalogPreamp,
+    DynamicLoudness,
+    SteppedAttenuator,
+    OpticalLeveler,
+    StereoBalance,
 }
 
 impl NodeType {
@@ -270,6 +277,12 @@ impl NodeType {
                 | NodeType::LowPassFilter
                 | NodeType::Mixer
                 | NodeType::Splitter
+                | NodeType::VolumeBooster
+                | NodeType::AnalogPreamp
+                | NodeType::DynamicLoudness
+                | NodeType::SteppedAttenuator
+                | NodeType::OpticalLeveler
+                | NodeType::StereoBalance
         )
     }
 }
