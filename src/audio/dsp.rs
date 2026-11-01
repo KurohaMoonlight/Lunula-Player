@@ -597,6 +597,22 @@ impl Effect for MixerEffect {
     }
 }
 
+/// Passthrough / Wire: Pure identity effect for graph routing nodes (Source, Buffer, Resampler, DAC)
+#[derive(Clone, Debug, Default)]
+pub struct PassthroughEffect;
+
+impl Effect for PassthroughEffect {
+    fn process_block(&mut self, _left: &mut [f32], _right: &mut [f32]) {}
+    fn reset(&mut self) {}
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
+    fn name(&self) -> &str {
+        "Passthrough (Wire)"
+    }
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
 /// Generic Parametric EQ Band Configuration
 #[derive(Clone, Debug)]
 pub struct ParametricBandConfig {
@@ -1294,5 +1310,79 @@ mod tests {
         assert_eq!(mixer.mix_ratio(), Some(0.2));
         mixer.set_param(0, 1.5); // clamps to 1.0
         assert_eq!(mixer.mix_ratio(), Some(1.0));
+    }
+
+    #[test]
+    fn test_mixer_pipeline_end_to_end_summing() {
+        let mut dsp = DspPipeline::new(48000.0);
+
+        // Build a split signal chain DAG:
+        // Node 1 (Buffer / Source): Passthrough
+        // Node 2 (LPF): LowPassFilter 800 Hz (fed from Node 1)
+        // Node 3 (Mixer): Crossfader (Pin A from Node 1, Pin B from Node 2)
+        // Edges: (1, 2) [Dry -> LPF], (1, 3) [Dry -> Mixer Pin A], (2, 3) [LPF -> Mixer Pin B]
+        let node1 = crate::audio::GraphNode {
+            id: 1,
+            name: "RAM Buffer".to_string(),
+            effect: Box::new(PassthroughEffect),
+        };
+        let node2 = crate::audio::GraphNode {
+            id: 2,
+            name: "Low-Pass Filter".to_string(),
+            effect: Box::new(LowPassFilterEffect::new(800.0, 48000.0)),
+        };
+        let node3 = crate::audio::GraphNode {
+            id: 3,
+            name: "Mixer / Summing Bus".to_string(),
+            effect: Box::new(MixerEffect::new(0.5)),
+        };
+
+        let graph = crate::audio::SignalChainGraph {
+            is_complete: true,
+            nodes: vec![node1, node2, node3],
+            edges: vec![(1, 2), (1, 3), (2, 3)],
+            topological_order: vec![1, 2, 3],
+            effects: vec![],
+        };
+
+        dsp.set_signal_chain(graph);
+
+        // Test 1: Mix = 0.0 (100% Pin A = 100% Dry)
+        // A high frequency treble sine wave (5000 Hz) should pass through unattenuated!
+        dsp.set_node_param(3, 0, 0.0);
+        let mut left = [0.0f32; 1024];
+        let mut right = [0.0f32; 1024];
+        for i in 0..1024 {
+            let t = i as f32 / 48000.0;
+            left[i] = (2.0 * std::f32::consts::PI * 5000.0 * t).sin();
+            right[i] = left[i];
+        }
+        dsp.process_block(&mut left, &mut right);
+        let peak_dry = left[500..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(peak_dry > 0.90, "At Mix = 0.0 (Full Pin A Dry), 5000 Hz treble must pass through fully: got {}", peak_dry);
+
+        // Test 2: Mix = 1.0 (100% Pin B = 100% Wet LPF)
+        // The same 5000 Hz treble sine wave should be heavily cut!
+        dsp.set_node_param(3, 0, 1.0);
+        for i in 0..1024 {
+            let t = i as f32 / 48000.0;
+            left[i] = (2.0 * std::f32::consts::PI * 5000.0 * t).sin();
+            right[i] = left[i];
+        }
+        dsp.process_block(&mut left, &mut right);
+        let peak_wet = left[500..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(peak_wet < 0.15, "At Mix = 1.0 (Full Pin B Wet), 5000 Hz treble must be heavily attenuated: got {}", peak_wet);
+
+        // Test 3: Mix = 0.5 (Center Mix)
+        // Amplitude should be approximately sqrt(0.5) * peak_dry = ~0.707
+        dsp.set_node_param(3, 0, 0.5);
+        for i in 0..1024 {
+            let t = i as f32 / 48000.0;
+            left[i] = (2.0 * std::f32::consts::PI * 5000.0 * t).sin();
+            right[i] = left[i];
+        }
+        dsp.process_block(&mut left, &mut right);
+        let peak_mid = left[500..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!((peak_mid - 0.707).abs() < 0.12, "At Mix = 0.5, amplitude should follow constant-power gain ~0.707: got {}", peak_mid);
     }
 }

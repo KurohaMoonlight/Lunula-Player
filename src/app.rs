@@ -1146,7 +1146,7 @@ impl LunulaApp {
         use std::collections::{HashMap, VecDeque};
         use crate::models::NodeType;
         use crate::audio::{
-            BassGuardEffect, Effect, GraphicEqEffect, LowPassFilterEffect, MixerEffect, PresetEqEffect, StereoWidenerEffect,
+            BassGuardEffect, Effect, GraphicEqEffect, LowPassFilterEffect, MixerEffect, PassthroughEffect, PresetEqEffect, StereoWidenerEffect,
             TubeWarmerEffect, VolumeAttenuatorEffect,
         };
 
@@ -1207,51 +1207,58 @@ impl LunulaApp {
 
         for &id in &ordered_node_ids {
             if let Some(node) = self.nodes.iter().find(|n| n.id == id) {
-                let effect_opt: Option<Box<dyn Effect>> = match &node.node_type {
+                let is_custom_effect = node.node_type.is_dsp_or_effect();
+                let effect: Box<dyn Effect> = match &node.node_type {
                     NodeType::Dsp => {
-                        Some(Box::new(GraphicEqEffect::new(self.eq_bands, sample_rate)))
+                        Box::new(GraphicEqEffect::new(self.eq_bands, sample_rate))
                     }
                     NodeType::TubeWarmer => {
-                        Some(Box::new(TubeWarmerEffect::new()))
+                        Box::new(TubeWarmerEffect::new())
                     }
                     NodeType::StereoWidener => {
-                        Some(Box::new(StereoWidenerEffect::new(1.35)))
+                        Box::new(StereoWidenerEffect::new(1.35))
                     }
                     NodeType::BassGuard => {
-                        Some(Box::new(BassGuardEffect::new(sample_rate)))
+                        Box::new(BassGuardEffect::new(sample_rate))
                     }
                     NodeType::VolumeAttenuator => {
-                        Some(Box::new(VolumeAttenuatorEffect::new(-6.02)))
+                        Box::new(VolumeAttenuatorEffect::new(-6.02))
                     }
                     NodeType::LowPassFilter => {
                         let cutoff = if node.param_val > 50.0 { node.param_val as f64 } else { 800.0 };
-                        Some(Box::new(LowPassFilterEffect::new(cutoff, sample_rate)))
+                        Box::new(LowPassFilterEffect::new(cutoff, sample_rate))
                     }
                     NodeType::Mixer => {
                         let mix = if (0.0..=1.0).contains(&node.param_val) { node.param_val } else { 0.5 };
-                        Some(Box::new(MixerEffect::new(mix)))
+                        Box::new(MixerEffect::new(mix))
                     }
                     NodeType::SavedEqPreset(name) => {
-                        Some(Box::new(PresetEqEffect::from_preset(name, sample_rate)))
+                        Box::new(PresetEqEffect::from_preset(name, sample_rate))
                     }
-                    _ => None,
+                    _ => {
+                        Box::new(PassthroughEffect)
+                    }
                 };
 
-                if let Some(eff) = effect_opt {
-                    effects.push(eff.clone());
-                    nodes.push(crate::audio::GraphNode {
-                        id: id as u32,
-                        name: node.title.clone(),
-                        effect: eff,
-                    });
-                    topological_order.push(id as u32);
+                if is_custom_effect {
+                    effects.push(effect.clone());
                 }
+                nodes.push(crate::audio::GraphNode {
+                    id: id as u32,
+                    name: node.title.clone(),
+                    effect,
+                });
+                topological_order.push(id as u32);
             }
         }
 
-        let edges: Vec<(u32, u32)> = chain_eval.flowing_cables.iter()
-            .map(|&(from, to)| (from as u32, to as u32))
-            .collect();
+        // Preserve connection order so Pin A is always parent 0 and Pin B is parent 1
+        let mut edges: Vec<(u32, u32)> = Vec::new();
+        for conn in &self.connections {
+            if chain_eval.flowing_cables.contains(&(conn.from_node, conn.to_node)) {
+                edges.push((conn.from_node as u32, conn.to_node as u32));
+            }
+        }
 
         crate::audio::SignalChainGraph {
             is_complete: true,
