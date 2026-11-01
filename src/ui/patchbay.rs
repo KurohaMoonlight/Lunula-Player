@@ -2824,12 +2824,13 @@ impl LunulaApp {
                     });
                     ui.add_space(8.0);
 
-                    // Filter 1: Tube Warmer
+                    // Filter 1: Tube Warmer (Coming Soon)
                     let has_tube = self.nodes.iter().any(|n| n.node_type == NodeType::TubeWarmer);
                     let g1 = ui.group(|ui| {
                         ui.vertical(|ui| {
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new("🔥 Tube Warmer (Analog)").strong().size(12.5).color(Color32::from_rgb(15, 23, 42)));
+                                ui.label(egui::RichText::new("🚧 Coming Soon").size(10.0).strong().color(Color32::from_rgb(217, 119, 6)));
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     render_routing_help_button(
                                         ui,
@@ -2837,12 +2838,12 @@ impl LunulaApp {
                                         NodeType::TubeWarmer,
                                         &mut self.active_filter_tutorial,
                                         &mut self.filter_tutorial_step,
-                                    );
+                                        );
                                 });
                             });
-                            ui.label(egui::RichText::new("Harmonik ganjil-genap lampu tabung vintage untuk suara vokal tebal.").size(10.5).color(Color32::from_rgb(100, 116, 139)));
+                            ui.label(egui::RichText::new("Harmonik ganjil-genap lampu tabung vintage untuk suara vokal tebal (Mesin DSP sedang dalam pengembangan).").size(10.5).color(Color32::from_rgb(100, 116, 139)));
                             ui.horizontal(|ui| {
-                                if ui.button(egui::RichText::new("➕ Tambah ke Chain").strong()).clicked() {
+                                if ui.button(egui::RichText::new("🚧 Coming Soon").strong().color(Color32::from_rgb(180, 83, 9))).on_hover_text("Mesin DSP filter ini sedang dalam antrean pengembangan").clicked() {
                                     self.add_modular_filter(NodeType::TubeWarmer);
                                 }
                                 if has_tube {
@@ -2854,7 +2855,7 @@ impl LunulaApp {
                         });
                     });
                     g1.response.context_menu(|ui| {
-                        ui.label(egui::RichText::new("🔥 Tube Warmer (Analog)").strong());
+                        ui.label(egui::RichText::new("🔥 Tube Warmer (Analog) 🚧 Coming Soon").strong());
                         ui.separator();
                         if ui.button("➕ Tambah ke Signal Chain").clicked() {
                             self.add_modular_filter(NodeType::TubeWarmer);
@@ -2869,12 +2870,13 @@ impl LunulaApp {
                     });
                     ui.add_space(8.0);
 
-                    // Filter 2: Spatial Stereo Widener
+                    // Filter 2: Spatial Stereo Widener (Coming Soon)
                     let has_widener = self.nodes.iter().any(|n| n.node_type == NodeType::StereoWidener);
                     let g2 = ui.group(|ui| {
                         ui.vertical(|ui| {
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new("🌐 Stereo 3D Widener").strong().size(12.5).color(Color32::from_rgb(15, 23, 42)));
+                                ui.label(egui::RichText::new("🚧 Coming Soon").size(10.0).strong().color(Color32::from_rgb(217, 119, 6)));
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     render_routing_help_button(
                                         ui,
@@ -2885,9 +2887,9 @@ impl LunulaApp {
                                     );
                                 });
                             });
-                            ui.label(egui::RichText::new("Memperlebar soundstage instrumen menggunakan algoritma Haas delay.").size(10.5).color(Color32::from_rgb(100, 116, 139)));
+                            ui.label(egui::RichText::new("Memperlebar soundstage instrumen menggunakan algoritma Haas delay (Mesin DSP sedang dalam pengembangan).").size(10.5).color(Color32::from_rgb(100, 116, 139)));
                             ui.horizontal(|ui| {
-                                if ui.button(egui::RichText::new("➕ Tambah ke Chain").strong()).clicked() {
+                                if ui.button(egui::RichText::new("🚧 Coming Soon").strong().color(Color32::from_rgb(180, 83, 9))).on_hover_text("Mesin DSP filter ini sedang dalam antrean pengembangan").clicked() {
                                     self.add_modular_filter(NodeType::StereoWidener);
                                 }
                                 if has_widener {
@@ -2899,7 +2901,7 @@ impl LunulaApp {
                         });
                     });
                     g2.response.context_menu(|ui| {
-                        ui.label(egui::RichText::new("🌐 Stereo 3D Widener").strong());
+                        ui.label(egui::RichText::new("🌐 Stereo 3D Widener 🚧 Coming Soon").strong());
                         ui.separator();
                         if ui.button("➕ Tambah ke Signal Chain").clicked() {
                             self.add_modular_filter(NodeType::StereoWidener);
@@ -2914,12 +2916,13 @@ impl LunulaApp {
                     });
                     ui.add_space(8.0);
 
-                    // Filter 3: Bass Guard Limiter
+                    // Filter 3: Bass Guard Limiter (Coming Soon)
                     let has_bass = self.nodes.iter().any(|n| n.node_type == NodeType::BassGuard);
                     let g3 = ui.group(|ui| {
                         ui.vertical(|ui| {
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new("🛡️ Bass Guard & Limiter").strong().size(12.5).color(Color32::from_rgb(15, 23, 42)));
+                                ui.label(egui::RichText::new("🚧 Coming Soon").size(10.0).strong().color(Color32::from_rgb(217, 119, 6)));
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     render_routing_help_button(
                                         ui,
@@ -2930,9 +2933,9 @@ impl LunulaApp {
                                     );
                                 });
                             });
-                            ui.label(egui::RichText::new("Mencegah distorsi sub-bass berlebih dan melindungi driver headphone.").size(10.5).color(Color32::from_rgb(100, 116, 139)));
+                            ui.label(egui::RichText::new("Mencegah distorsi sub-bass berlebih dan melindungi driver headphone (Mesin DSP sedang dalam pengembangan).").size(10.5).color(Color32::from_rgb(100, 116, 139)));
                             ui.horizontal(|ui| {
-                                if ui.button(egui::RichText::new("➕ Tambah ke Chain").strong()).clicked() {
+                                if ui.button(egui::RichText::new("🚧 Coming Soon").strong().color(Color32::from_rgb(180, 83, 9))).on_hover_text("Mesin DSP filter ini sedang dalam antrean pengembangan").clicked() {
                                     self.add_modular_filter(NodeType::BassGuard);
                                 }
                                 if has_bass {
@@ -2944,7 +2947,7 @@ impl LunulaApp {
                         });
                     });
                     g3.response.context_menu(|ui| {
-                        ui.label(egui::RichText::new("🛡️ Bass Guard & Limiter").strong());
+                        ui.label(egui::RichText::new("🛡️ Bass Guard & Limiter 🚧 Coming Soon").strong());
                         ui.separator();
                         if ui.button("➕ Tambah ke Signal Chain").clicked() {
                             self.add_modular_filter(NodeType::BassGuard);
@@ -2959,12 +2962,13 @@ impl LunulaApp {
                     });
                     ui.add_space(8.0);
 
-                    // Filter 4: Volume Attenuator (Low Volume Pad)
+                    // Filter 4: Volume Attenuator (Low Volume Pad) (Coming Soon)
                     let has_vol = self.nodes.iter().any(|n| n.node_type == NodeType::VolumeAttenuator);
                     let g4 = ui.group(|ui| {
                         ui.vertical(|ui| {
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new("🔉 Volume Attenuator (-6dB)").strong().size(12.5).color(Color32::from_rgb(15, 23, 42)));
+                                ui.label(egui::RichText::new("🚧 Coming Soon").size(10.0).strong().color(Color32::from_rgb(217, 119, 6)));
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     render_routing_help_button(
                                         ui,
@@ -2975,9 +2979,9 @@ impl LunulaApp {
                                     );
                                 });
                             });
-                            ui.label(egui::RichText::new("Peredam gain pasif untuk mendengarkan di malam hari (Late-night low vol).").size(10.5).color(Color32::from_rgb(100, 116, 139)));
+                            ui.label(egui::RichText::new("Peredam gain pasif untuk malam hari (Gunakan Stepped Attenuator di suite bawah untuk kontrol aktif).").size(10.5).color(Color32::from_rgb(100, 116, 139)));
                             ui.horizontal(|ui| {
-                                if ui.button(egui::RichText::new("➕ Tambah ke Chain").strong()).clicked() {
+                                if ui.button(egui::RichText::new("🚧 Coming Soon").strong().color(Color32::from_rgb(180, 83, 9))).on_hover_text("Mesin DSP filter ini sedang dalam antrean pengembangan").clicked() {
                                     self.add_modular_filter(NodeType::VolumeAttenuator);
                                 }
                                 if has_vol {
@@ -2989,7 +2993,7 @@ impl LunulaApp {
                         });
                     });
                     g4.response.context_menu(|ui| {
-                        ui.label(egui::RichText::new("🔉 Volume Attenuator (-6dB)").strong());
+                        ui.label(egui::RichText::new("🔉 Volume Attenuator (-6dB) 🚧 Coming Soon").strong());
                         ui.separator();
                         if ui.button("➕ Tambah ke Signal Chain").clicked() {
                             self.add_modular_filter(NodeType::VolumeAttenuator);
@@ -3515,6 +3519,7 @@ impl LunulaApp {
                         ui.vertical(|ui| {
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new("🎛️ Equalizer Presets").strong().size(12.5).color(Color32::from_rgb(15, 23, 42)));
+                                ui.label(egui::RichText::new("🚧 Coming Soon").size(10.0).strong().color(Color32::from_rgb(217, 119, 6)));
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     render_routing_help_button(
                                         ui,
@@ -3525,7 +3530,7 @@ impl LunulaApp {
                                     );
                                 });
                             });
-                            ui.label(egui::RichText::new("Koleksi kurva frekuensi siap pakai untuk vokal, bass, dan akustik.").size(10.5).color(Color32::from_rgb(100, 116, 139)));
+                            ui.label(egui::RichText::new("Koleksi kurva frekuensi siap pakai untuk vokal, bass, dan akustik (Coming Soon).").size(10.5).color(Color32::from_rgb(100, 116, 139)));
                             ui.horizontal(|ui| {
                                 let btn_label = if is_open { "🎛️ Tutup Preset" } else { "➕ Tambah ke Chain" };
                                 let btn_resp = ui.button(egui::RichText::new(btn_label).strong());
