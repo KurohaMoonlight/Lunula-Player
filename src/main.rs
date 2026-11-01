@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use eframe::egui;
 use egui::{Color32, Stroke};
 use lunulaplayer::app::LunulaApp;
@@ -95,7 +97,9 @@ fn main() -> eframe::Result {
             cc.egui_ctx.set_style_of(egui::Theme::Light, style_arc.clone());
             cc.egui_ctx.set_style_of(egui::Theme::Dark, style_arc);
 
-            Ok(Box::new(LunulaApp::new(cc)))
+            Ok(stacker::grow(32 * 1024 * 1024, || {
+                Box::new(LunulaApp::new(cc))
+            }))
         }),
     )
 }

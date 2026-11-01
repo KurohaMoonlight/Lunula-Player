@@ -6,6 +6,14 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/icon.ico");
     println!("cargo:rerun-if-changed=assets/app.rc");
 
+    // Set main thread stack size to 8 MB via linker flag.
+    // LunulaApp is a large struct initialized on the main thread stack;
+    // the default 1 MB Windows stack is insufficient and causes stack overflow.
+    // eframe/winit requires event loop on the main OS thread, so we cannot
+    // use thread::Builder::stack_size() workaround — linker flag is the correct fix.
+    #[cfg(windows)]
+    println!("cargo:rustc-link-arg=-Wl,--stack,8388608"); // 8 MB — GNU ld (MinGW) stack flag
+
     #[cfg(windows)]
     {
         let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
