@@ -10,7 +10,7 @@ use crate::audio::dsp::DspPipeline;
 use crate::audio::output::AudioOutput;
 use crate::audio::resampler::StereoResampler;
 pub use crate::audio::types::calculate_effective_volume;
-use crate::audio::types::{AudioCommand, AudioEvent, ChainMode, PlaybackState, SignalPathReport};
+use crate::audio::types::{AudioCommand, AudioEvent, ChainMode, DspCommand, PlaybackState, SignalChainGraph, SignalPathReport};
 use crate::audio::visualizer::{VisualizerRingBuffer, FFT_SIZE};
 use rtrb::Producer;
 
@@ -110,6 +110,10 @@ impl AudioEngineController {
 
     pub fn set_signal_chain_graph(&self, graph: crate::audio::SignalChainGraph) {
         let _ = self.cmd_tx.send(AudioCommand::SetSignalChainGraph(graph));
+    }
+
+    pub fn set_node_param(&self, node_id: u32, param_id: u32, value: f32) {
+        let _ = self.cmd_tx.send(AudioCommand::SetNodeParam { node_id, param_id, value });
     }
 
     pub fn set_force_resample_48k(&self, force: bool) {
@@ -240,6 +244,19 @@ fn run_audio_worker(
     let mut selected_device: Option<String> = None;
     let is_dsp_active = Arc::new(AtomicBool::new(false));
 
+    let mut last_graph = SignalChainGraph::default();
+    let mut last_eq_bands = [0.0f32; 10];
+    let mut last_bypass = false;
+
+    let sync_output_dsp = |out: &AudioOutput, rate: u32, mode: ChainMode, bp: bool, graph: &SignalChainGraph, eq: &[f32; 10]| {
+        out.send_dsp_command(DspCommand::SetSampleRate(rate as f32));
+        out.send_dsp_command(DspCommand::SetEqBypass(mode != ChainMode::DspActive || bp));
+        out.send_dsp_command(DspCommand::SetSignalChainGraph(graph.clone()));
+        for (idx, &gain) in eq.iter().enumerate() {
+            out.send_dsp_command(DspCommand::SetEqBand { index: idx, gain_db: gain });
+        }
+    };
+
     let mut raw_chunk = [0.0f32; 2048];
     let mut raw_pos = 0;
     let mut raw_len = 0;
@@ -296,6 +313,7 @@ fn run_audio_worker(
                                         Arc::clone(&is_dsp_active),
                                     ) {
                                         Ok((out, prod)) => {
+                                            sync_output_dsp(&out, desired_rate, chain_mode, last_bypass, &last_graph, &last_eq_bands);
                                             output = Some(out);
                                             producer = Some(prod);
                                             current_stream_mode = Some(chain_mode);
@@ -304,7 +322,7 @@ fn run_audio_worker(
                                             let _ = event_tx.send(AudioEvent::Error(format!(
                                                 "Inisialisasi perangkat audio gagal: {}",
                                                 err
-                                            )));
+                                             )));
                                         }
                                     }
                                 } else if let Some(out) = &output {
@@ -324,6 +342,7 @@ fn run_audio_worker(
                                     dsp.set_sample_rate(device_rate as f32);
                                     dsp.set_eq_bypass(chain_mode != ChainMode::DspActive);
                                     dsp.reset_states();
+                                    sync_output_dsp(out, device_rate, chain_mode, last_bypass, &last_graph, &last_eq_bands);
 
                                     let report = create_signal_path_report(out, track_sample_rate, track_bit_depth, chain_mode);
                                     shared_bit_perfect.store(report.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
@@ -412,10 +431,26 @@ fn run_audio_worker(
                         shared_muted.store(muted, Ordering::Relaxed);
                     }
                     AudioCommand::SetEqBand { index, gain_db } => {
+                        if index < 10 {
+                            last_eq_bands[index] = gain_db;
+                        }
                         dsp.set_eq_band(index, gain_db);
+                        if let Some(out) = &output {
+                            out.send_dsp_command(DspCommand::SetEqBand { index, gain_db });
+                        }
+                    }
+                    AudioCommand::SetNodeParam { node_id, param_id, value } => {
+                        dsp.set_node_param(node_id, param_id, value);
+                        if let Some(out) = &output {
+                            out.send_dsp_command(DspCommand::SetNodeParam { node_id, param_id, value });
+                        }
                     }
                     AudioCommand::SetEqBypass(bypass) => {
+                        last_bypass = bypass;
                         dsp.set_eq_bypass(bypass);
+                        if let Some(out) = &output {
+                            out.send_dsp_command(DspCommand::SetEqBypass(chain_mode != ChainMode::DspActive || bypass));
+                        }
                     }
                     AudioCommand::SetOutputDevice(dev) => {
                         selected_device = dev;
@@ -444,6 +479,7 @@ fn run_audio_worker(
                                     dsp.set_sample_rate(device_rate as f32);
                                     dsp.set_eq_bypass(chain_mode != ChainMode::DspActive);
                                     dsp.reset_states();
+                                    sync_output_dsp(&new_out, device_rate, chain_mode, last_bypass, &last_graph, &last_eq_bands);
 
                                     let report = create_signal_path_report(&new_out, track_sample_rate, track_bit_depth, chain_mode);
                                     shared_bit_perfect.store(report.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
@@ -502,6 +538,7 @@ fn run_audio_worker(
                                     if state == PlaybackState::Playing {
                                         new_out.resume();
                                     }
+                                    sync_output_dsp(&new_out, desired_rate, chain_mode, last_bypass, &last_graph, &last_eq_bands);
                                     output = Some(new_out);
                                     producer = Some(new_prod);
                                     current_stream_mode = Some(chain_mode);
@@ -520,6 +557,7 @@ fn run_audio_worker(
                                 dsp.set_sample_rate(device_rate as f32);
                                 dsp.set_eq_bypass(chain_mode != ChainMode::DspActive);
                                 dsp.reset_states();
+                                sync_output_dsp(out, device_rate, chain_mode, last_bypass, &last_graph, &last_eq_bands);
 
                                 let report = create_signal_path_report(out, track_sample_rate, track_bit_depth, chain_mode);
                                 shared_bit_perfect.store(report.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
@@ -531,7 +569,11 @@ fn run_audio_worker(
                         }
                     }
                     AudioCommand::SetSignalChainGraph(graph) => {
-                        dsp.set_signal_chain(graph);
+                        last_graph = graph.clone();
+                        dsp.set_signal_chain(graph.clone());
+                        if let Some(out) = &output {
+                            out.send_dsp_command(DspCommand::SetSignalChainGraph(graph));
+                        }
                     }
                 }
             }
@@ -566,16 +608,9 @@ fn run_audio_worker(
 
                         match frame {
                             Some((l, r)) => {
-                                // Branch signal path strictly based on chain_mode
-                                let (out_l, out_r) = route_audio_frame(
-                                    chain_mode,
-                                    dsp.is_chain_complete(),
-                                    l,
-                                    r,
-                                    &mut dsp,
-                                );
-                                batch_buf[batch_samples] = out_l;
-                                batch_buf[batch_samples + 1] = out_r;
+                                // Push raw PCM directly into RingBuffer: zero lag for downstream DSP callback!
+                                batch_buf[batch_samples] = l;
+                                batch_buf[batch_samples + 1] = r;
                                 batch_samples += 2;
                                 generated_frames += 1;
                             }
@@ -708,6 +743,7 @@ mod tests {
         dsp.set_signal_chain(crate::audio::types::SignalChainGraph {
             is_complete: true,
             effects: Vec::new(),
+            ..Default::default()
         });
         dsp.set_eq_bypass(false);
 
@@ -771,6 +807,7 @@ mod tests {
         dsp.set_signal_chain(crate::audio::types::SignalChainGraph {
             is_complete: false,
             effects: Vec::new(),
+            ..Default::default()
         });
 
         let (out_l, out_r) = match chain_mode {

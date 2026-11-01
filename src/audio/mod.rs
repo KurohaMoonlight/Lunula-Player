@@ -16,6 +16,6 @@ pub use engine::AudioEngineController;
 pub use output::AudioOutput;
 pub use resampler::StereoResampler;
 pub use types::{
-    AudioCommand, AudioEvent, ChainMode, Effect, PlaybackState, SignalChainGraph, SignalPathReport,
+    AudioCommand, AudioEvent, ChainMode, Effect, GraphNode, PlaybackState, SignalChainGraph, SignalPathReport,
 };
 pub use visualizer::{FftAnalyzer, VisualizerRingBuffer, FFT_SIZE, NUM_BANDS};

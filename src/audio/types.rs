@@ -28,11 +28,21 @@ impl Default for ChainMode {
 
 /// Trait for modular audio DSP effects that can be inserted into the signal graph.
 pub trait Effect: Send + std::fmt::Debug {
-    fn process_frame(&mut self, l: f64, r: f64) -> (f64, f64);
+    /// Process a contiguous block of left and right samples (SIMD auto-vectorizable).
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]);
+
+    /// Single-frame helper for compatibility and fine-grained unit testing.
+    fn process_frame(&mut self, l: f64, r: f64) -> (f64, f64) {
+        let mut l_buf = [l as f32];
+        let mut r_buf = [r as f32];
+        self.process_block(&mut l_buf, &mut r_buf);
+        (l_buf[0] as f64, r_buf[0] as f64)
+    }
+
     fn reset(&mut self);
-    fn set_sample_rate(&mut self, sample_rate: f64);
+    fn set_sample_rate(&mut self, sample_rate: f32);
     fn name(&self) -> &str;
-    fn set_param(&mut self, _index: usize, _val: f64) {}
+    fn set_param(&mut self, _param_id: u32, _val: f32) {}
     fn clone_box(&self) -> Box<dyn Effect>;
 }
 
@@ -42,10 +52,39 @@ impl Clone for Box<dyn Effect> {
     }
 }
 
+/// An individual processing node in the DAG signal chain.
+pub struct GraphNode {
+    pub id: u32,
+    pub name: String,
+    pub effect: Box<dyn Effect>,
+}
+
+impl Clone for GraphNode {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            name: self.name.clone(),
+            effect: self.effect.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for GraphNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GraphNode")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .finish()
+    }
+}
+
 /// Compiled modular signal chain graph.
-/// Contains the topological execution order of effects and connection completeness status.
+/// Contains the full DAG topology (nodes, edges, topological order) and completeness status.
 pub struct SignalChainGraph {
     pub is_complete: bool,
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<(u32, u32)>,
+    pub topological_order: Vec<u32>,
     pub effects: Vec<Box<dyn Effect>>,
 }
 
@@ -53,6 +92,9 @@ impl Clone for SignalChainGraph {
     fn clone(&self) -> Self {
         Self {
             is_complete: self.is_complete,
+            nodes: self.nodes.clone(),
+            edges: self.edges.clone(),
+            topological_order: self.topological_order.clone(),
             effects: self.effects.clone(),
         }
     }
@@ -60,10 +102,16 @@ impl Clone for SignalChainGraph {
 
 impl std::fmt::Debug for SignalChainGraph {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let names: Vec<&str> = self.effects.iter().map(|e| e.name()).collect();
+        let names: Vec<&str> = if !self.nodes.is_empty() {
+            self.nodes.iter().map(|n| n.name.as_str()).collect()
+        } else {
+            self.effects.iter().map(|e| e.name()).collect()
+        };
         f.debug_struct("SignalChainGraph")
             .field("is_complete", &self.is_complete)
+            .field("nodes", &self.topological_order)
             .field("effects", &names)
+            .field("edges", &self.edges)
             .finish()
     }
 }
@@ -72,6 +120,9 @@ impl Default for SignalChainGraph {
     fn default() -> Self {
         Self {
             is_complete: true,
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            topological_order: Vec::new(),
             effects: Vec::new(),
         }
     }
@@ -87,6 +138,7 @@ pub enum AudioCommand {
     SetVolume(f32),
     SetMute(bool),
     SetEqBand { index: usize, gain_db: f32 },
+    SetNodeParam { node_id: u32, param_id: u32, value: f32 },
     SetEqBypass(bool),
     /// Atomically switch the entire signal chain mode.
     SetChainMode(ChainMode),
@@ -94,6 +146,18 @@ pub enum AudioCommand {
     SetOutputDevice(Option<String>),
     /// Dynamic modular signal chain graph compiled from patchbay canvas
     SetSignalChainGraph(SignalChainGraph),
+}
+
+/// Real-time non-blocking command delivered to audio callback DSP executor
+#[derive(Debug, Clone)]
+pub enum DspCommand {
+    SetNodeParam { node_id: u32, param_id: u32, value: f32 },
+    SetEqBand { index: usize, gain_db: f32 },
+    SetEqBypass(bool),
+    SetChainMode(ChainMode),
+    SetSignalChainGraph(SignalChainGraph),
+    ResetStates,
+    SetSampleRate(f32),
 }
 
 /// Fast lightweight Xorshift32 PRNG for TPDF Dithering (-1.0 to +1.0 LSB).

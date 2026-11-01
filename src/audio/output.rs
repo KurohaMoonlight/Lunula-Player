@@ -112,6 +112,10 @@ impl AudioOutput {
     pub fn flush(&self) -> bool {
         self.backend.flush()
     }
+
+    pub fn send_dsp_command(&self, cmd: crate::audio::types::DspCommand) {
+        self.backend.send_dsp_command(cmd);
+    }
 }
 
 #[cfg(test)]

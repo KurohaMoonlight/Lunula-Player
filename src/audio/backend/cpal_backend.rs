@@ -3,8 +3,11 @@ use cpal::{OutputCallbackInfo, SampleFormat, Stream, StreamConfig};
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use crossbeam_channel::{Receiver, Sender};
 
 use super::OutputBackend;
+use crate::audio::dsp::DspPipeline;
+use crate::audio::types::DspCommand;
 use crate::audio::visualizer::VisualizerRingBuffer;
 
 pub struct CpalBackend {
@@ -17,6 +20,7 @@ pub struct CpalBackend {
     flush_requested: Arc<AtomicBool>,
     flush_ack: Arc<AtomicBool>,
     shared_volume: Arc<AtomicU32>,
+    dsp_tx: Sender<DspCommand>,
 }
 
 unsafe impl Send for CpalBackend {}
@@ -70,6 +74,10 @@ impl OutputBackend for CpalBackend {
             std::thread::yield_now();
         }
         true
+    }
+
+    fn send_dsp_command(&self, cmd: DspCommand) {
+        let _ = self.dsp_tx.send(cmd);
     }
 }
 
@@ -133,6 +141,7 @@ impl CpalBackend {
         };
 
         let (producer, consumer) = RingBuffer::<f32>::new(buffer_capacity);
+        let (dsp_tx, dsp_rx) = crossbeam_channel::unbounded::<DspCommand>();
         let stream = Self::build_stream(
             &device,
             &config,
@@ -147,6 +156,7 @@ impl CpalBackend {
             Arc::clone(&visualizer),
             source_bit_depth,
             Arc::clone(&is_dsp_active),
+            dsp_rx,
         )?;
         stream.play()?;
 
@@ -164,9 +174,36 @@ impl CpalBackend {
                 flush_requested,
                 flush_ack,
                 shared_volume,
+                dsp_tx,
             },
             producer,
         ))
+    }
+
+    fn apply_dsp_commands(dsp: &mut DspPipeline, dsp_rx: &Receiver<DspCommand>) {
+        while let Ok(cmd) = dsp_rx.try_recv() {
+            match cmd {
+                DspCommand::SetNodeParam { node_id, param_id, value } => {
+                    dsp.set_node_param(node_id, param_id, value);
+                }
+                DspCommand::SetEqBand { index, gain_db } => {
+                    dsp.set_eq_band(index, gain_db);
+                }
+                DspCommand::SetEqBypass(bp) => {
+                    dsp.set_eq_bypass(bp);
+                }
+                DspCommand::SetSignalChainGraph(g) => {
+                    dsp.set_signal_chain(g);
+                }
+                DspCommand::ResetStates => {
+                    dsp.reset_states();
+                }
+                DspCommand::SetSampleRate(sr) => {
+                    dsp.set_sample_rate(sr);
+                }
+                _ => {}
+            }
+        }
     }
 
     fn build_stream(
@@ -183,6 +220,7 @@ impl CpalBackend {
         visualizer: Arc<VisualizerRingBuffer>,
         source_bit_depth: u8,
         _is_dsp_active: Arc<AtomicBool>,
+        dsp_rx: Receiver<DspCommand>,
     ) -> Result<Stream, Box<dyn std::error::Error + Send + Sync>> {
         let is_paused_cb = Arc::clone(&is_paused);
         let flush_cb = Arc::clone(&flush_requested);
@@ -193,9 +231,11 @@ impl CpalBackend {
         let visualizer_cb = Arc::clone(&visualizer);
         let channels_count = config.channels as usize;
         let err_fn = |err| eprintln!("Audio stream error: {}", err);
+        let stream_rate = config.sample_rate.0 as f32;
 
         let stream = match sample_format {
             SampleFormat::F32 => {
+                let mut dsp = DspPipeline::new(stream_rate);
                 device.build_output_stream(
                     config,
                     move |data: &mut [f32], _: &OutputCallbackInfo| {
@@ -210,6 +250,8 @@ impl CpalBackend {
                             &muted_cb,
                             &volume_cb,
                             &visualizer_cb,
+                            &mut dsp,
+                            &dsp_rx,
                         );
                     },
                     err_fn,
@@ -217,6 +259,7 @@ impl CpalBackend {
                 )?
             }
             SampleFormat::I32 => {
+                let mut dsp = DspPipeline::new(stream_rate);
                 device.build_output_stream(
                     config,
                     move |data: &mut [i32], _: &OutputCallbackInfo| {
@@ -232,6 +275,8 @@ impl CpalBackend {
                             &volume_cb,
                             &visualizer_cb,
                             source_bit_depth,
+                            &mut dsp,
+                            &dsp_rx,
                         );
                     },
                     err_fn,
@@ -239,6 +284,7 @@ impl CpalBackend {
                 )?
             }
             SampleFormat::I16 => {
+                let mut dsp = DspPipeline::new(stream_rate);
                 let mut dither_state: u32 = 0x12345678;
                 device.build_output_stream(
                     config,
@@ -256,6 +302,8 @@ impl CpalBackend {
                             &visualizer_cb,
                             source_bit_depth,
                             &mut dither_state,
+                            &mut dsp,
+                            &dsp_rx,
                         );
                     },
                     err_fn,
@@ -301,7 +349,11 @@ impl CpalBackend {
         muted: &AtomicBool,
         volume: &AtomicU32,
         visualizer: &VisualizerRingBuffer,
+        dsp: &mut DspPipeline,
+        dsp_rx: &Receiver<DspCommand>,
     ) {
+        Self::apply_dsp_commands(dsp, dsp_rx);
+
         if flush_requested.swap(false, Ordering::SeqCst) {
             while consumer.pop().is_ok() {}
             data.fill(0.0);
@@ -339,6 +391,9 @@ impl CpalBackend {
             let popped_len = popped.len();
             if popped_len < data.len() {
                 data[popped_len..].fill(0.0);
+            }
+            if !is_bp {
+                dsp.process_interleaved(data);
             }
             if (vol - 1.0).abs() > 0.0001 {
                 for s in data.iter_mut() {
@@ -385,7 +440,11 @@ impl CpalBackend {
         volume: &AtomicU32,
         visualizer: &VisualizerRingBuffer,
         source_bit_depth: u8,
+        dsp: &mut DspPipeline,
+        dsp_rx: &Receiver<DspCommand>,
     ) {
+        Self::apply_dsp_commands(dsp, dsp_rx);
+
         if flush_requested.swap(false, Ordering::SeqCst) {
             while consumer.pop().is_ok() {}
             data.fill(0);
@@ -429,6 +488,12 @@ impl CpalBackend {
                 let popped_len = popped.len();
                 if popped_len < needed {
                     temp_buf[popped_len..needed].fill(0.0);
+                }
+                if !is_bp {
+                    dsp.process_interleaved(&mut temp_buf[..needed]);
+                }
+                if !is_bp {
+                    dsp.process_interleaved(&mut temp_buf[..needed]);
                 }
                 for (dst, &src) in frame_chunk.iter_mut().zip(&temp_buf[..needed]) {
                     *dst = to_i32(src * vol);
@@ -475,7 +540,10 @@ impl CpalBackend {
         visualizer: &VisualizerRingBuffer,
         source_bit_depth: u8,
         dither_state: &mut u32,
+        dsp: &mut DspPipeline,
+        dsp_rx: &Receiver<DspCommand>,
     ) {
+        Self::apply_dsp_commands(dsp, dsp_rx);
         if flush_requested.swap(false, Ordering::SeqCst) {
             while consumer.pop().is_ok() {}
             data.fill(0);
@@ -523,6 +591,9 @@ impl CpalBackend {
                 let popped_len = popped.len();
                 if popped_len < needed {
                     temp_buf[popped_len..needed].fill(0.0);
+                }
+                if !is_bp {
+                    dsp.process_interleaved(&mut temp_buf[..needed]);
                 }
                 for (dst, &src) in frame_chunk.iter_mut().zip(&temp_buf[..needed]) {
                     *dst = to_i16(src * vol, dither_state);

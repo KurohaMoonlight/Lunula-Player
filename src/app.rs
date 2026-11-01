@@ -1139,6 +1139,9 @@ impl LunulaApp {
         if !chain_eval.is_complete {
             return crate::audio::SignalChainGraph {
                 is_complete: false,
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                topological_order: Vec::new(),
                 effects: Vec::new(),
             };
         }
@@ -1184,35 +1187,54 @@ impl LunulaApp {
         // Build concrete effects chain in topological sequence
         let sample_rate = self.signal_path_report.as_ref().map_or(44100.0, |r| r.device_rate as f64);
         let mut effects: Vec<Box<dyn Effect>> = Vec::new();
+        let mut nodes: Vec<crate::audio::GraphNode> = Vec::new();
+        let mut topological_order: Vec<u32> = Vec::new();
 
         for &id in &ordered_node_ids {
             if let Some(node) = self.nodes.iter().find(|n| n.id == id) {
-                match &node.node_type {
+                let effect_opt: Option<Box<dyn Effect>> = match &node.node_type {
                     NodeType::Dsp => {
-                        effects.push(Box::new(GraphicEqEffect::new(self.eq_bands, sample_rate)));
+                        Some(Box::new(GraphicEqEffect::new(self.eq_bands, sample_rate)))
                     }
                     NodeType::TubeWarmer => {
-                        effects.push(Box::new(TubeWarmerEffect::new()));
+                        Some(Box::new(TubeWarmerEffect::new()))
                     }
                     NodeType::StereoWidener => {
-                        effects.push(Box::new(StereoWidenerEffect::new(1.35)));
+                        Some(Box::new(StereoWidenerEffect::new(1.35)))
                     }
                     NodeType::BassGuard => {
-                        effects.push(Box::new(BassGuardEffect::new(sample_rate)));
+                        Some(Box::new(BassGuardEffect::new(sample_rate)))
                     }
                     NodeType::VolumeAttenuator => {
-                        effects.push(Box::new(VolumeAttenuatorEffect::new(-6.02)));
+                        Some(Box::new(VolumeAttenuatorEffect::new(-6.02)))
                     }
                     NodeType::SavedEqPreset(name) => {
-                        effects.push(Box::new(PresetEqEffect::from_preset(name, sample_rate)));
+                        Some(Box::new(PresetEqEffect::from_preset(name, sample_rate)))
                     }
-                    _ => {}
+                    _ => None,
+                };
+
+                if let Some(eff) = effect_opt {
+                    effects.push(eff.clone());
+                    nodes.push(crate::audio::GraphNode {
+                        id: id as u32,
+                        name: node.title.clone(),
+                        effect: eff,
+                    });
+                    topological_order.push(id as u32);
                 }
             }
         }
 
+        let edges: Vec<(u32, u32)> = chain_eval.flowing_cables.iter()
+            .map(|&(from, to)| (from as u32, to as u32))
+            .collect();
+
         crate::audio::SignalChainGraph {
             is_complete: true,
+            nodes,
+            edges,
+            topological_order,
             effects,
         }
     }

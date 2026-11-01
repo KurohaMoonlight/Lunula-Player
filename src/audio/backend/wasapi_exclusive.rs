@@ -5,8 +5,11 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use crossbeam_channel::Sender;
 
 use super::OutputBackend;
+use crate::audio::dsp::DspPipeline;
+use crate::audio::types::DspCommand;
 use crate::audio::visualizer::VisualizerRingBuffer;
 
 struct SendWrap<T>(T);
@@ -27,6 +30,7 @@ pub struct WasapiExclusiveBackend {
     stop_signal: Arc<AtomicBool>,
     shared_volume: Arc<AtomicU32>,
     worker_handle: Option<JoinHandle<()>>,
+    dsp_tx: Sender<DspCommand>,
 }
 
 impl OutputBackend for WasapiExclusiveBackend {
@@ -78,6 +82,10 @@ impl OutputBackend for WasapiExclusiveBackend {
             std::thread::yield_now();
         }
         true
+    }
+
+    fn send_dsp_command(&self, cmd: DspCommand) {
+        let _ = self.dsp_tx.send(cmd);
     }
 }
 
@@ -174,6 +182,7 @@ impl WasapiExclusiveBackend {
         let vis_worker = Arc::clone(&visualizer);
 
         let (producer, mut consumer) = RingBuffer::<f32>::new(buffer_capacity);
+        let (dsp_tx, dsp_rx) = crossbeam_channel::unbounded::<DspCommand>();
 
         client.start_stream()?;
 
@@ -193,11 +202,36 @@ impl WasapiExclusiveBackend {
                 let mut raw_bytes: Vec<u8> = Vec::with_capacity(max_frames * bytes_per_frame);
                 let mut dither_state: u32 = 0x12345678;
                 let mut batch_f32 = [0.0f32; 1024];
+                let mut dsp = DspPipeline::new(preferred_sample_rate as f32);
 
                 while !stop_worker.load(Ordering::Relaxed) {
                     if let Ok(()) = h_event.wait_for_event(100) {
                         if stop_worker.load(Ordering::Relaxed) {
                             break;
+                        }
+
+                        while let Ok(cmd) = dsp_rx.try_recv() {
+                            match cmd {
+                                DspCommand::SetNodeParam { node_id, param_id, value } => {
+                                    dsp.set_node_param(node_id, param_id, value);
+                                }
+                                DspCommand::SetEqBand { index, gain_db } => {
+                                    dsp.set_eq_band(index, gain_db);
+                                }
+                                DspCommand::SetEqBypass(bp) => {
+                                    dsp.set_eq_bypass(bp);
+                                }
+                                DspCommand::SetSignalChainGraph(g) => {
+                                    dsp.set_signal_chain(g);
+                                }
+                                DspCommand::ResetStates => {
+                                    dsp.reset_states();
+                                }
+                                DspCommand::SetSampleRate(sr) => {
+                                    dsp.set_sample_rate(sr);
+                                }
+                                _ => {}
+                            }
                         }
 
                         let padding = client.get_current_padding().unwrap_or(0);
@@ -253,6 +287,9 @@ impl WasapiExclusiveBackend {
                                     if popped_len < chunk_samples {
                                         batch_f32[popped_len..chunk_samples].fill(0.0);
                                     }
+                                    if !is_bp {
+                                        dsp.process_interleaved(&mut batch_f32[..chunk_samples]);
+                                    }
 
                                     for pair in batch_f32[..chunk_samples].chunks_exact(2) {
                                         let l = pair[0] * vol;
@@ -275,6 +312,9 @@ impl WasapiExclusiveBackend {
                                     let popped_len = popped.len();
                                     if popped_len < chunk_samples {
                                         batch_f32[popped_len..chunk_samples].fill(0.0);
+                                    }
+                                    if !is_bp {
+                                        dsp.process_interleaved(&mut batch_f32[..chunk_samples]);
                                     }
 
                                     for pair in batch_f32[..chunk_samples].chunks_exact(2) {
@@ -299,6 +339,9 @@ impl WasapiExclusiveBackend {
                                     let popped_len = popped.len();
                                     if popped_len < chunk_samples {
                                         batch_f32[popped_len..chunk_samples].fill(0.0);
+                                    }
+                                    if !is_bp {
+                                        dsp.process_interleaved(&mut batch_f32[..chunk_samples]);
                                     }
 
                                     for pair in batch_f32[..chunk_samples].chunks_exact(2) {
@@ -336,6 +379,7 @@ impl WasapiExclusiveBackend {
                 stop_signal,
                 shared_volume,
                 worker_handle: Some(worker_handle),
+                dsp_tx,
             },
             producer,
         ))

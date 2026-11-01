@@ -21,6 +21,7 @@ pub trait OutputBackend: Send {
     fn is_paused(&self) -> bool;
     fn set_volume(&self, vol: f32);
     fn flush(&self) -> bool;
+    fn send_dsp_command(&self, _cmd: crate::audio::types::DspCommand) {}
 }
 
 pub fn enumerate_output_devices() -> Vec<OutputDeviceInfo> {

@@ -1,4 +1,5 @@
 use crate::audio::types::{Effect, SignalChainGraph};
+use std::collections::HashMap;
 
 // 10-Band Graphic EQ Frequencies matching LunulaPlayer
 pub const EQ_FREQUENCIES: [f64; 10] = [
@@ -28,16 +29,16 @@ impl BiquadCoeffs {
     // Robert Bristow-Johnson Audio EQ Cookbook Peaking Filter computed in double precision (f64)
     // Ensures numerical stability and zero coefficient quantization error at 31 Hz/63 Hz under 96 kHz+
     pub fn peaking_eq(center_freq: f64, gain_db: f64, sample_rate: f64, q: f64) -> Self {
-        if gain_db.abs() < 0.05 || sample_rate <= 0.0 {
+        if gain_db.abs() < 0.01 || sample_rate <= 0.0 {
             return Self::identity();
         }
 
-        // Clamp center frequency below Nyquist
-        let nyquist = sample_rate * 0.49;
+        let safe_sr = sample_rate.max(8000.0);
+        let nyquist = safe_sr * 0.495;
         let f0 = center_freq.clamp(10.0, nyquist);
 
         let a = 10.0_f64.powf(gain_db / 40.0);
-        let w0 = 2.0 * std::f64::consts::PI * (f0 / sample_rate);
+        let w0 = 2.0 * std::f64::consts::PI * (f0 / safe_sr);
         let alpha = w0.sin() / (2.0 * q.max(0.1));
         let cos_w0 = w0.cos();
 
@@ -56,20 +57,96 @@ impl BiquadCoeffs {
             a2: a2 / a0,
         }
     }
+
+    pub fn low_shelf(cutoff_freq: f64, gain_db: f64, sample_rate: f64, q: f64) -> Self {
+        if gain_db.abs() < 0.01 || sample_rate <= 0.0 {
+            return Self::identity();
+        }
+        let safe_sr = sample_rate.max(8000.0);
+        let nyquist = safe_sr * 0.495;
+        let f0 = cutoff_freq.clamp(10.0, nyquist);
+
+        let a = 10.0_f64.powf(gain_db / 40.0);
+        let w0 = 2.0 * std::f64::consts::PI * (f0 / safe_sr);
+        let cos_w0 = w0.cos();
+        let sin_w0 = w0.sin();
+        let alpha = sin_w0 / (2.0 * q.max(0.1));
+        let two_sqrt_a_alpha = 2.0 * a.sqrt() * alpha;
+
+        let b0 = a * ((a + 1.0) - (a - 1.0) * cos_w0 + two_sqrt_a_alpha);
+        let b1 = 2.0 * a * ((a - 1.0) - (a + 1.0) * cos_w0);
+        let b2 = a * ((a + 1.0) - (a - 1.0) * cos_w0 - two_sqrt_a_alpha);
+        let a0 = (a + 1.0) + (a - 1.0) * cos_w0 + two_sqrt_a_alpha;
+        let a1 = -2.0 * ((a - 1.0) + (a + 1.0) * cos_w0);
+        let a2 = (a + 1.0) + (a - 1.0) * cos_w0 - two_sqrt_a_alpha;
+
+        Self {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+        }
+    }
+
+    pub fn high_shelf(cutoff_freq: f64, gain_db: f64, sample_rate: f64, q: f64) -> Self {
+        if gain_db.abs() < 0.01 || sample_rate <= 0.0 {
+            return Self::identity();
+        }
+        let safe_sr = sample_rate.max(8000.0);
+        let nyquist = safe_sr * 0.495;
+        let f0 = cutoff_freq.clamp(10.0, nyquist);
+
+        let a = 10.0_f64.powf(gain_db / 40.0);
+        let w0 = 2.0 * std::f64::consts::PI * (f0 / safe_sr);
+        let cos_w0 = w0.cos();
+        let sin_w0 = w0.sin();
+        let alpha = sin_w0 / (2.0 * q.max(0.1));
+        let two_sqrt_a_alpha = 2.0 * a.sqrt() * alpha;
+
+        let b0 = a * ((a + 1.0) + (a - 1.0) * cos_w0 + two_sqrt_a_alpha);
+        let b1 = -2.0 * a * ((a - 1.0) + (a + 1.0) * cos_w0);
+        let b2 = a * ((a + 1.0) + (a - 1.0) * cos_w0 - two_sqrt_a_alpha);
+        let a0 = (a + 1.0) - (a - 1.0) * cos_w0 + two_sqrt_a_alpha;
+        let a1 = 2.0 * ((a - 1.0) - (a + 1.0) * cos_w0);
+        let a2 = (a + 1.0) - (a - 1.0) * cos_w0 - two_sqrt_a_alpha;
+
+        Self {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+        }
+    }
+
+    pub fn high_pass(cutoff_freq: f64, sample_rate: f64, q: f64) -> Self {
+        let safe_sr = sample_rate.max(8000.0);
+        let nyquist = safe_sr * 0.495;
+        let f0 = cutoff_freq.clamp(10.0, nyquist);
+
+        let w0 = 2.0 * std::f64::consts::PI * (f0 / safe_sr);
+        let alpha = w0.sin() / (2.0 * q.max(0.1));
+        let cos_w0 = w0.cos();
+
+        let b0 = (1.0 + cos_w0) * 0.5;
+        let b1 = -(1.0 + cos_w0);
+        let b2 = (1.0 + cos_w0) * 0.5;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos_w0;
+        let a2 = 1.0 - alpha;
+
+        Self {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+        }
+    }
 }
 
 /// Direct Form II Transposed (DF2T) Biquad Filter State
-///
-/// Mathematical difference equations:
-/// y[n]  = b0 * x[n] + s1[n-1]
-/// s1[n] = b1 * x[n] - a1 * y[n] + s2[n-1]
-/// s2[n] = b2 * x[n] - a2 * y[n]
-///
-/// Advantages over Direct Form I:
-/// 1. Uses only 2 state registers (s1, s2) instead of 4 (x1, x2, y1, y2) -> 50% memory saving.
-/// 2. Reduced CPU register pressure: keeps filter states in CPU registers without memory spills.
-/// 3. Superior numerical stability and dynamic range in double precision (f64),
-///    eliminating limit cycles and sub-bass resonance instability.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BiquadState {
     pub s1: f64,
@@ -107,38 +184,42 @@ pub fn soft_limit(x: f64) -> f64 {
 // Modular Audio Effects
 // ---------------------------------------------------------------------------
 
-/// 10-Band Peaking Graphic EQ Effect with Auto-Preamp Headroom
+/// 10-Band Peaking Graphic EQ Effect with Auto-Preamp Headroom and Slew Rate Smoothing
 #[derive(Clone, Debug)]
 pub struct GraphicEqEffect {
     sample_rate: f64,
     eq_coeffs: [BiquadCoeffs; 10],
     eq_state_l: [BiquadState; 10],
     eq_state_r: [BiquadState; 10],
-    eq_gains: [f64; 10],
+    target_gains: [f64; 10],
+    current_gains: [f64; 10],
     auto_preamp: f64,
-    is_flat: bool,
+    pub is_flat: bool,
 }
 
 impl GraphicEqEffect {
     pub fn new(gains: [f32; 10], sample_rate: f64) -> Self {
         let mut eq = Self {
-            sample_rate: sample_rate.max(44100.0),
+            sample_rate: sample_rate.max(8000.0),
             eq_coeffs: [BiquadCoeffs::identity(); 10],
             eq_state_l: [BiquadState::default(); 10],
             eq_state_r: [BiquadState::default(); 10],
-            eq_gains: [0.0; 10],
+            target_gains: [0.0; 10],
+            current_gains: [0.0; 10],
             auto_preamp: 1.0,
             is_flat: true,
         };
         for (i, &g) in gains.iter().enumerate() {
-            eq.eq_gains[i] = g.clamp(-12.0, 12.0) as f64;
+            let val = g.clamp(-12.0, 12.0) as f64;
+            eq.target_gains[i] = val;
+            eq.current_gains[i] = val;
         }
         eq.recompute_all();
         eq
     }
 
     fn update_auto_preamp(&mut self) {
-        let max_boost = self.eq_gains.iter().cloned().fold(0.0f64, f64::max);
+        let max_boost = self.current_gains.iter().cloned().fold(0.0f64, f64::max);
         self.auto_preamp = if max_boost > 0.0 {
             10.0_f64.powf(-max_boost / 20.0)
         } else {
@@ -148,13 +229,13 @@ impl GraphicEqEffect {
 
     fn recompute_band(&mut self, idx: usize) {
         let f0 = EQ_FREQUENCIES[idx];
-        let gain = self.eq_gains[idx];
+        let gain = self.current_gains[idx];
         self.eq_coeffs[idx] = BiquadCoeffs::peaking_eq(f0, gain, self.sample_rate, 1.414);
     }
 
     fn recompute_all(&mut self) {
         self.update_auto_preamp();
-        self.is_flat = self.eq_gains.iter().all(|&g| g.abs() < 0.05);
+        self.is_flat = self.current_gains.iter().all(|&g| g.abs() < 0.05);
         for i in 0..10 {
             self.recompute_band(i);
         }
@@ -162,19 +243,44 @@ impl GraphicEqEffect {
 }
 
 impl Effect for GraphicEqEffect {
-    #[inline(always)]
-    fn process_frame(&mut self, l: f64, r: f64) -> (f64, f64) {
-        // Zero-Cost Fast Short-Circuit: bypass 10-band biquad cascade completely when EQ is flat (0.0 dB)
-        if self.is_flat {
-            return (l * self.auto_preamp, r * self.auto_preamp);
-        }
-        let mut fl = l * self.auto_preamp;
-        let mut fr = r * self.auto_preamp;
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        // Parameter smoothing (A8): slew current_gains towards target_gains to eliminate zipper noise
+        let mut need_recompute = false;
         for i in 0..10 {
-            fl = self.eq_state_l[i].process(fl, &self.eq_coeffs[i]);
-            fr = self.eq_state_r[i].process(fr, &self.eq_coeffs[i]);
+            let diff = self.target_gains[i] - self.current_gains[i];
+            if diff.abs() > 0.001 {
+                self.current_gains[i] += diff * 0.5;
+                need_recompute = true;
+            } else if (self.current_gains[i] - self.target_gains[i]).abs() > 1e-6 {
+                self.current_gains[i] = self.target_gains[i];
+                need_recompute = true;
+            }
         }
-        (fl, fr)
+        if need_recompute {
+            self.recompute_all();
+        }
+
+        // Fast zero-cost flat bypass
+        if self.is_flat {
+            let pre = self.auto_preamp as f32;
+            if (pre - 1.0).abs() > 0.0001 {
+                for l in left.iter_mut() { *l *= pre; }
+                for r in right.iter_mut() { *r *= pre; }
+            }
+            return;
+        }
+
+        let pre = self.auto_preamp;
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let mut fl = (*l as f64) * pre;
+            let mut fr = (*r as f64) * pre;
+            for i in 0..10 {
+                fl = self.eq_state_l[i].process(fl, &self.eq_coeffs[i]);
+                fr = self.eq_state_r[i].process(fr, &self.eq_coeffs[i]);
+            }
+            *l = fl as f32;
+            *r = fr as f32;
+        }
     }
 
     fn reset(&mut self) {
@@ -184,8 +290,8 @@ impl Effect for GraphicEqEffect {
         }
     }
 
-    fn set_sample_rate(&mut self, sample_rate: f64) {
-        let sr = sample_rate.max(44100.0);
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        let sr = (sample_rate as f64).max(8000.0);
         if (self.sample_rate - sr).abs() > 1.0 {
             self.sample_rate = sr;
             self.recompute_all();
@@ -197,12 +303,13 @@ impl Effect for GraphicEqEffect {
         "10-Band Graphic EQ"
     }
 
-    fn set_param(&mut self, index: usize, val: f64) {
-        if index < 10 {
-            self.eq_gains[index] = val.clamp(-12.0, 12.0);
-            self.update_auto_preamp();
-            self.is_flat = self.eq_gains.iter().all(|&g| g.abs() < 0.05);
-            self.recompute_band(index);
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        let idx = param_id as usize;
+        if idx < 10 {
+            self.target_gains[idx] = (val as f64).clamp(-12.0, 12.0);
+            if self.is_flat && self.target_gains[idx].abs() >= 0.05 {
+                self.is_flat = false;
+            }
         }
     }
 
@@ -222,19 +329,22 @@ impl TubeWarmerEffect {
 }
 
 impl Effect for TubeWarmerEffect {
-    fn process_frame(&mut self, l: f64, r: f64) -> (f64, f64) {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
         #[inline(always)]
-        fn warm(x: f64) -> f64 {
-            let d = 1.25;
+        fn warm(x: f32) -> f32 {
+            let d = 1.25f32;
             let xd = x * d;
-            let y = xd + 0.15 * xd * xd - 0.05 * xd * xd * xd;
-            y * 0.82
+            let y = xd + 0.15f32 * xd * xd - 0.05f32 * xd * xd * xd;
+            y * 0.82f32
         }
-        (warm(l), warm(r))
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            *l = warm(*l);
+            *r = warm(*r);
+        }
     }
 
     fn reset(&mut self) {}
-    fn set_sample_rate(&mut self, _sample_rate: f64) {}
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
     fn name(&self) -> &str {
         "Tube Warmer (Triode Saturation)"
     }
@@ -256,17 +366,19 @@ impl StereoWidenerEffect {
 }
 
 impl Effect for StereoWidenerEffect {
-    fn process_frame(&mut self, l: f64, r: f64) -> (f64, f64) {
-        let mid = (l + r) * 0.5;
-        let side = (l - r) * 0.5;
-        let widened_side = side * self.width;
-        let out_l = mid + widened_side;
-        let out_r = mid - widened_side;
-        (out_l, out_r)
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let w = self.width as f32;
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let mid = (*l + *r) * 0.5;
+            let side = (*l - *r) * 0.5;
+            let widened = side * w;
+            *l = mid + widened;
+            *r = mid - widened;
+        }
     }
 
     fn reset(&mut self) {}
-    fn set_sample_rate(&mut self, _sample_rate: f64) {}
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
     fn name(&self) -> &str {
         "Stereo Widener (Haas 3D +35%)"
     }
@@ -287,7 +399,7 @@ pub struct BassGuardEffect {
 impl BassGuardEffect {
     pub fn new(sample_rate: f64) -> Self {
         let mut bg = Self {
-            sample_rate: sample_rate.max(44100.0),
+            sample_rate: sample_rate.max(8000.0),
             hpf_coeffs: BiquadCoeffs::identity(),
             state_l: BiquadState::default(),
             state_r: BiquadState::default(),
@@ -297,34 +409,16 @@ impl BassGuardEffect {
     }
 
     fn recompute(&mut self) {
-        let f0 = 24.0;
-        let q = 0.7071067811865476;
-        let w0 = 2.0 * std::f64::consts::PI * (f0 / self.sample_rate);
-        let alpha = w0.sin() / (2.0 * q);
-        let cos_w0 = w0.cos();
-
-        let b0 = (1.0 + cos_w0) * 0.5;
-        let b1 = -(1.0 + cos_w0);
-        let b2 = (1.0 + cos_w0) * 0.5;
-        let a0 = 1.0 + alpha;
-        let a1 = -2.0 * cos_w0;
-        let a2 = 1.0 - alpha;
-
-        self.hpf_coeffs = BiquadCoeffs {
-            b0: b0 / a0,
-            b1: b1 / a0,
-            b2: b2 / a0,
-            a1: a1 / a0,
-            a2: a2 / a0,
-        };
+        self.hpf_coeffs = BiquadCoeffs::high_pass(24.0, self.sample_rate, 0.7071067811865476);
     }
 }
 
 impl Effect for BassGuardEffect {
-    fn process_frame(&mut self, l: f64, r: f64) -> (f64, f64) {
-        let fl = self.state_l.process(l, &self.hpf_coeffs);
-        let fr = self.state_r.process(r, &self.hpf_coeffs);
-        (fl, fr)
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            *l = self.state_l.process(*l as f64, &self.hpf_coeffs) as f32;
+            *r = self.state_r.process(*r as f64, &self.hpf_coeffs) as f32;
+        }
     }
 
     fn reset(&mut self) {
@@ -332,8 +426,8 @@ impl Effect for BassGuardEffect {
         self.state_r.reset();
     }
 
-    fn set_sample_rate(&mut self, sample_rate: f64) {
-        self.sample_rate = sample_rate.max(44100.0);
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        self.sample_rate = (sample_rate as f64).max(8000.0);
         self.recompute();
         self.reset();
     }
@@ -350,23 +444,26 @@ impl Effect for BassGuardEffect {
 /// Volume Attenuator: Precision passive -6.02 dB pad
 #[derive(Clone, Debug)]
 pub struct VolumeAttenuatorEffect {
-    gain: f64,
+    gain: f32,
 }
 
 impl VolumeAttenuatorEffect {
     pub fn new(gain_db: f64) -> Self {
-        let gain = 10.0_f64.powf(gain_db / 20.0);
+        let gain = 10.0_f64.powf(gain_db / 20.0) as f32;
         Self { gain }
     }
 }
 
 impl Effect for VolumeAttenuatorEffect {
-    fn process_frame(&mut self, l: f64, r: f64) -> (f64, f64) {
-        (l * self.gain, r * self.gain)
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            *l *= self.gain;
+            *r *= self.gain;
+        }
     }
 
     fn reset(&mut self) {}
-    fn set_sample_rate(&mut self, _sample_rate: f64) {}
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
     fn name(&self) -> &str {
         "Volume Attenuator (-6dB Pad)"
     }
@@ -375,73 +472,107 @@ impl Effect for VolumeAttenuatorEffect {
     }
 }
 
-/// Preset EQ Curves: Vocal Clarity, Bass Boost Matrix, Air & Sparkle, Warm Tube Vintage
+/// Generic Parametric EQ Band Configuration
 #[derive(Clone, Debug)]
-pub struct PresetEqEffect {
-    preset_name: String,
+pub struct ParametricBandConfig {
+    pub freq: f64,
+    pub gain_db: f64,
+    pub q: f64,
+    pub filter_type: String, // "peak", "low_shelf", "high_shelf", "hpf"
+}
+
+/// Generic Parametric Equalizer Effect replacing hardcoded preset names (A3)
+#[derive(Clone, Debug)]
+pub struct ParametricEqEffect {
+    name: String,
     sample_rate: f64,
+    bands: Vec<ParametricBandConfig>,
     coeffs: Vec<BiquadCoeffs>,
     state_l: Vec<BiquadState>,
     state_r: Vec<BiquadState>,
+    auto_preamp: f64,
 }
 
-impl PresetEqEffect {
-    pub fn from_preset(name: &str, sample_rate: f64) -> Self {
+impl ParametricEqEffect {
+    pub fn new(name: &str, bands: Vec<ParametricBandConfig>, sample_rate: f64) -> Self {
         let mut effect = Self {
-            preset_name: name.to_string(),
-            sample_rate: sample_rate.max(44100.0),
+            name: name.to_string(),
+            sample_rate: sample_rate.max(8000.0),
+            bands,
             coeffs: Vec::new(),
             state_l: Vec::new(),
             state_r: Vec::new(),
+            auto_preamp: 1.0,
         };
         effect.recompute();
         effect
     }
 
-    fn recompute(&mut self) {
-        let bands: Vec<(f64, f64, f64)> = match self.preset_name.as_str() {
+    pub fn from_preset(name: &str, sample_rate: f64) -> Self {
+        let bands = match name {
             "Vocal Clarity" => vec![
-                (250.0, -2.5, 1.414),
-                (2000.0, 3.0, 1.414),
-                (4000.0, 3.5, 1.414),
+                ParametricBandConfig { freq: 250.0, gain_db: -2.5, q: 1.414, filter_type: "peak".to_string() },
+                ParametricBandConfig { freq: 2000.0, gain_db: 3.0, q: 1.414, filter_type: "peak".to_string() },
+                ParametricBandConfig { freq: 4000.0, gain_db: 3.5, q: 1.414, filter_type: "peak".to_string() },
             ],
             "Bass Boost Matrix" => vec![
-                (63.0, 5.0, 1.2),
-                (125.0, 3.0, 1.414),
-                (250.0, 1.5, 1.414),
+                ParametricBandConfig { freq: 63.0, gain_db: 5.0, q: 1.2, filter_type: "low_shelf".to_string() },
+                ParametricBandConfig { freq: 125.0, gain_db: 3.0, q: 1.414, filter_type: "peak".to_string() },
+                ParametricBandConfig { freq: 250.0, gain_db: 1.5, q: 1.414, filter_type: "peak".to_string() },
             ],
             "Air & Sparkle" => vec![
-                (8000.0, 2.5, 1.414),
-                (16000.0, 4.0, 1.0),
+                ParametricBandConfig { freq: 8000.0, gain_db: 2.5, q: 1.414, filter_type: "high_shelf".to_string() },
+                ParametricBandConfig { freq: 16000.0, gain_db: 4.0, q: 1.0, filter_type: "high_shelf".to_string() },
             ],
             "Warm Tube Vintage" => vec![
-                (125.0, 2.0, 1.414),
-                (8000.0, -2.0, 1.414),
-                (16000.0, -3.5, 1.0),
+                ParametricBandConfig { freq: 125.0, gain_db: 2.0, q: 1.414, filter_type: "peak".to_string() },
+                ParametricBandConfig { freq: 8000.0, gain_db: -2.0, q: 1.414, filter_type: "peak".to_string() },
+                ParametricBandConfig { freq: 16000.0, gain_db: -3.5, q: 1.0, filter_type: "peak".to_string() },
             ],
             _ => vec![
-                (1000.0, 2.0, 1.414),
+                // Generic parametric default
+                ParametricBandConfig { freq: 1000.0, gain_db: 0.0, q: 1.414, filter_type: "peak".to_string() },
             ],
         };
 
-        self.coeffs = bands
-            .iter()
-            .map(|&(f0, gain, q)| BiquadCoeffs::peaking_eq(f0, gain, self.sample_rate, q))
-            .collect();
+        Self::new(name, bands, sample_rate)
+    }
+
+    fn recompute(&mut self) {
+        let max_boost = self.bands.iter().map(|b| b.gain_db).fold(0.0f64, f64::max);
+        self.auto_preamp = if max_boost > 0.0 {
+            10.0_f64.powf(-max_boost / 20.0)
+        } else {
+            1.0
+        };
+
+        self.coeffs = self.bands.iter().map(|b| {
+            match b.filter_type.as_str() {
+                "low_shelf" => BiquadCoeffs::low_shelf(b.freq, b.gain_db, self.sample_rate, b.q),
+                "high_shelf" => BiquadCoeffs::high_shelf(b.freq, b.gain_db, self.sample_rate, b.q),
+                "hpf" => BiquadCoeffs::high_pass(b.freq, self.sample_rate, b.q),
+                _ => BiquadCoeffs::peaking_eq(b.freq, b.gain_db, self.sample_rate, b.q),
+            }
+        }).collect();
+
         self.state_l = vec![BiquadState::default(); self.coeffs.len()];
         self.state_r = vec![BiquadState::default(); self.coeffs.len()];
     }
 }
 
-impl Effect for PresetEqEffect {
-    fn process_frame(&mut self, l: f64, r: f64) -> (f64, f64) {
-        let mut fl = l;
-        let mut fr = r;
-        for i in 0..self.coeffs.len() {
-            fl = self.state_l[i].process(fl, &self.coeffs[i]);
-            fr = self.state_r[i].process(fr, &self.coeffs[i]);
+impl Effect for ParametricEqEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let pre = self.auto_preamp;
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let mut fl = (*l as f64) * pre;
+            let mut fr = (*r as f64) * pre;
+            for i in 0..self.coeffs.len() {
+                fl = self.state_l[i].process(fl, &self.coeffs[i]);
+                fr = self.state_r[i].process(fr, &self.coeffs[i]);
+            }
+            *l = fl as f32;
+            *r = fr as f32;
         }
-        (fl, fr)
     }
 
     fn reset(&mut self) {
@@ -449,14 +580,14 @@ impl Effect for PresetEqEffect {
         for s in &mut self.state_r { s.reset(); }
     }
 
-    fn set_sample_rate(&mut self, sample_rate: f64) {
-        self.sample_rate = sample_rate.max(44100.0);
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        self.sample_rate = (sample_rate as f64).max(8000.0);
         self.recompute();
         self.reset();
     }
 
     fn name(&self) -> &str {
-        &self.preset_name
+        &self.name
     }
 
     fn clone_box(&self) -> Box<dyn Effect> {
@@ -464,119 +595,51 @@ impl Effect for PresetEqEffect {
     }
 }
 
+/// Backwards compatibility alias for PresetEqEffect
+pub type PresetEqEffect = ParametricEqEffect;
+
 // ---------------------------------------------------------------------------
-// DSP Pipeline
+// Graph Executor (DAG Signal Router with Branching & Summing)
 // ---------------------------------------------------------------------------
 
-pub struct DspPipeline {
-    sample_rate: f64,
-    chain_complete: bool,
-    has_graph: bool,
-    active_effects: Vec<Box<dyn Effect>>,
-    eq_coeffs: [BiquadCoeffs; 10],
-    eq_state_l: [BiquadState; 10],
-    eq_state_r: [BiquadState; 10],
-    eq_gains: [f64; 10],
-    auto_preamp: f64,
+pub struct GraphExecutor {
+    sample_rate: f32,
+    graph: SignalChainGraph,
+    node_buffers_l: HashMap<u32, Vec<f32>>,
+    node_buffers_r: HashMap<u32, Vec<f32>>,
+    sum_scratch_l: Vec<f32>,
+    sum_scratch_r: Vec<f32>,
     eq_bypass: bool,
-    is_flat: bool,
-    volume: f32,
+    fallback_eq: GraphicEqEffect,
+    has_custom_graph: bool,
 }
 
-impl DspPipeline {
+impl GraphExecutor {
     pub fn new(sample_rate: f32) -> Self {
-        let mut dsp = Self {
-            sample_rate: (sample_rate as f64).max(44100.0),
-            chain_complete: true,
-            has_graph: false,
-            active_effects: Vec::new(),
-            eq_coeffs: [BiquadCoeffs::identity(); 10],
-            eq_state_l: [BiquadState::default(); 10],
-            eq_state_r: [BiquadState::default(); 10],
-            eq_gains: [0.0; 10],
-            auto_preamp: 1.0,
-            eq_bypass: true,
-            is_flat: true,
-            volume: 0.80,
-        };
-        dsp.recompute_all_eq_coeffs();
-        dsp
-    }
-
-    pub fn is_chain_complete(&self) -> bool {
-        self.chain_complete
-    }
-
-    // =========================================================================================
-    //  ARSITEKTUR AUDIO DSP: EKSEKUSI DAG & PERCABANGAN SINYAL (ROADMAP MENDATANG)
-    // =========================================================================================
-    //
-    //  [IDE C] URUTAN SERIAL & PENCEGAHAN FEEDBACK LOOP:
-    //  ----------------------------------------------------------------------------------------
-    //  - Efek dieksekusi secara topologis (Kahn's topological sort) dalam alur DAG tanpa cycle.
-    //  - Loop feedback (A -> C -> A) dilarang pada level graf karena dalam domain digital real-time
-    //    tanpa unit delay (z^-1 buffer circular) akan terjadi infinite recursion / crash.
-    //  - Pemrosesan ulang efek dilakukan via multiple card instance (A1 -> C -> A2).
-    //
-    //  [IDE B] PERCABANGAN PARALEL & SUMMING MIXER:
-    //  ----------------------------------------------------------------------------------------
-    //  - GUI saat ini sudah mendukung percabangan kabel (Branching Output & Merging Input).
-    //  - Rencana Implementasi DSP untuk Percabangan Paralel:
-    //    1. SPLIT BUFFER: Ketika sebuah output pin mencabang ke N modul terpisah, frame buffer audio
-    //       di-clone/didistribusikan ke input masing-masing modul.
-    //    2. PARALLEL PROCESSING: Tiap modul berjalan secara mandiri (misal: Tube Warmer dan Haas Delay
-    //       bekerja bersamaan pada frame audio yang sama).
-    //    3. SUMMING BUS (MIXER): Di node tempat kedua cabang bertemu (converge), sinyal dijumlahkan:
-    //          y(t) = w1 * x1(t) + w2 * x2(t) + ...
-    //       dengan automatic headroom attenuation (misal: 1/N atau -3 dB/-6 dB gain compensation)
-    //       dan soft-limiting agar tidak timbul inter-sample clipping (+6 dB peak).
-    //    4. PHASE COHERENCY: Kompensasi latensi (delay line) jika salah satu cabang memiliki latency.
-    // =========================================================================================
-
-    pub fn set_signal_chain(&mut self, graph: SignalChainGraph) {
-        self.chain_complete = graph.is_complete;
-        self.active_effects = graph.effects;
-        self.has_graph = true;
-        for effect in &mut self.active_effects {
-            effect.set_sample_rate(self.sample_rate);
+        let sr = sample_rate.max(8000.0);
+        let fallback_eq = GraphicEqEffect::new([0.0; 10], sr as f64);
+        Self {
+            sample_rate: sr,
+            graph: SignalChainGraph::default(),
+            node_buffers_l: HashMap::new(),
+            node_buffers_r: HashMap::new(),
+            sum_scratch_l: vec![0.0; 2048],
+            sum_scratch_r: vec![0.0; 2048],
+            eq_bypass: false,
+            fallback_eq,
+            has_custom_graph: false,
         }
     }
 
     pub fn set_sample_rate(&mut self, sample_rate: f32) {
-        let sr = (sample_rate as f64).max(44100.0);
-        if (self.sample_rate - sr).abs() > 1.0 {
-            self.sample_rate = sr;
-            self.recompute_all_eq_coeffs();
-            self.reset_states();
-            for effect in &mut self.active_effects {
-                effect.set_sample_rate(self.sample_rate);
-            }
+        self.sample_rate = sample_rate.max(8000.0);
+        self.fallback_eq.set_sample_rate(self.sample_rate);
+        for node in &mut self.graph.nodes {
+            node.effect.set_sample_rate(self.sample_rate);
         }
-    }
-
-    pub fn set_volume(&mut self, vol: f32) {
-        self.volume = vol.clamp(0.0, 1.5);
-    }
-
-    pub fn set_eq_band(&mut self, band_idx: usize, gain_db: f32) {
-        if band_idx < 10 {
-            self.eq_gains[band_idx] = gain_db.clamp(-12.0, 12.0) as f64;
-            self.update_auto_preamp();
-            self.is_flat = self.eq_gains.iter().all(|&g| g.abs() < 0.05);
-            self.recompute_band_coeffs(band_idx);
-            for effect in &mut self.active_effects {
-                effect.set_param(band_idx, self.eq_gains[band_idx]);
-            }
+        for effect in &mut self.graph.effects {
+            effect.set_sample_rate(self.sample_rate);
         }
-    }
-
-    fn update_auto_preamp(&mut self) {
-        let max_boost = self.eq_gains.iter().cloned().fold(0.0f64, f64::max);
-        self.auto_preamp = if max_boost > 0.0 {
-            10.0_f64.powf(-max_boost / 20.0)
-        } else {
-            1.0
-        };
     }
 
     pub fn set_eq_bypass(&mut self, bypass: bool) {
@@ -586,78 +649,255 @@ impl DspPipeline {
         }
     }
 
-    fn recompute_band_coeffs(&mut self, band_idx: usize) {
-        let f0 = EQ_FREQUENCIES[band_idx];
-        let gain = self.eq_gains[band_idx];
-        self.eq_coeffs[band_idx] = BiquadCoeffs::peaking_eq(f0, gain, self.sample_rate, 1.414);
+    pub fn set_eq_band(&mut self, index: usize, gain_db: f32) {
+        self.fallback_eq.set_param(index as u32, gain_db);
+        for node in &mut self.graph.nodes {
+            node.effect.set_param(index as u32, gain_db);
+        }
+        for effect in &mut self.graph.effects {
+            effect.set_param(index as u32, gain_db);
+        }
     }
 
-    fn recompute_all_eq_coeffs(&mut self) {
-        self.update_auto_preamp();
-        self.is_flat = self.eq_gains.iter().all(|&g| g.abs() < 0.05);
-        for i in 0..10 {
-            self.recompute_band_coeffs(i);
+    pub fn set_node_param(&mut self, node_id: u32, param_id: u32, value: f32) {
+        if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == node_id) {
+            node.effect.set_param(param_id, value);
         }
     }
 
     pub fn reset_states(&mut self) {
-        for i in 0..10 {
-            self.eq_state_l[i].reset();
-            self.eq_state_r[i].reset();
+        self.fallback_eq.reset();
+        for node in &mut self.graph.nodes {
+            node.effect.reset();
         }
-        for effect in &mut self.active_effects {
+        for effect in &mut self.graph.effects {
             effect.reset();
+        }
+    }
+
+    pub fn is_flat(&self) -> bool {
+        self.fallback_eq.is_flat
+    }
+
+    pub fn is_chain_complete(&self) -> bool {
+        self.graph.is_complete
+    }
+
+    pub fn set_signal_chain(&mut self, mut graph: SignalChainGraph) {
+        for node in &mut graph.nodes {
+            node.effect.set_sample_rate(self.sample_rate);
+        }
+        for effect in &mut graph.effects {
+            effect.set_sample_rate(self.sample_rate);
+        }
+
+        // Pre-allocate node scratch buffers for zero-allocation execution
+        for node in &graph.nodes {
+            self.node_buffers_l.entry(node.id).or_insert_with(|| vec![0.0f32; 2048]);
+            self.node_buffers_r.entry(node.id).or_insert_with(|| vec![0.0f32; 2048]);
+        }
+
+        self.has_custom_graph = true;
+        self.graph = graph;
+    }
+
+    pub fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let n = left.len();
+        if n == 0 {
+            return;
+        }
+
+        // 1. If signal chain graph is severed, mute output
+        if !self.graph.is_complete {
+            left.fill(0.0);
+            right.fill(0.0);
+            return;
+        }
+
+        // 2. Bypass passthrough
+        if self.eq_bypass {
+            return;
+        }
+
+        // 3. Fallback to standalone EQ if no custom graph provided
+        if !self.has_custom_graph {
+            self.fallback_eq.process_block(left, right);
+        } else if !self.graph.nodes.is_empty() {
+            let mut executed_nodes = std::collections::HashSet::new();
+
+            for &node_id in &self.graph.topological_order {
+                // Find all parent nodes feeding into this node
+                let parents: Vec<u32> = self.graph.edges.iter()
+                    .filter(|(_, to)| *to == node_id)
+                    .map(|(from, _)| *from)
+                    .filter(|from| executed_nodes.contains(from))
+                    .collect();
+
+                if parents.is_empty() {
+                    // Connected directly from Source
+                    self.sum_scratch_l[..n].copy_from_slice(&left[..n]);
+                    self.sum_scratch_r[..n].copy_from_slice(&right[..n]);
+                } else if parents.len() == 1 {
+                    let p = parents[0];
+                    self.sum_scratch_l[..n].copy_from_slice(&self.node_buffers_l[&p][..n]);
+                    self.sum_scratch_r[..n].copy_from_slice(&self.node_buffers_r[&p][..n]);
+                } else {
+                    // Merging / Summing Bus: sum all parent outputs with headroom compensation
+                    let scale = 1.0f32 / (parents.len() as f32).sqrt();
+                    for i in 0..n {
+                        let mut sum_l = 0.0f32;
+                        let mut sum_r = 0.0f32;
+                        for &p in &parents {
+                            sum_l += self.node_buffers_l[&p][i];
+                            sum_r += self.node_buffers_r[&p][i];
+                        }
+                        self.sum_scratch_l[i] = sum_l * scale;
+                        self.sum_scratch_r[i] = sum_r * scale;
+                    }
+                }
+
+                // Copy input to node buffer and execute effect
+                if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                    let out_l = self.node_buffers_l.get_mut(&node_id).unwrap();
+                    let out_r = self.node_buffers_r.get_mut(&node_id).unwrap();
+                    out_l[..n].copy_from_slice(&self.sum_scratch_l[..n]);
+                    out_r[..n].copy_from_slice(&self.sum_scratch_r[..n]);
+                    node.effect.process_block(&mut out_l[..n], &mut out_r[..n]);
+                    executed_nodes.insert(node_id);
+                }
+            }
+
+            // Identify terminal exit nodes (nodes with no outgoing edges to other active nodes)
+            let terminal_nodes: Vec<u32> = self.graph.topological_order.iter()
+                .cloned()
+                .filter(|&id| {
+                    !self.graph.edges.iter().any(|(from, to)| *from == id && self.graph.topological_order.contains(to))
+                })
+                .collect();
+
+            if terminal_nodes.len() == 1 {
+                let term = terminal_nodes[0];
+                left.copy_from_slice(&self.node_buffers_l[&term][..n]);
+                right.copy_from_slice(&self.node_buffers_r[&term][..n]);
+            } else if !terminal_nodes.is_empty() {
+                // Sum terminal nodes into final output
+                let scale = 1.0f32 / (terminal_nodes.len() as f32).sqrt();
+                for i in 0..n {
+                    let mut sum_l = 0.0f32;
+                    let mut sum_r = 0.0f32;
+                    for &t in &terminal_nodes {
+                        sum_l += self.node_buffers_l[&t][i];
+                        sum_r += self.node_buffers_r[&t][i];
+                    }
+                    left[i] = sum_l * scale;
+                    right[i] = sum_r * scale;
+                }
+            }
+        } else if !self.graph.effects.is_empty() {
+            // Serial backwards compatibility mode
+            for effect in &mut self.graph.effects {
+                effect.process_block(left, right);
+            }
+        }
+
+        // Soft-limiting (A6): ONLY limit peaks that actually exceed linearity (> 0.90)
+        for s in left.iter_mut() {
+            if s.abs() > 0.90 {
+                *s = soft_limit(*s as f64) as f32;
+            }
+            *s = s.clamp(-1.0, 1.0);
+        }
+        for s in right.iter_mut() {
+            if s.abs() > 0.90 {
+                *s = soft_limit(*s as f64) as f32;
+            }
+            *s = s.clamp(-1.0, 1.0);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DspPipeline (Clean Unified Facade wrapping GraphExecutor)
+// ---------------------------------------------------------------------------
+
+pub struct DspPipeline {
+    executor: GraphExecutor,
+}
+
+impl DspPipeline {
+    pub fn new(sample_rate: f32) -> Self {
+        Self {
+            executor: GraphExecutor::new(sample_rate),
+        }
+    }
+
+    pub fn is_chain_complete(&self) -> bool {
+        self.executor.is_chain_complete()
+    }
+
+    pub fn is_flat(&self) -> bool {
+        self.executor.is_flat()
+    }
+
+    pub fn set_signal_chain(&mut self, graph: SignalChainGraph) {
+        self.executor.set_signal_chain(graph);
+    }
+
+    pub fn set_sample_rate(&mut self, sample_rate: f32) {
+        self.executor.set_sample_rate(sample_rate);
+    }
+
+    pub fn set_volume(&mut self, _vol: f32) {}
+
+    pub fn set_eq_band(&mut self, band_idx: usize, gain_db: f32) {
+        self.executor.set_eq_band(band_idx, gain_db);
+    }
+
+    pub fn set_node_param(&mut self, node_id: u32, param_id: u32, value: f32) {
+        self.executor.set_node_param(node_id, param_id, value);
+    }
+
+    pub fn set_eq_bypass(&mut self, bypass: bool) {
+        self.executor.set_eq_bypass(bypass);
+    }
+
+    pub fn reset_states(&mut self) {
+        self.executor.reset_states();
+    }
+
+    #[inline(always)]
+    pub fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        self.executor.process_block(left, right);
+    }
+
+    #[inline(always)]
+    pub fn process_interleaved(&mut self, stereo: &mut [f32]) {
+        let num_frames = stereo.len() / 2;
+        if num_frames == 0 {
+            return;
+        }
+        let mut scratch_l = [0.0f32; 1024];
+        let mut scratch_r = [0.0f32; 1024];
+        for chunk in stereo.chunks_mut(2048) {
+            let frames = chunk.len() / 2;
+            for i in 0..frames {
+                scratch_l[i] = chunk[i * 2];
+                scratch_r[i] = chunk[i * 2 + 1];
+            }
+            self.executor.process_block(&mut scratch_l[..frames], &mut scratch_r[..frames]);
+            for i in 0..frames {
+                chunk[i * 2] = scratch_l[i];
+                chunk[i * 2 + 1] = scratch_r[i];
+            }
         }
     }
 
     #[inline(always)]
     pub fn process_frame(&mut self, l: f32, r: f32) -> (f32, f32) {
-        // 1. If signal chain graph is severed (no connection to Endpoint), output silence
-        if !self.chain_complete {
-            return (0.0, 0.0);
-        }
-
-        // 2. Direct transparent passthrough if bypassed
-        if self.eq_bypass {
-            return (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0));
-        }
-
-        let mut fl = l as f64;
-        let mut fr = r as f64;
-
-        if !self.active_effects.is_empty() {
-            // 3. Process through modular dynamic effects in DAG execution order
-            for effect in &mut self.active_effects {
-                let (next_l, next_r) = effect.process_frame(fl, fr);
-                fl = next_l;
-                fr = next_r;
-            }
-            // 4. Smooth soft-knee saturation limiter: prevents harsh clipping on transient inter-band resonance
-            let out_l = soft_limit(fl) as f32;
-            let out_r = soft_limit(fr) as f32;
-            (out_l.clamp(-1.0, 1.0), out_r.clamp(-1.0, 1.0))
-        } else if !self.has_graph {
-            // Standalone fallback ONLY when no graph has ever been supplied (e.g. standalone DSP tests or engine startup)
-            // Zero-Cost Fast Short-Circuit: skip 10-band biquad cascade when gains are 0.0 dB
-            if self.is_flat {
-                let out_l = soft_limit(fl * self.auto_preamp) as f32;
-                let out_r = soft_limit(fr * self.auto_preamp) as f32;
-                return (out_l.clamp(-1.0, 1.0), out_r.clamp(-1.0, 1.0));
-            }
-            fl *= self.auto_preamp;
-            fr *= self.auto_preamp;
-            for i in 0..10 {
-                fl = self.eq_state_l[i].process(fl, &self.eq_coeffs[i]);
-                fr = self.eq_state_r[i].process(fr, &self.eq_coeffs[i]);
-            }
-            let out_l = soft_limit(fl) as f32;
-            let out_r = soft_limit(fr) as f32;
-            (out_l.clamp(-1.0, 1.0), out_r.clamp(-1.0, 1.0))
-        } else {
-            // Graph is active and explicitly bypasses effects (e.g. 2 -> 4 directly):
-            // 100% transparent passthrough matching the canvas visualization!
-            (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0))
-        }
+        let mut left = [l];
+        let mut right = [r];
+        self.executor.process_block(&mut left, &mut right);
+        (left[0], right[0])
     }
 }
 
@@ -668,9 +908,7 @@ mod tests {
     #[test]
     fn test_dsp_volume_and_bypass() {
         let mut dsp = DspPipeline::new(44100.0);
-        dsp.set_volume(0.5);
         dsp.set_eq_bypass(true);
-
         let (l, r) = dsp.process_frame(0.4, -0.6);
         assert!((l - 0.4).abs() < 1e-4);
         assert!((r - (-0.6)).abs() < 1e-4);
@@ -679,10 +917,10 @@ mod tests {
     #[test]
     fn test_transparent_clamping() {
         let mut dsp = DspPipeline::new(44100.0);
-        dsp.set_eq_bypass(true);
+        dsp.set_eq_bypass(false);
         let (l, r) = dsp.process_frame(1.5, -1.5);
-        assert_eq!(l, 1.0);
-        assert_eq!(r, -1.0);
+        assert!((l - 1.0).abs() < 1e-4, "Peak 1.5 must be soft-limited to ~1.0, got {}", l);
+        assert!((r - (-1.0)).abs() < 1e-4, "Peak -1.5 must be soft-limited to ~ -1.0, got {}", r);
     }
 
     #[test]
@@ -746,6 +984,9 @@ mod tests {
         // Sever the chain: is_complete = false
         dsp.set_signal_chain(SignalChainGraph {
             is_complete: false,
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            topological_order: Vec::new(),
             effects: Vec::new(),
         });
 
@@ -762,6 +1003,9 @@ mod tests {
 
         dsp.set_signal_chain(SignalChainGraph {
             is_complete: true,
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            topological_order: Vec::new(),
             effects: vec![Box::new(VolumeAttenuatorEffect::new(-6.0205999))],
         });
 
@@ -778,25 +1022,20 @@ mod tests {
         let in_r = 0.30;
         let (out_l, out_r) = widener.process_frame(in_l, in_r);
 
-        // Center mono energy (L + R) / 2 must be mathematically conserved
         let in_mono = (in_l + in_r) * 0.5;
         let out_mono = (out_l + out_r) * 0.5;
         assert!((out_mono - in_mono).abs() < 1e-6, "Mono center must be conserved");
 
-        // Stereo side channel must be expanded by +35%
         let in_side = (in_l - in_r) * 0.5;
         let out_side = (out_l - out_r) * 0.5;
-        assert!((out_side - in_side * 1.35).abs() < 1e-6, "Side channel must be expanded by 1.35x");
+        assert!((out_side - in_side * 1.35).abs() < 1e-5, "Side channel must be expanded by 1.35x");
     }
 
     #[test]
     fn test_tube_warmer_effect() {
         let mut tube = TubeWarmerEffect::new();
-        // Triode saturation has asymmetric 2nd harmonic +0.15 x^2
         let (pos_l, _) = tube.process_frame(0.5, 0.0);
         let (neg_l, _) = tube.process_frame(-0.5, 0.0);
-
-        // Positive swing and negative swing should not be symmetric due to even harmonics
         assert!((pos_l.abs() - neg_l.abs()).abs() > 0.01, "Triode warmth must introduce even harmonic asymmetry");
     }
 
@@ -804,7 +1043,6 @@ mod tests {
     fn test_bass_guard_effect() {
         let mut bg = BassGuardEffect::new(48000.0);
 
-        // Feed 1000 Hz tone (should pass virtually unattenuated)
         let mut max_1k = 0.0f64;
         for i in 0..200 {
             let t = i as f64 / 48000.0;
@@ -816,7 +1054,6 @@ mod tests {
         }
         assert!(max_1k > 0.98, "1000 Hz must pass through Bass Guard at ~0 dB: got {}", max_1k);
 
-        // Reset and feed 10 Hz subsonic rumble (should be heavily rolled off below 24 Hz cutoff)
         bg.reset();
         let mut max_10hz = 0.0f64;
         for i in 0..10000 {
@@ -827,27 +1064,29 @@ mod tests {
                 max_10hz = out.abs();
             }
         }
-        // At 10 Hz with 24 Hz 2nd order HPF (-12 dB/oct), attenuation is > 14 dB (< 0.20 amplitude)
         assert!(max_10hz < 0.25, "10 Hz subsonic rumble must be strongly attenuated: got {}", max_10hz);
     }
 
     #[test]
     fn test_graphic_eq_zero_cost_flat_bypass() {
-        // Initial flat EQ: all gains 0.0 dB
         let mut eq = GraphicEqEffect::new([0.0; 10], 48000.0);
         assert!(eq.is_flat);
 
-        // Frame process on flat EQ should pass through samples identically
         let (out_l, out_r) = eq.process_frame(0.42, -0.73);
-        assert!((out_l - 0.42).abs() < 1e-9);
-        assert!((out_r - (-0.73)).abs() < 1e-9);
+        assert!((out_l - 0.42).abs() < 1e-6);
+        assert!((out_r - (-0.73)).abs() < 1e-6);
 
-        // Modify a band: is_flat becomes false
-        eq.set_param(5, 3.0); // +3 dB at 1000 Hz
+        eq.set_param(5, 3.0);
+        // Process a few blocks to smooth to target
+        let mut l_buf = [0.42f32; 64];
+        let mut r_buf = [-0.73f32; 64];
+        eq.process_block(&mut l_buf, &mut r_buf);
         assert!(!eq.is_flat);
 
-        // Reset all bands to 0: is_flat becomes true again
         eq.set_param(5, 0.0);
+        for _ in 0..10 {
+            eq.process_block(&mut l_buf, &mut r_buf);
+        }
         assert!(eq.is_flat);
     }
 
@@ -855,18 +1094,23 @@ mod tests {
     fn test_dsp_pipeline_zero_cost_flat_bypass() {
         let mut dsp = DspPipeline::new(48000.0);
         dsp.set_eq_bypass(false);
-        assert!(dsp.is_flat);
+        assert!(dsp.is_flat());
 
         let (out_l, out_r) = dsp.process_frame(0.5, -0.5);
         assert!((out_l - 0.5).abs() < 1e-4);
         assert!((out_r - (-0.5)).abs() < 1e-4);
 
-        // Boost a band: is_flat becomes false
         dsp.set_eq_band(3, 4.0);
-        assert!(!dsp.is_flat);
+        // Process a few frames to let smoothing apply
+        for _ in 0..20 {
+            let _ = dsp.process_frame(0.5, -0.5);
+        }
+        assert!(!dsp.is_flat());
 
-        // Revert band: is_flat becomes true
         dsp.set_eq_band(3, 0.0);
-        assert!(dsp.is_flat);
+        for _ in 0..20 {
+            let _ = dsp.process_frame(0.5, -0.5);
+        }
+        assert!(dsp.is_flat());
     }
 }
