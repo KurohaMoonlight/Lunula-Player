@@ -252,6 +252,8 @@ pub enum NodeType {
     BassGuard,
     VolumeAttenuator,
     SavedEqPreset(String),
+    LowPassFilter,
+    Mixer,
 }
 
 impl NodeType {
@@ -264,6 +266,8 @@ impl NodeType {
                 | NodeType::BassGuard
                 | NodeType::VolumeAttenuator
                 | NodeType::SavedEqPreset(_)
+                | NodeType::LowPassFilter
+                | NodeType::Mixer
         )
     }
 }
@@ -277,6 +281,7 @@ pub struct ModularNode {
     pub sub2: String,
     pub pos: Pos2,
     pub is_removable: bool,
+    pub param_val: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

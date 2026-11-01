@@ -516,6 +516,9 @@ fn run_audio_worker(
                         }
                     }
                     AudioCommand::SetNodeParam { node_id, param_id, value } => {
+                        if let Some(n) = last_graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                            n.effect.set_param(param_id, value);
+                        }
                         dsp.set_node_param(node_id, param_id, value);
                         if let Some(out) = &output {
                             out.send_dsp_command(DspCommand::SetNodeParam { node_id, param_id, value });

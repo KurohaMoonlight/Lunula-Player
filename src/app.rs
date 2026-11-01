@@ -53,6 +53,11 @@ pub struct LunulaApp {
     pub eq_show_spectrum_overlay: bool,
     pub show_saved_eq_palette_popup: bool,
     pub saved_eq_popup_anchor: Option<Pos2>,
+    pub show_patchbay_tutorial: bool,
+    pub patchbay_tutorial_step: usize,
+    pub active_filter_tutorial: Option<NodeType>,
+    pub filter_tutorial_step: usize,
+    pub dragging_slider_node: Option<usize>,
 
     // Global Output Stage (Separated from EQ preset)
     pub eq_limiter_enabled: bool,
@@ -157,6 +162,7 @@ impl LunulaApp {
                 sub2: "96.0 kHz".to_string(),
                 pos: Pos2::new(20.0, 48.0),
                 is_removable: false,
+                param_val: 0.0,
             },
             ModularNode {
                 id: 2,
@@ -166,6 +172,7 @@ impl LunulaApp {
                 sub2: "100% Loaded".to_string(),
                 pos: Pos2::new(176.0, 48.0),
                 is_removable: false,
+                param_val: 0.0,
             },
             ModularNode {
                 id: 3,
@@ -175,6 +182,7 @@ impl LunulaApp {
                 sub2: "0.0 dB Pure Master".to_string(),
                 pos: Pos2::new(332.0, 48.0),
                 is_removable: false,
+                param_val: 0.0,
             },
             ModularNode {
                 id: 4,
@@ -184,6 +192,7 @@ impl LunulaApp {
                 sub2: "Direct Bitstream".to_string(),
                 pos: Pos2::new(488.0, 48.0),
                 is_removable: false,
+                param_val: 0.0,
             },
             ModularNode {
                 id: 5,
@@ -193,6 +202,7 @@ impl LunulaApp {
                 sub2: "Native Sample Rate".to_string(),
                 pos: Pos2::new(644.0, 48.0),
                 is_removable: false,
+                param_val: 0.0,
             },
         ];
 
@@ -269,6 +279,11 @@ impl LunulaApp {
             eq_show_spectrum_overlay: true,
             show_saved_eq_palette_popup: false,
             saved_eq_popup_anchor: None,
+            show_patchbay_tutorial: false,
+            patchbay_tutorial_step: 0,
+            active_filter_tutorial: None,
+            filter_tutorial_step: 0,
+            dragging_slider_node: None,
 
             eq_limiter_enabled: false,
             eq_dither_mode: DitherMode::None,
@@ -1131,7 +1146,7 @@ impl LunulaApp {
         use std::collections::{HashMap, VecDeque};
         use crate::models::NodeType;
         use crate::audio::{
-            BassGuardEffect, Effect, GraphicEqEffect, PresetEqEffect, StereoWidenerEffect,
+            BassGuardEffect, Effect, GraphicEqEffect, LowPassFilterEffect, MixerEffect, PresetEqEffect, StereoWidenerEffect,
             TubeWarmerEffect, VolumeAttenuatorEffect,
         };
 
@@ -1207,6 +1222,14 @@ impl LunulaApp {
                     }
                     NodeType::VolumeAttenuator => {
                         Some(Box::new(VolumeAttenuatorEffect::new(-6.02)))
+                    }
+                    NodeType::LowPassFilter => {
+                        let cutoff = if node.param_val > 50.0 { node.param_val as f64 } else { 800.0 };
+                        Some(Box::new(LowPassFilterEffect::new(cutoff, sample_rate)))
+                    }
+                    NodeType::Mixer => {
+                        let mix = if (0.0..=1.0).contains(&node.param_val) { node.param_val } else { 0.5 };
+                        Some(Box::new(MixerEffect::new(mix)))
                     }
                     NodeType::SavedEqPreset(name) => {
                         Some(Box::new(PresetEqEffect::from_preset(name, sample_rate)))
@@ -1738,10 +1761,20 @@ impl eframe::App for LunulaApp {
                                         // Row 2: Tips & Navigation Guidance (Separated row, never overlaps)
                                         ui.horizontal(|ui| {
                                             ui.label(
-                                                egui::RichText::new("💡 Tarik pin Output (kanan) ke pin Input (kiri) untuk menyambung • Klik kabel untuk memutus • Klik kanan tahan (hold) untuk geser canvas")
+                                                egui::RichText::new("💡 Tarik pin Output (kanan) ke pin Input (kiri) untuk menyambung • Klik kabel untuk memutus • Klik kanan tahan untuk geser canvas")
                                                     .size(11.0)
                                                     .color(Color32::from_rgb(100, 116, 139)),
                                             );
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                let tut_text = if self.show_patchbay_tutorial {
+                                                    egui::RichText::new("📖 Tutup Tutorial").size(11.0).strong().color(Color32::from_rgb(147, 51, 234))
+                                                } else {
+                                                    egui::RichText::new("📖 Panduan / Tutorial Pemula").size(11.0).strong().color(Color32::from_rgb(99, 102, 241))
+                                                };
+                                                if ui.button(tut_text).on_hover_text("Buka modul tutorial bergambar cara kerja Signal Chain Studio").clicked() {
+                                                    self.show_patchbay_tutorial = !self.show_patchbay_tutorial;
+                                                }
+                                            });
                                         });
 
                                         ui.add_space(6.0);

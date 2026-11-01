@@ -43,6 +43,9 @@ pub trait Effect: Send + std::fmt::Debug {
     fn set_sample_rate(&mut self, sample_rate: f32);
     fn name(&self) -> &str;
     fn set_param(&mut self, _param_id: u32, _val: f32) {}
+    fn mix_ratio(&self) -> Option<f32> {
+        None
+    }
     fn clone_box(&self) -> Box<dyn Effect>;
 }
 

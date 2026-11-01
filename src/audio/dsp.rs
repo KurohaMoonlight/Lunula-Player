@@ -144,6 +144,31 @@ impl BiquadCoeffs {
             a2: a2 / a0,
         }
     }
+
+    pub fn low_pass(cutoff_freq: f64, sample_rate: f64, q: f64) -> Self {
+        let safe_sr = sample_rate.max(8000.0);
+        let nyquist = safe_sr * 0.495;
+        let f0 = cutoff_freq.clamp(10.0, nyquist);
+
+        let w0 = 2.0 * std::f64::consts::PI * (f0 / safe_sr);
+        let alpha = w0.sin() / (2.0 * q.max(0.1));
+        let cos_w0 = w0.cos();
+
+        let b0 = (1.0 - cos_w0) * 0.5;
+        let b1 = 1.0 - cos_w0;
+        let b2 = (1.0 - cos_w0) * 0.5;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos_w0;
+        let a2 = 1.0 - alpha;
+
+        Self {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+        }
+    }
 }
 
 /// Direct Form II Transposed (DF2T) Biquad Filter State
@@ -472,6 +497,106 @@ impl Effect for VolumeAttenuatorEffect {
     }
 }
 
+/// Low-Pass Filter: 2nd-order Butterworth low-pass filter (default cutoff 800 Hz)
+/// Dramatic audible difference (muffled / underwater effect) cutting treble above cutoff.
+#[derive(Clone, Debug)]
+pub struct LowPassFilterEffect {
+    cutoff_hz: f64,
+    sample_rate: f64,
+    lpf_coeffs: BiquadCoeffs,
+    state_l: BiquadState,
+    state_r: BiquadState,
+}
+
+impl LowPassFilterEffect {
+    pub fn new(cutoff_hz: f64, sample_rate: f64) -> Self {
+        let mut effect = Self {
+            cutoff_hz: cutoff_hz.clamp(50.0, 20000.0),
+            sample_rate: sample_rate.max(8000.0),
+            lpf_coeffs: BiquadCoeffs::identity(),
+            state_l: BiquadState::default(),
+            state_r: BiquadState::default(),
+        };
+        effect.recompute();
+        effect
+    }
+
+    fn recompute(&mut self) {
+        // Butterworth Q = 1/sqrt(2) approx 0.70710678
+        self.lpf_coeffs = BiquadCoeffs::low_pass(self.cutoff_hz, self.sample_rate, 0.7071067811865476);
+    }
+}
+
+impl Effect for LowPassFilterEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            *l = self.state_l.process(*l as f64, &self.lpf_coeffs) as f32;
+            *r = self.state_r.process(*r as f64, &self.lpf_coeffs) as f32;
+        }
+    }
+
+    fn reset(&mut self) {
+        self.state_l.reset();
+        self.state_r.reset();
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        self.sample_rate = (sample_rate as f64).max(8000.0);
+        self.recompute();
+        self.reset();
+    }
+
+    fn name(&self) -> &str {
+        "Low-Pass Filter (800Hz Muffled/Underwater)"
+    }
+
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        if param_id == 0 && val > 20.0 {
+            self.cutoff_hz = val as f64;
+            self.recompute();
+        }
+    }
+
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Mixer / Summing Bus: Crossfader between input branches with constant-power headroom
+#[derive(Clone, Debug)]
+pub struct MixerEffect {
+    mix: f32, // 0.0 = 100% A, 1.0 = 100% B, 0.5 = 50% A / 50% B
+}
+
+impl MixerEffect {
+    pub fn new(mix: f32) -> Self {
+        Self { mix: mix.clamp(0.0, 1.0) }
+    }
+}
+
+impl Effect for MixerEffect {
+    fn process_block(&mut self, _left: &mut [f32], _right: &mut [f32]) {
+        // Mixing/summing is executed in topological bus summing in DspPipeline
+    }
+
+    fn reset(&mut self) {}
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
+    fn name(&self) -> &str {
+        "Mixer / Summing Bus"
+    }
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        if param_id == 0 {
+            self.mix = val.clamp(0.0, 1.0);
+        }
+    }
+    fn mix_ratio(&self) -> Option<f32> {
+        Some(self.mix)
+    }
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
 /// Generic Parametric EQ Band Configuration
 #[derive(Clone, Debug)]
 pub struct ParametricBandConfig {
@@ -741,6 +866,17 @@ impl GraphExecutor {
                     let p = parents[0];
                     self.sum_scratch_l[..n].copy_from_slice(&self.node_buffers_l[&p][..n]);
                     self.sum_scratch_r[..n].copy_from_slice(&self.node_buffers_r[&p][..n]);
+                } else if parents.len() == 2 {
+                    let node_opt = self.graph.nodes.iter().find(|n| n.id == node_id);
+                    let mix_ratio = node_opt.and_then(|n| n.effect.mix_ratio()).unwrap_or(0.5);
+                    let gain_a = (1.0 - mix_ratio).sqrt();
+                    let gain_b = mix_ratio.sqrt();
+                    let p_a = parents[0];
+                    let p_b = parents[1];
+                    for i in 0..n {
+                        self.sum_scratch_l[i] = self.node_buffers_l[&p_a][i] * gain_a + self.node_buffers_l[&p_b][i] * gain_b;
+                        self.sum_scratch_r[i] = self.node_buffers_r[&p_a][i] * gain_a + self.node_buffers_r[&p_b][i] * gain_b;
+                    }
                 } else {
                     // Merging / Summing Bus: sum all parent outputs with headroom compensation
                     let scale = 1.0f32 / (parents.len() as f32).sqrt();
@@ -1112,5 +1248,51 @@ mod tests {
             let _ = dsp.process_frame(0.5, -0.5);
         }
         assert!(dsp.is_flat());
+    }
+
+    #[test]
+    fn test_low_pass_filter_effect() {
+        let mut lpf = LowPassFilterEffect::new(800.0, 48000.0);
+        let mut l_buf = [0.0f32; 1000];
+        let mut r_buf = [0.0f32; 1000];
+
+        // 100 Hz bass sine wave should pass almost untouched
+        for i in 0..1000 {
+            let t = i as f32 / 48000.0;
+            l_buf[i] = (2.0 * std::f32::consts::PI * 100.0 * t).sin();
+            r_buf[i] = l_buf[i];
+        }
+        lpf.process_block(&mut l_buf, &mut r_buf);
+        let bass_peak = l_buf[800..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(bass_peak > 0.90, "100 Hz bass should pass through 800 Hz LPF, got {}", bass_peak);
+
+        // 5000 Hz treble sine wave should be heavily cut
+        lpf.reset();
+        for i in 0..1000 {
+            let t = i as f32 / 48000.0;
+            l_buf[i] = (2.0 * std::f32::consts::PI * 5000.0 * t).sin();
+            r_buf[i] = l_buf[i];
+        }
+        lpf.process_block(&mut l_buf, &mut r_buf);
+        let treble_peak = l_buf[800..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(treble_peak < 0.15, "5000 Hz treble should be muted by 800 Hz LPF, got {}", treble_peak);
+    }
+
+    #[test]
+    fn test_mixer_effect_constant_power() {
+        let mut mixer = MixerEffect::new(0.5);
+        assert_eq!(mixer.mix_ratio(), Some(0.5));
+
+        // Constant power sum check: sqrt(1 - mix)^2 + sqrt(mix)^2 = 1.0
+        let mix = 0.5f32;
+        let gain_a = (1.0 - mix).sqrt();
+        let gain_b = mix.sqrt();
+        let power = gain_a * gain_a + gain_b * gain_b;
+        assert!((power - 1.0).abs() < 1e-6);
+
+        mixer.set_param(0, 0.2);
+        assert_eq!(mixer.mix_ratio(), Some(0.2));
+        mixer.set_param(0, 1.5); // clamps to 1.0
+        assert_eq!(mixer.mix_ratio(), Some(1.0));
     }
 }
