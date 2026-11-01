@@ -601,12 +601,42 @@ impl Effect for MixerEffect {
 #[derive(Clone, Debug, Default)]
 pub struct PassthroughEffect;
 
+impl PassthroughEffect {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
 impl Effect for PassthroughEffect {
     fn process_block(&mut self, _left: &mut [f32], _right: &mut [f32]) {}
     fn reset(&mut self) {}
     fn set_sample_rate(&mut self, _sample_rate: f32) {}
     fn name(&self) -> &str {
         "Passthrough (Wire)"
+    }
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Splitter / Y-Branch Bus: 1 Input -> Dual Output (Pin A & Pin B) with lossless 64-bit precision
+#[derive(Clone, Debug, Default)]
+pub struct SplitterEffect;
+
+impl SplitterEffect {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Effect for SplitterEffect {
+    fn process_block(&mut self, _left: &mut [f32], _right: &mut [f32]) {
+        // Splitting is executed losslessly by routing the node output buffer to multiple downstream nodes
+    }
+    fn reset(&mut self) {}
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
+    fn name(&self) -> &str {
+        "Splitter / Y-Branch Bus"
     }
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
@@ -793,10 +823,14 @@ impl GraphExecutor {
     pub fn set_eq_band(&mut self, index: usize, gain_db: f32) {
         self.fallback_eq.set_param(index as u32, gain_db);
         for node in &mut self.graph.nodes {
-            node.effect.set_param(index as u32, gain_db);
+            if node.effect.name() == "10-Band Graphic EQ" {
+                node.effect.set_param(index as u32, gain_db);
+            }
         }
         for effect in &mut self.graph.effects {
-            effect.set_param(index as u32, gain_db);
+            if effect.name() == "10-Band Graphic EQ" {
+                effect.set_param(index as u32, gain_db);
+            }
         }
     }
 
@@ -1384,5 +1418,178 @@ mod tests {
         dsp.process_block(&mut left, &mut right);
         let peak_mid = left[500..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
         assert!((peak_mid - 0.707).abs() < 0.12, "At Mix = 0.5, amplitude should follow constant-power gain ~0.707: got {}", peak_mid);
+    }
+
+    #[test]
+    fn test_splitter_and_mixer_diamond_loop() {
+        let mut dsp = DspPipeline::new(48000.0);
+
+        // Build Diamond Loop:
+        // Node 1 (Source/Resampler) -> Node 2 (Splitter)
+        // Splitter Out A -> Node 4 (Mixer In A)
+        // Splitter Out B -> Node 3 (LPF) -> Node 4 (Mixer In B)
+        let node1 = crate::audio::GraphNode {
+            id: 1,
+            name: "App Resampler".to_string(),
+            effect: Box::new(PassthroughEffect::new()),
+        };
+        let node2 = crate::audio::GraphNode {
+            id: 2,
+            name: "Splitter".to_string(),
+            effect: Box::new(SplitterEffect::new()),
+        };
+        let node3 = crate::audio::GraphNode {
+            id: 3,
+            name: "Low-Pass Filter".to_string(),
+            effect: Box::new(LowPassFilterEffect::new(800.0, 48000.0)),
+        };
+        let node4 = crate::audio::GraphNode {
+            id: 4,
+            name: "Mixer / Summing Bus".to_string(),
+            effect: Box::new(MixerEffect::new(0.0)),
+        };
+
+        let graph = crate::audio::SignalChainGraph {
+            is_complete: true,
+            nodes: vec![node1, node2, node3, node4],
+            edges: vec![
+                (1, 2), // Source -> Splitter
+                (2, 4), // Splitter Pin A -> Mixer Pin A
+                (2, 3), // Splitter Pin B -> LPF
+                (3, 4), // LPF -> Mixer Pin B
+            ],
+            topological_order: vec![1, 2, 3, 4],
+            effects: vec![],
+        };
+        dsp.set_signal_chain(graph);
+
+        // Test 1: Mix = 0.0 (100% Pin A = Direct passthrough via Splitter)
+        dsp.set_node_param(4, 0, 0.0);
+        let mut left = [0.0f32; 1024];
+        let mut right = [0.0f32; 1024];
+        for i in 0..1024 {
+            let t = i as f32 / 48000.0;
+            left[i] = (2.0 * std::f32::consts::PI * 5000.0 * t).sin();
+            right[i] = left[i];
+        }
+        dsp.process_block(&mut left, &mut right);
+        let peak_dry = left[500..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(peak_dry > 0.90, "Diamond loop Pin A Dry via Splitter must pass 5000 Hz tone: got {}", peak_dry);
+
+        // Test 2: Mix = 1.0 (100% Pin B = Wet LPF via Splitter)
+        dsp.set_node_param(4, 0, 1.0);
+        for i in 0..1024 {
+            let t = i as f32 / 48000.0;
+            left[i] = (2.0 * std::f32::consts::PI * 5000.0 * t).sin();
+            right[i] = left[i];
+        }
+        dsp.process_block(&mut left, &mut right);
+        let peak_wet = left[500..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(peak_wet < 0.15, "Diamond loop Pin B Wet via Splitter + LPF must attenuate 5000 Hz: got {}", peak_wet);
+    }
+
+    #[test]
+    fn test_eq_disconnected_does_not_affect_audio() {
+        let mut dsp = DspPipeline::new(48000.0);
+        dsp.set_eq_bypass(false);
+
+        // Chain without EQ: Source (1) -> RAM Buffer (2) -> Audio Engine (4) -> Output DAC (5)
+        let graph = crate::audio::SignalChainGraph {
+            is_complete: true,
+            nodes: vec![
+                crate::audio::GraphNode { id: 1, name: "SOURCE".to_string(), effect: Box::new(PassthroughEffect) },
+                crate::audio::GraphNode { id: 2, name: "RAM BUFFER".to_string(), effect: Box::new(PassthroughEffect) },
+                crate::audio::GraphNode { id: 4, name: "AUDIO ENGINE".to_string(), effect: Box::new(PassthroughEffect) },
+                crate::audio::GraphNode { id: 5, name: "OUTPUT DAC".to_string(), effect: Box::new(PassthroughEffect) },
+            ],
+            edges: vec![(1, 2), (2, 4), (4, 5)],
+            topological_order: vec![1, 2, 4, 5],
+            effects: vec![],
+        };
+        dsp.set_signal_chain(graph);
+
+        // Set extreme EQ boost: +12 dB on all bands
+        for band in 0..10 {
+            dsp.set_eq_band(band, 12.0);
+        }
+
+        let input_l = [0.42f32; 512];
+        let input_r = [-0.73f32; 512];
+        let mut left = input_l;
+        let mut right = input_r;
+
+        dsp.process_block(&mut left, &mut right);
+
+        // Audio must be 100% bit-exact and completely unaffected by the disconnected equalizer!
+        for i in 0..512 {
+            assert_eq!(left[i], input_l[i], "Left sample at {} must be unmodified when EQ is not in chain", i);
+            assert_eq!(right[i], input_r[i], "Right sample at {} must be unmodified when EQ is not in chain", i);
+        }
+    }
+
+    #[test]
+    fn test_set_eq_band_does_not_corrupt_other_effects() {
+        let mut dsp = DspPipeline::new(48000.0);
+        dsp.set_eq_bypass(false);
+
+        let mixer = Box::new(MixerEffect::new(0.5));
+        let lpf = Box::new(LowPassFilterEffect::new(1200.0, 48000.0));
+
+        let graph = crate::audio::SignalChainGraph {
+            is_complete: true,
+            nodes: vec![
+                crate::audio::GraphNode { id: 1, name: "LPF".to_string(), effect: lpf },
+                crate::audio::GraphNode { id: 2, name: "MIXER".to_string(), effect: mixer },
+            ],
+            edges: vec![(1, 2)],
+            topological_order: vec![1, 2],
+            effects: vec![],
+        };
+        dsp.set_signal_chain(graph);
+
+        // Set EQ band 0 to +12.0 dB
+        dsp.set_eq_band(0, 12.0);
+
+        // Verify Mixer's mix ratio was NOT overwritten (param_id 0)
+        let mixer_node = dsp.executor.graph.nodes.iter().find(|n| n.id == 2).unwrap();
+        assert_eq!(mixer_node.effect.mix_ratio(), Some(0.5), "Mixer mix_ratio must remain 0.5 and not be corrupted by EQ band 0");
+    }
+
+    #[test]
+    fn test_eq_connected_properly_modifies_audio() {
+        let mut dsp = DspPipeline::new(48000.0);
+        dsp.set_eq_bypass(false);
+
+        // Graphic EQ with 1000 Hz band (idx 5) at 0 dB initially
+        let eq = Box::new(GraphicEqEffect::new([0.0; 10], 48000.0));
+        let graph = crate::audio::SignalChainGraph {
+            is_complete: true,
+            nodes: vec![
+                crate::audio::GraphNode { id: 1, name: "10-Band Graphic EQ".to_string(), effect: eq },
+            ],
+            edges: vec![],
+            topological_order: vec![1],
+            effects: vec![],
+        };
+        dsp.set_signal_chain(graph);
+
+        // Cut 1000 Hz band by -12 dB (should attenuate 1000 Hz by ~75%)
+        dsp.set_eq_band(5, -12.0);
+
+        let mut left = [0.0f32; 1024];
+        let mut right = [0.0f32; 1024];
+        // Slew parameter smoothing over multiple blocks
+        for _ in 0..10 {
+            for i in 0..1024 {
+                let t = i as f32 / 48000.0;
+                left[i] = (2.0 * std::f32::consts::PI * 1000.0 * t).sin();
+                right[i] = left[i];
+            }
+            dsp.process_block(&mut left, &mut right);
+        }
+
+        let peak_attenuated = left[500..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        // -12 dB attenuation on 1.0 input should result in amplitude <= 0.35
+        assert!(peak_attenuated < 0.35, "Cut 1000 Hz tone via connected EQ should have amplitude < 0.35, got {}", peak_attenuated);
     }
 }

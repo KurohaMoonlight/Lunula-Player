@@ -72,6 +72,7 @@ impl LunulaApp {
             NodeType::VolumeAttenuator => ("ATTENUATOR".to_string(), "Volume -6 dB".to_string(), "Passive Pad".to_string()),
             NodeType::LowPassFilter => ("LOW-PASS FILTER".to_string(), "Cutoff 800 Hz".to_string(), "Muffled / Underwater".to_string()),
             NodeType::Mixer => ("MIXER / SUMMING".to_string(), "Mix: 50% A • 50% B".to_string(), "Dual-Bus Gerbang".to_string()),
+            NodeType::Splitter => ("SPLITTER / Y-BRANCH".to_string(), "Dual-Out (Pin A & B)".to_string(), "Dual-Bus Gerbang".to_string()),
             NodeType::SavedEqPreset(name) => ("🎛️ EQ PRESET".to_string(), name.clone(), "Klik untuk Buka".to_string()),
             _ => ("AUDIO FILTER".to_string(), "DSP Unit".to_string(), "Active".to_string()),
         };
@@ -322,8 +323,15 @@ impl LunulaApp {
                         ),
                         Vec2::new(node_width, node_height),
                     );
-                    let out_pin_pos = Pos2::new(world_rect.max.x, world_rect.center().y);
-                    if pos.distance(out_pin_pos) <= 12.0 {
+                    let hit_out_pin = if node.node_type == NodeType::Splitter {
+                        let pin_a = Pos2::new(world_rect.max.x, world_rect.center().y - 12.0);
+                        let pin_b = Pos2::new(world_rect.max.x, world_rect.center().y + 12.0);
+                        pos.distance(pin_a) <= 12.0 || pos.distance(pin_b) <= 12.0
+                    } else {
+                        let out_pin_pos = Pos2::new(world_rect.max.x, world_rect.center().y);
+                        pos.distance(out_pin_pos) <= 12.0
+                    };
+                    if hit_out_pin {
                         self.connecting_from_node = Some(node.id);
                         break;
                     }
@@ -419,6 +427,21 @@ impl LunulaApp {
                                     }
                                 }
 
+                                // Outgoing Cable Rule:
+                                // Normal nodes have exactly 1 output pin -> new outgoing cable automatically replaces old outgoing cable.
+                                // Splitter nodes have 2 output pins (Pin A & Pin B) allowing up to 2 simultaneous outgoing cables.
+                                let is_from_splitter = self.nodes.iter().find(|n| n.id == from_id).map_or(false, |n| n.node_type == NodeType::Splitter);
+                                if !is_from_splitter {
+                                    self.connections.retain(|c| c.from_node != from_id);
+                                } else {
+                                    let outgoing_count = self.connections.iter().filter(|c| c.from_node == from_id).count();
+                                    if outgoing_count >= 2 {
+                                        if let Some(pos_last) = self.connections.iter().rposition(|c| c.from_node == from_id) {
+                                            self.connections.remove(pos_last);
+                                        }
+                                    }
+                                }
+
                                 self.connections.push(CableConnection {
                                     from_node: from_id,
                                     to_node: node.id,
@@ -476,10 +499,20 @@ impl LunulaApp {
             let to_node = self.nodes.iter().find(|n| n.id == conn.to_node);
 
             if let (Some(from_n), Some(to_n)) = (from_node, to_node) {
-                let p_start = Pos2::new(
-                    canvas_rect.min.x + self.patchbay_pan.x + from_n.pos.x + node_width,
-                    canvas_rect.min.y + self.patchbay_pan.y + from_n.pos.y + node_height * 0.5,
-                );
+                let p_start = if from_n.node_type == NodeType::Splitter {
+                    let outgoing_conns: Vec<usize> = self.connections.iter().filter(|c| c.from_node == from_n.id).map(|c| c.to_node).collect();
+                    let is_second = outgoing_conns.get(1) == Some(&conn.to_node);
+                    let pin_offset_y = if is_second { 12.0 } else { -12.0 };
+                    Pos2::new(
+                        canvas_rect.min.x + self.patchbay_pan.x + from_n.pos.x + node_width,
+                        canvas_rect.min.y + self.patchbay_pan.y + from_n.pos.y + node_height * 0.5 + pin_offset_y,
+                    )
+                } else {
+                    Pos2::new(
+                        canvas_rect.min.x + self.patchbay_pan.x + from_n.pos.x + node_width,
+                        canvas_rect.min.y + self.patchbay_pan.y + from_n.pos.y + node_height * 0.5,
+                    )
+                };
                 let p_end = if to_n.node_type == NodeType::Mixer {
                     let incoming_conns: Vec<usize> = self.connections.iter().filter(|c| c.to_node == to_n.id).map(|c| c.from_node).collect();
                     let is_second = incoming_conns.get(1) == Some(&conn.from_node);
@@ -697,10 +730,19 @@ impl LunulaApp {
         // 5. Draw Live Rubber-Band Cable while Dragging
         if let (Some(from_id), Some(pos)) = (self.connecting_from_node, mouse_pos) {
             if let Some(from_n) = self.nodes.iter().find(|n| n.id == from_id) {
-                let p_start = Pos2::new(
-                    canvas_rect.min.x + self.patchbay_pan.x + from_n.pos.x + node_width,
-                    canvas_rect.min.y + self.patchbay_pan.y + from_n.pos.y + node_height * 0.5,
-                );
+                let p_start = if from_n.node_type == NodeType::Splitter {
+                    let outgoing_count = self.connections.iter().filter(|c| c.from_node == from_n.id).count();
+                    let pin_offset_y = if outgoing_count == 0 { -12.0 } else { 12.0 };
+                    Pos2::new(
+                        canvas_rect.min.x + self.patchbay_pan.x + from_n.pos.x + node_width,
+                        canvas_rect.min.y + self.patchbay_pan.y + from_n.pos.y + node_height * 0.5 + pin_offset_y,
+                    )
+                } else {
+                    Pos2::new(
+                        canvas_rect.min.x + self.patchbay_pan.x + from_n.pos.x + node_width,
+                        canvas_rect.min.y + self.patchbay_pan.y + from_n.pos.y + node_height * 0.5,
+                    )
+                };
                 let p_end = pos;
 
                 let dx = (p_end.x - p_start.x).abs().max(40.0) * 0.5;
@@ -1095,6 +1137,50 @@ impl LunulaApp {
                         Color32::from_rgb(148, 163, 184),
                     );
                 }
+            } else if node.node_type == NodeType::Splitter {
+                if !is_bypassed_effect {
+                    let cy = node_rect.center().y;
+                    let p_in = Pos2::new(node_rect.min.x + 20.0, cy);
+                    let p_fork = Pos2::new(node_rect.center().x - 4.0, cy);
+                    let p_out_a = Pos2::new(node_rect.max.x - 20.0, cy - 12.0);
+                    let p_out_b = Pos2::new(node_rect.max.x - 20.0, cy + 12.0);
+
+                    let branch_stroke = Stroke::new(1.8, Color32::from_rgb(245, 158, 11));
+                    painter.line_segment([p_in, p_fork], branch_stroke);
+                    painter.line_segment([p_fork, p_out_a], branch_stroke);
+                    painter.line_segment([p_fork, p_out_b], branch_stroke);
+
+                    // Fork dot
+                    painter.circle_filled(p_fork, 3.0, Color32::from_rgb(217, 119, 6));
+
+                    // Animated pulsing dots flowing along the fork if playing
+                    if self.is_playing && is_flowing {
+                        let t = (self.visualizer_anim_phase * 3.0).fract();
+                        let d_fork = p_in.lerp(p_fork, t);
+                        painter.circle_filled(d_fork, 2.0, Color32::WHITE);
+                        let d_a = p_fork.lerp(p_out_a, t);
+                        painter.circle_filled(d_a, 2.0, Color32::WHITE);
+                        let d_b = p_fork.lerp(p_out_b, t);
+                        painter.circle_filled(d_b, 2.0, Color32::WHITE);
+                    }
+
+                    // Readout text below fork
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 40.5),
+                        egui::Align2::CENTER_CENTER,
+                        "1 In ➔ Out A & B",
+                        egui::FontId::proportional(9.0),
+                        Color32::from_rgb(217, 119, 6),
+                    );
+                } else {
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        egui::Align2::CENTER_CENTER,
+                        "DILEWATI (Bypassed)",
+                        egui::FontId::proportional(10.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                }
             } else {
                 // Sublabels: Dynamic based on bypassed vs flowing vs broken
                 let (sub1_txt, sub1_col, sub2_txt, sub2_col) = if is_bypassed_effect {
@@ -1194,22 +1280,42 @@ impl LunulaApp {
 
             // Output Pin (Right) - Except Endpoint node
             if node.node_type != NodeType::Endpoint {
-                let out_pin = Pos2::new(node_rect.max.x, node_rect.center().y);
-                let is_hover_out = mouse_pos.map_or(false, |p| p.distance(out_pin) <= 10.0);
-                if is_hover_out {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-                }
-                let pin_col = if is_hover_out {
-                    Color32::from_rgb(14, 165, 233)
-                } else if is_bypassed_effect {
-                    Color32::from_rgb(203, 213, 225)
-                } else if is_flowing {
-                    theme_color
+                if node.node_type == NodeType::Splitter {
+                    let pin_a = Pos2::new(node_rect.max.x, node_rect.center().y - 12.0);
+                    let pin_b = Pos2::new(node_rect.max.x, node_rect.center().y + 12.0);
+                    let is_hover_a = mouse_pos.map_or(false, |p| p.distance(pin_a) <= 10.0);
+                    let is_hover_b = mouse_pos.map_or(false, |p| p.distance(pin_b) <= 10.0);
+                    if is_hover_a || is_hover_b {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                    }
+                    let col_a = if is_hover_a { Color32::from_rgb(14, 165, 233) } else if is_flowing { theme_color } else { Color32::from_rgb(239, 68, 68) };
+                    let col_b = if is_hover_b { Color32::from_rgb(14, 165, 233) } else if is_flowing { theme_color } else { Color32::from_rgb(239, 68, 68) };
+
+                    painter.circle_filled(pin_a, pin_radius, col_a);
+                    painter.circle_stroke(pin_a, pin_radius, Stroke::new(1.5, Color32::WHITE));
+                    painter.text(Pos2::new(pin_a.x - 8.0, pin_a.y), egui::Align2::RIGHT_CENTER, "A", egui::FontId::proportional(8.5), Color32::from_rgb(100, 116, 139));
+
+                    painter.circle_filled(pin_b, pin_radius, col_b);
+                    painter.circle_stroke(pin_b, pin_radius, Stroke::new(1.5, Color32::WHITE));
+                    painter.text(Pos2::new(pin_b.x - 8.0, pin_b.y), egui::Align2::RIGHT_CENTER, "B", egui::FontId::proportional(8.5), Color32::from_rgb(100, 116, 139));
                 } else {
-                    Color32::from_rgb(239, 68, 68)
-                };
-                painter.circle_filled(out_pin, pin_radius, pin_col);
-                painter.circle_stroke(out_pin, pin_radius, Stroke::new(1.5, Color32::WHITE));
+                    let out_pin = Pos2::new(node_rect.max.x, node_rect.center().y);
+                    let is_hover_out = mouse_pos.map_or(false, |p| p.distance(out_pin) <= 10.0);
+                    if is_hover_out {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                    }
+                    let pin_col = if is_hover_out {
+                        Color32::from_rgb(14, 165, 233)
+                    } else if is_bypassed_effect {
+                        Color32::from_rgb(203, 213, 225)
+                    } else if is_flowing {
+                        theme_color
+                    } else {
+                        Color32::from_rgb(239, 68, 68)
+                    };
+                    painter.circle_filled(out_pin, pin_radius, pin_col);
+                    painter.circle_stroke(out_pin, pin_radius, Stroke::new(1.5, Color32::WHITE));
+                }
             }
         }
 
@@ -1385,6 +1491,10 @@ impl LunulaApp {
                 }
                 if ui.button("🎚️ Mixer / Summing Bus (Gerbang Paralel)").clicked() {
                     self.add_modular_filter(NodeType::Mixer);
+                    ui.close();
+                }
+                if ui.button("🔀 Splitter / Y-Branch Bus (Gerbang Cabang)").clicked() {
+                    self.add_modular_filter(NodeType::Splitter);
                     ui.close();
                 }
                 if ui.button("🔥 Tube Warmer (Analog)").clicked() {
@@ -1770,6 +1880,73 @@ impl LunulaApp {
                             }
                         }
                     }
+                    ui.add_space(8.0);
+
+                    // Module: Splitter / Y-Branch Bus
+                    let has_splitter = self.nodes.iter().any(|n| n.node_type == NodeType::Splitter);
+                    let g_split = ui.group(|ui| {
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("🔀 Splitter / Y-Branch").strong().size(12.5).color(Color32::from_rgb(15, 23, 42)));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    render_routing_help_button(
+                                        ui,
+                                        "Splitter / Y-Branch",
+                                        NodeType::Splitter,
+                                        &mut self.active_filter_tutorial,
+                                        &mut self.filter_tutorial_step,
+                                    );
+                                });
+                            });
+                            ui.label(egui::RichText::new("Gerbang pembagi 1 input ke 2 output (Pin A & Pin B) tanpa kehilangan kualitas sinyal (lossless duplication).").size(10.5).color(Color32::from_rgb(100, 116, 139)));
+
+                            // Mini Y-branch visualization
+                            let (s_rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), egui::Sense::hover());
+                            let s_painter = ui.painter().with_clip_rect(s_rect);
+                            s_painter.rect_filled(s_rect, 4.0, Color32::from_rgb(255, 251, 235));
+                            s_painter.rect_stroke(s_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(253, 230, 138)), egui::StrokeKind::Outside);
+
+                            let sx_in = Pos2::new(s_rect.min.x + 35.0, s_rect.center().y);
+                            let sx_mid = Pos2::new(s_rect.center().x, s_rect.center().y);
+                            let sx_out_a = Pos2::new(s_rect.max.x - 35.0, s_rect.center().y - 6.0);
+                            let sx_out_b = Pos2::new(s_rect.max.x - 35.0, s_rect.center().y + 6.0);
+
+                            s_painter.line_segment([sx_in, sx_mid], Stroke::new(1.8, Color32::from_rgb(245, 158, 11)));
+                            s_painter.line_segment([sx_mid, sx_out_a], Stroke::new(1.8, Color32::from_rgb(245, 158, 11)));
+                            s_painter.line_segment([sx_mid, sx_out_b], Stroke::new(1.8, Color32::from_rgb(245, 158, 11)));
+                            s_painter.circle_filled(sx_mid, 2.5, Color32::from_rgb(217, 119, 6));
+
+                            s_painter.text(Pos2::new(sx_in.x - 4.0, sx_in.y), egui::Align2::RIGHT_CENTER, "In", egui::FontId::proportional(8.5), Color32::from_rgb(180, 83, 9));
+                            s_painter.text(Pos2::new(sx_out_a.x + 4.0, sx_out_a.y), egui::Align2::LEFT_CENTER, "A", egui::FontId::proportional(8.5), Color32::from_rgb(180, 83, 9));
+                            s_painter.text(Pos2::new(sx_out_b.x + 4.0, sx_out_b.y), egui::Align2::LEFT_CENTER, "B", egui::FontId::proportional(8.5), Color32::from_rgb(180, 83, 9));
+
+                            ui.add_space(3.0);
+                            ui.horizontal(|ui| {
+                                if ui.button(egui::RichText::new("➕ Tambah ke Chain").strong()).clicked() {
+                                    self.add_modular_filter(NodeType::Splitter);
+                                }
+                                if has_splitter {
+                                    if ui.button(egui::RichText::new("🗑️").size(11.0).color(Color32::from_rgb(239, 68, 68))).on_hover_text("Hapus modul ini dari canvas").clicked() {
+                                        delete_filter_type = Some(NodeType::Splitter);
+                                    }
+                                }
+                            });
+                        });
+                    });
+                    g_split.response.context_menu(|ui| {
+                        ui.label(egui::RichText::new("🔀 Splitter / Y-Branch Bus").strong());
+                        ui.separator();
+                        if ui.button("➕ Tambah ke Signal Chain").clicked() {
+                            self.add_modular_filter(NodeType::Splitter);
+                            ui.close();
+                        }
+                        if has_splitter {
+                            if ui.button("🗑️ Hapus Semua dari Canvas").clicked() {
+                                delete_filter_type = Some(NodeType::Splitter);
+                                ui.close();
+                            }
+                        }
+                    });
                     ui.add_space(8.0);
 
                     // Filter 1: Tube Warmer
@@ -2647,8 +2824,8 @@ impl LunulaApp {
                                 ui.label(egui::RichText::new("• Jika kabel terputus di tengah jalan, LunulaPlayer otomatis membisukan audio (silent mute).\n• Ini sengaja dirancang agar telinga dan headphone Anda aman dari suara ledakan/letupan keras (pop/click).\n• Sambungkan kembali kabel sampai hijau untuk melanjutkan musik.").size(10.5).color(Color32::from_rgb(71, 85, 105)));
                             }
                             _ => {
-                                ui.label(egui::RichText::new("Percabangan & Gerbang Mixer (Summing)").strong().size(12.0).color(Color32::from_rgb(15, 23, 42)));
-                                ui.label(egui::RichText::new("• Aturan 1 Pin: Pin input modul biasa hanya menerima 1 kabel. Jika ditarik kabel baru, kabel lama otomatis lepas agar tidak terjadi konflik sinyal.\n• Menggabungkan 2 Jalur (Summing): Ingin mencampur suara asli (Dry) dan suara efek (Wet)? Sisipkan modul '🎚️ Mixer / Summing Bus' dari palette kanan atau klik kanan di kanvas!\n• Dual Pin A & B: Mixer memiliki 2 pin input khusus (A & B). Gunakan slider Crossfader di tengah kartu untuk mengatur porsi mixing (0% A s.d. 100% B) secara mulus.").size(10.5).color(Color32::from_rgb(71, 85, 105)));
+                                ui.label(egui::RichText::new("Percabangan (Splitter) & Penggabung (Mixer)").strong().size(12.0).color(Color32::from_rgb(15, 23, 42)));
+                                ui.label(egui::RichText::new("• Aturan 1 Kabel: Modul biasa hanya mengizinkan 1 kabel masuk dan 1 kabel keluar. Menarik kabel baru otomatis menggantikan kabel lama.\n• Membagi Jalur (Splitter / Y-Branch): Gunakan modul '🔀 Splitter' untuk menduplikasi sinyal menjadi 2 cabang (Pin A & Pin B) secara lossless tanpa kehilangan kualitas.\n• Menggabungkan Jalur (Mixer / Summing): Sambungkan kedua cabang ke Pin A & Pin B milik '🎚️ Mixer' untuk mencampur suara Dry & Wet dengan slider crossfader presisi!").size(10.5).color(Color32::from_rgb(71, 85, 105)));
                             }
                         }
 
@@ -2709,6 +2886,7 @@ impl LunulaApp {
                     NodeType::VolumeAttenuator => Color32::from_rgb(245, 158, 11),
                     NodeType::SavedEqPreset(_) => Color32::from_rgb(168, 85, 247),
                     NodeType::Mixer => Color32::from_rgb(147, 51, 234),
+                    NodeType::Splitter => Color32::from_rgb(245, 158, 11),
                     _ => Color32::from_rgb(14, 165, 233),
                 };
 
@@ -2737,6 +2915,7 @@ impl LunulaApp {
                             NodeType::VolumeAttenuator => ("🔉", "VOLUME ATTENUATOR (-6dB)", self.nodes.iter().any(|n| n.node_type == NodeType::VolumeAttenuator)),
                             NodeType::SavedEqPreset(name) => ("🎛️", "EQUALIZER PRESET", self.nodes.iter().any(|n| matches!(&n.node_type, NodeType::SavedEqPreset(p) if p == name))),
                             NodeType::Mixer => ("🎚️", "MIXER / SUMMING BUS", self.nodes.iter().any(|n| n.node_type == NodeType::Mixer)),
+                            NodeType::Splitter => ("🔀", "SPLITTER / Y-BRANCH BUS", self.nodes.iter().any(|n| n.node_type == NodeType::Splitter)),
                             _ => ("🎛️", "FILTER MODULAR", true),
                         };
 
@@ -2880,6 +3059,34 @@ impl LunulaApp {
                                         egui::FontId::proportional(8.5),
                                         Color32::from_rgb(126, 34, 206),
                                     );
+                                } else if filter_type == NodeType::Splitter {
+                                    let cy = diag_rect.center().y - 6.0;
+                                    let p_in = Pos2::new(diag_rect.min.x + 36.0, cy);
+                                    let p_fork = Pos2::new(diag_rect.center().x - 20.0, cy);
+                                    let p_a = Pos2::new(diag_rect.max.x - 45.0, cy - 24.0);
+                                    let p_b = Pos2::new(diag_rect.max.x - 45.0, cy + 24.0);
+
+                                    p.line_segment([p_in, p_fork], Stroke::new(2.6, theme_color));
+                                    p.line_segment([p_fork, p_a], Stroke::new(2.6, theme_color));
+                                    p.line_segment([p_fork, p_b], Stroke::new(2.6, theme_color));
+                                    p.circle_filled(p_fork, 4.0, Color32::from_rgb(217, 119, 6));
+
+                                    p.circle_filled(p_in, 4.5, Color32::from_rgb(99, 102, 241));
+                                    p.text(Pos2::new(p_in.x - 8.0, cy), egui::Align2::RIGHT_CENTER, "Input PCM (64-bit)", egui::FontId::proportional(9.0), Color32::from_rgb(71, 85, 105));
+
+                                    p.circle_filled(p_a, 4.5, Color32::from_rgb(16, 185, 129));
+                                    p.text(Pos2::new(p_a.x + 8.0, p_a.y), egui::Align2::LEFT_CENTER, "Out Pin A (100% Klon)", egui::FontId::proportional(9.0), Color32::from_rgb(16, 185, 129));
+
+                                    p.circle_filled(p_b, 4.5, Color32::from_rgb(14, 165, 233));
+                                    p.text(Pos2::new(p_b.x + 8.0, p_b.y), egui::Align2::LEFT_CENTER, "Out Pin B (100% Klon)", egui::FontId::proportional(9.0), Color32::from_rgb(14, 165, 233));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 12.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "🔀 Lossless Duplication: Kedua output menerima aliran audio bitstream identik tanpa latensi",
+                                        egui::FontId::proportional(8.5),
+                                        Color32::from_rgb(217, 119, 6),
+                                    );
                                 } else {
                                     let cy = diag_rect.center().y;
                                     p.text(Pos2::new(diag_rect.center().x, cy - 10.0), egui::Align2::CENTER_CENTER, "🔊 KARAKTER SUARA MODUL", egui::FontId::proportional(11.0), theme_color);
@@ -2925,6 +3132,55 @@ impl LunulaApp {
                                         egui::Align2::CENTER_CENTER,
                                         "✨ Masukkan 2 cabang sinyal ke Pin A & B, lalu teruskan ke DAC",
                                         egui::FontId::proportional(9.0),
+                                        Color32::from_rgb(16, 185, 129),
+                                    );
+                                } else if filter_type == NodeType::Splitter {
+                                    let cy = diag_rect.center().y - 8.0;
+                                    let b_w = 54.0;
+                                    let b_h = 24.0;
+
+                                    let r_src = Rect::from_min_size(Pos2::new(diag_rect.min.x + 8.0, cy - 12.0), Vec2::new(b_w, b_h));
+                                    let r_split = Rect::from_min_size(Pos2::new(diag_rect.min.x + 72.0, cy - 16.0), Vec2::new(64.0, 32.0));
+                                    let r_fx = Rect::from_min_size(Pos2::new(diag_rect.center().x + 12.0, cy + 14.0), Vec2::new(b_w, b_h));
+                                    let r_mix = Rect::from_min_size(Pos2::new(diag_rect.max.x - 126.0, cy - 16.0), Vec2::new(58.0, 32.0));
+                                    let r_dac = Rect::from_min_size(Pos2::new(diag_rect.max.x - 52.0, cy - 12.0), Vec2::new(44.0, b_h));
+
+                                    p.rect_filled(r_src, 4.0, Color32::from_rgb(238, 242, 255));
+                                    p.rect_stroke(r_src, 4.0, Stroke::new(1.0, Color32::from_rgb(199, 210, 254)), egui::StrokeKind::Outside);
+                                    p.text(r_src.center(), egui::Align2::CENTER_CENTER, "Resampler", egui::FontId::proportional(8.0), Color32::from_rgb(67, 56, 202));
+
+                                    p.rect_filled(r_split, 5.0, Color32::from_rgb(255, 251, 235));
+                                    p.rect_stroke(r_split, 5.0, Stroke::new(1.5, theme_color), egui::StrokeKind::Outside);
+                                    p.text(Pos2::new(r_split.center().x, r_split.center().y - 4.0), egui::Align2::CENTER_CENTER, "🔀 SPLITTER", egui::FontId::proportional(7.5), theme_color);
+                                    p.text(Pos2::new(r_split.center().x, r_split.center().y + 7.0), egui::Align2::CENTER_CENTER, "Out A • Out B", egui::FontId::proportional(6.5), Color32::from_rgb(180, 83, 9));
+
+                                    p.rect_filled(r_fx, 4.0, Color32::from_rgb(240, 249, 255));
+                                    p.rect_stroke(r_fx, 4.0, Stroke::new(1.0, Color32::from_rgb(186, 230, 253)), egui::StrokeKind::Outside);
+                                    p.text(r_fx.center(), egui::Align2::CENTER_CENTER, "Filter (LPF)", egui::FontId::proportional(7.5), Color32::from_rgb(2, 132, 199));
+
+                                    p.rect_filled(r_mix, 5.0, Color32::from_rgb(250, 245, 255));
+                                    p.rect_stroke(r_mix, 5.0, Stroke::new(1.2, Color32::from_rgb(147, 51, 234)), egui::StrokeKind::Outside);
+                                    p.text(r_mix.center(), egui::Align2::CENTER_CENTER, "🎚️ MIXER", egui::FontId::proportional(7.5), Color32::from_rgb(147, 51, 234));
+
+                                    p.rect_filled(r_dac, 4.0, Color32::from_rgb(236, 253, 245));
+                                    p.rect_stroke(r_dac, 4.0, Stroke::new(1.0, Color32::from_rgb(167, 243, 208)), egui::StrokeKind::Outside);
+                                    p.text(r_dac.center(), egui::Align2::CENTER_CENTER, "DAC", egui::FontId::proportional(8.0), Color32::from_rgb(6, 95, 70));
+
+                                    // Diamond Cables
+                                    p.line_segment([Pos2::new(r_src.max.x, r_src.center().y), Pos2::new(r_split.min.x, r_split.center().y)], Stroke::new(2.0, Color32::from_rgb(99, 102, 241)));
+                                    // Upper Dry branch: Pin A to Mixer In A
+                                    p.line_segment([Pos2::new(r_split.max.x, r_split.center().y - 6.0), Pos2::new(r_mix.min.x, r_mix.center().y - 6.0)], Stroke::new(2.0, Color32::from_rgb(16, 185, 129)));
+                                    // Lower Wet branch: Pin B to LPF, then LPF to Mixer In B
+                                    p.line_segment([Pos2::new(r_split.max.x, r_split.center().y + 6.0), Pos2::new(r_fx.min.x, r_fx.center().y)], Stroke::new(2.0, theme_color));
+                                    p.line_segment([Pos2::new(r_fx.max.x, r_fx.center().y), Pos2::new(r_mix.min.x, r_mix.center().y + 6.0)], Stroke::new(2.0, Color32::from_rgb(14, 165, 233)));
+                                    // Mixer to DAC
+                                    p.line_segment([Pos2::new(r_mix.max.x, r_mix.center().y), Pos2::new(r_dac.min.x, r_dac.center().y)], Stroke::new(2.2, Color32::from_rgb(16, 185, 129)));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 12.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "💎 Diamond Loop: Pin A (Dry) & Pin B (LPF) menyatu kembali di Mixer",
+                                        egui::FontId::proportional(8.5),
                                         Color32::from_rgb(16, 185, 129),
                                     );
                                 } else {
@@ -3051,6 +3307,32 @@ impl LunulaApp {
                                         egui::FontId::proportional(8.5),
                                         Color32::from_rgb(100, 116, 139),
                                     );
+                                } else if filter_type == NodeType::Splitter {
+                                    let cy = diag_rect.center().y - 14.0;
+                                    let line_w = diag_rect.width() - 32.0;
+
+                                    let r_box = Rect::from_min_size(Pos2::new(diag_rect.min.x + 16.0, cy - 18.0), Vec2::new(line_w, 48.0));
+                                    p.rect_filled(r_box, 4.0, Color32::from_rgb(255, 251, 235));
+                                    p.rect_stroke(r_box, 4.0, Stroke::new(1.0, Color32::from_rgb(253, 230, 138)), egui::StrokeKind::Outside);
+
+                                    p.text(Pos2::new(r_box.min.x + 10.0, r_box.min.y + 12.0), egui::Align2::LEFT_CENTER, "⚡ 100% Zero Latency", egui::FontId::proportional(8.5), Color32::from_rgb(180, 83, 9));
+                                    p.text(Pos2::new(r_box.center().x, r_box.min.y + 12.0), egui::Align2::CENTER_CENTER, "💎 Bit-Accurate Clone", egui::FontId::proportional(8.5), Color32::from_rgb(217, 119, 6));
+                                    p.text(Pos2::new(r_box.max.x - 10.0, r_box.min.y + 12.0), egui::Align2::RIGHT_CENTER, "🔒 Anti Phase-Cancellation", egui::FontId::proportional(8.5), Color32::from_rgb(180, 83, 9));
+
+                                    let s_y = r_box.min.y + 32.0;
+                                    let s_w = line_w - 40.0;
+                                    let s_x = r_box.min.x + 20.0;
+                                    p.line_segment([Pos2::new(s_x, s_y), Pos2::new(s_x + s_w, s_y)], Stroke::new(2.5, Color32::from_rgb(253, 230, 138)));
+                                    p.circle_filled(Pos2::new(s_x + s_w * 0.25, s_y), 4.5, Color32::from_rgb(245, 158, 11));
+                                    p.circle_filled(Pos2::new(s_x + s_w * 0.75, s_y), 4.5, Color32::from_rgb(147, 51, 234));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 12.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "💡 Pasang bersama Mixer untuk kendali penuh Dry/Wet parallel processing",
+                                        egui::FontId::proportional(8.5),
+                                        Color32::from_rgb(100, 116, 139),
+                                    );
                                 } else {
                                     let cy = diag_rect.center().y - 14.0;
                                     let line_w = diag_rect.width() - 32.0;
@@ -3105,6 +3387,13 @@ impl LunulaApp {
                                         ui.add_space(4.0);
                                         ui.label(egui::RichText::new("Fungsi Utama & Keunggulan:").strong().size(11.0).color(Color32::from_rgb(126, 34, 206)));
                                         ui.label(egui::RichText::new("• Parallel Processing (Dry/Wet): Mencampur suara murni tanpa efek (Dry) di Jalur A dengan suara yang disaring filter (Wet) di Jalur B. Anda dapat mengatur ketebalan efek tanpa merusak kejelasan vokal aslinya.\n• Constant-Power Crossfading: Menggunakan algoritma kurva daya konstan sehingga tidak ada penurunan volume di titik tengah (50/50).\n• Anti-Clipping Headroom: Mencegah distorsi digital saat dua sinyal dijumlahkan bersamaan.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
+                                    } else if filter_type == NodeType::Splitter {
+                                        ui.label(egui::RichText::new("Apa itu Splitter / Y-Branch Bus?").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("Splitter / Y-Branch Bus adalah modul pembagi sinyal audio cerdas yang menduplikasi 1 input audio menjadi 2 output mandiri (Pin Out A & Pin Out B) dengan teknologi Lossless 64-bit PCM Duplication.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("Fungsi Utama & Keunggulan:").strong().size(11.0).color(Color32::from_rgb(217, 119, 6)));
+                                        ui.label(egui::RichText::new("• Pasangan Sejati Modul Mixer: Memungkinkan routing Dry/Wet paralel tanpa merusak kabel sinyal utama.\n• Zero Phase Delay (Fase Sinkron): Kedua pin memancarkan sampel bitstream yang sinkron mikrodetik yang sama, mencegah distorsi fase (comb filtering) saat disatukan kembali di Mixer.\n• Bit-Accurate Clone: Tidak ada penurunan gain maupun penurunan dynamic range sinyal.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
                                     } else {
                                         ui.label(egui::RichText::new("Karakter Suara Modul").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
                                         ui.label(egui::RichText::new("Modul ini dirancang khusus untuk memproses karakter tonal, kedalaman analog, atau batas keamanan sinyal audio Anda secara real-time.").size(10.0).color(Color32::from_rgb(71, 85, 105)));
@@ -3119,6 +3408,13 @@ impl LunulaApp {
                                         ui.add_space(4.0);
                                         ui.label(egui::RichText::new("💡 Fleksibilitas Input:").strong().size(10.5).color(Color32::from_rgb(126, 34, 206)));
                                         ui.label(egui::RichText::new("Jika Anda hanya menyambungkan 1 kabel ke Pin A (Pin B kosong), Mixer otomatis mengalirkan sinyal Channel A tanpa error.").size(10.0).color(Color32::from_rgb(100, 116, 139)));
+                                    } else if filter_type == NodeType::Splitter {
+                                        ui.label(egui::RichText::new("Di Mana Splitter Boleh Disambungkan?").strong().size(11.5).color(Color32::from_rgb(16, 185, 129)));
+                                        ui.label(egui::RichText::new("1. Percabangan Awal (Diamond Loop) [Rekomendasi Utama]:\n   Colokkan kabel dari App Resampler atau RAM Buffer ke Input Splitter. Tarik Pin Out A langsung ke Mixer (Pin A), dan Pin Out B ke Low-Pass Filter lalu ke Mixer (Pin B). Output Mixer teruskan ke DAC.\n\n2. Multi-Filter Bus Routing:\n   Membagi sinyal untuk diproses dua filter berbeda secara independen sebelum disatukan kembali.").size(10.0).color(Color32::from_rgb(51, 65, 85)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("💡 Aturan 2 Output:").strong().size(10.5).color(Color32::from_rgb(217, 119, 6)));
+                                        ui.label(egui::RichText::new("Berbeda dari kartu biasa yang hanya mengizinkan 1 kabel keluar, Splitter mengizinkan 2 kabel aktif keluar sekaligus (Pin A dan Pin B).").size(10.0).color(Color32::from_rgb(100, 116, 139)));
                                     } else {
                                         ui.label(egui::RichText::new("Di Mana Sinyal Boleh Disambungkan?").strong().size(11.5).color(Color32::from_rgb(16, 185, 129)));
                                         ui.label(egui::RichText::new("1. Antara RAM Buffer dan DSP Engine (Rekomendasi Utama):\n   Memotong nada tinggi langsung dari hasil decode mentah sebelum sinyal masuk ke 10-band equalizer.\n\n2. Sesudah DSP Engine (Sebelum App Resampler):\n   Menghaluskan puncak frekuensi jika equalizer melakukan boost treble berlebih.\n\n3. Berurutan (In-Series) Sebelum Efek Lain:\n   Pasang sebelum Tube Warmer atau Stereo Widener agar efek analog memproses sinyal yang sudah bersih.").size(10.0).color(Color32::from_rgb(51, 65, 85)));
@@ -3137,6 +3433,13 @@ impl LunulaApp {
                                         ui.add_space(4.0);
                                         ui.label(egui::RichText::new("🛡️ Proteksi Auto-Mute LunulaPlayer:").strong().size(10.5).color(Color32::from_rgb(245, 158, 11)));
                                         ui.label(egui::RichText::new("Jika loop terdeteksi atau kabel putus di tengah jalan, sistem secara otomatis membisukan suara untuk melindungi telinga Anda.").size(10.0).color(Color32::from_rgb(100, 116, 139)));
+                                    } else if filter_type == NodeType::Splitter {
+                                        ui.label(egui::RichText::new("Posisi Terlarang & Kesalahan Routing Splitter").strong().size(11.5).color(Color32::from_rgb(239, 68, 68)));
+                                        ui.label(egui::RichText::new("1. 🚫 Dilarang Feedback Loop:\n   Jangan menarik kabel dari pin Output A atau B kembali ke pin Input Splitter itu sendiri.\n\n2. 🚫 Dilarang Sebelum File Source / Sesudah DAC:\n   Splitter bekerja pada domain PCM 64-bit di software, sehingga wajib berada di antara decoder berkas dan Output DAC fisik.\n\n3. 🚫 Jangan Menggantung Output Tanpa Tujuan:\n   Jika hanya 1 jalur yang dibutuhkan, gunakan kabel sambungan langsung tanpa Splitter agar kanvas tetap rapi.").size(10.0).color(Color32::from_rgb(51, 65, 85)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("🛡️ Proteksi Auto-Mute LunulaPlayer:").strong().size(10.5).color(Color32::from_rgb(245, 158, 11)));
+                                        ui.label(egui::RichText::new("Jika loop terdeteksi atau kabel putus di tengah jalan, sistem secara otomatis membisukan suara untuk melindungi telinga dan speaker Anda.").size(10.0).color(Color32::from_rgb(100, 116, 139)));
                                     } else {
                                         ui.label(egui::RichText::new("Posisi Terlarang & Bahaya Routing").strong().size(11.5).color(Color32::from_rgb(239, 68, 68)));
                                         ui.label(egui::RichText::new("1. 🚫 Dilarang Sebelum File Source:\n   File Source membaca bit data mentah berkas dari SSD/HDD (FLAC, MP3, DSD). Filter membutuhkan data PCM yang sudah didecode, sehingga tidak bisa ditaruh sebelum decoder.\n\n2. 🚫 Dilarang Sesudah Output DAC:\n   Output DAC adalah terminal hardware fisik terakhir di laptop/PC Anda (chip ESS Sabre, Realtek, USB DAC) yang langsung mengirim gelombang analog ke kabel jack speaker. Tidak ada modul software yang bisa dipasang sesudahnya.\n\n3. 🚫 Hindari Percabangan Balik (Feedback Loop):\n   Jangan menyambungkan pin keluaran (Output) kembali ke pin masukan (Input) modul yang sama, karena akan menciptakan putaran suara melengking (feedback loop).").size(10.0).color(Color32::from_rgb(51, 65, 85)));
@@ -3151,6 +3454,9 @@ impl LunulaApp {
                                     if filter_type == NodeType::Mixer {
                                         ui.label(egui::RichText::new("Mengatur Crossfader & Mode Audio").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
                                         ui.label(egui::RichText::new("• Slider Crossfader Real-Time:\n  Tarik slider langsung di atas kartu kanvas atau di sidebar kanan dari 0% (Channel A murni) hingga 100% (Channel B murni). Nilai diperbarui seketika tanpa latency.\n\n• Posisi Slider Populer:\n  - 0% B: Suara asli tanpa efek (Dry murni).\n  - 30% - 50% B: Suara asli tetap dominan, dengan sentuhan hangat/muffled dari filter B.\n  - 50% / 50%: Campuran seimbang sempurna (Constant-Power Crossfade).\n  - 100% B: Suara efek total (Wet murni).\n\n• Mode Bit-Perfect:\n  Saat beralih ke Bit-Perfect, seluruh rantai pemrosesan termasuk Mixer dilewati (direct stream 1:1) ke DAC hardware.").size(10.0).color(Color32::from_rgb(51, 65, 85)));
+                                    } else if filter_type == NodeType::Splitter {
+                                        ui.label(egui::RichText::new("Karakteristik Operasional & Mode Audio").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("• Otomatis & Bebas Penyetelan:\n  Splitter tidak membutuhkan slider atau kenop karena bertugas menduplikasi sinyal 100% secara akurat dan transparan.\n\n• Pasangan Sempurna dengan Mixer (Diamond Loop):\n  - Splitter: Gerbang Pembagi (1 In ➔ 2 Out)\n  - Mixer: Gerbang Penggabung (2 In ➔ 1 Out)\n  Kombinasi keduanya menciptakan arsitektur parallel processing profesional standar studio rekaman!\n\n• Mode Bit-Perfect:\n  Saat beralih ke Bit-Perfect, seluruh modul termasuk Splitter dilewati (direct stream 1:1) ke DAC hardware.").size(10.0).color(Color32::from_rgb(51, 65, 85)));
                                     } else {
                                         ui.label(egui::RichText::new("Mengatur Slider & Mode Audio").strong().size(11.5).color(Color32::from_rgb(15, 23, 42)));
                                         ui.label(egui::RichText::new("• Geser Slider Cutoff:\n  Anda dapat menggeser slider langsung di atas kartu kanvas dari 100 Hz hingga 10 kHz. Perubahan frekuensi terjadi seketika tanpa jeda dan tanpa perlu me-rebuild graph sinyal.\n\n• Perilaku pada Mode Bit-Perfect:\n  Mode Bit-Perfect mewajibkan data lagu dikirim ke DAC murni 1:1 tanpa modifikasi 1 bit pun. Oleh karena itu, saat mode Bit-Perfect aktif, seluruh filter kustom otomatis DILEWATI (bypassed) melalui kawat jumper abu-abu langsung.\n\n• Cara Mengaktifkan Efek:\n  Cukup klik kartu DSP ENGINE pada kanvas atau tekan tombol toggle mode ke 'DSP Active'. Filter akan seketika kembali memproses suara.").size(10.0).color(Color32::from_rgb(51, 65, 85)));

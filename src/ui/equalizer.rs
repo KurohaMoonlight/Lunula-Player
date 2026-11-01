@@ -258,6 +258,7 @@ impl LunulaApp {
         if let Some(ref engine) = self.audio_engine {
             engine.set_eq_bypass(self.eq_bypass);
         }
+        self.sync_signal_chain_to_engine();
     }
 
     pub fn render_spectrum_visualizer(&mut self, ui: &mut egui::Ui) {

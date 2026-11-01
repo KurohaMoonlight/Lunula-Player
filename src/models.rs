@@ -254,6 +254,7 @@ pub enum NodeType {
     SavedEqPreset(String),
     LowPassFilter,
     Mixer,
+    Splitter,
 }
 
 impl NodeType {
@@ -268,6 +269,7 @@ impl NodeType {
                 | NodeType::SavedEqPreset(_)
                 | NodeType::LowPassFilter
                 | NodeType::Mixer
+                | NodeType::Splitter
         )
     }
 }

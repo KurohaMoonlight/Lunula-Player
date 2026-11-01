@@ -9,7 +9,7 @@ pub mod visualizer;
 
 pub use decoder::AudioDecoder;
 pub use dsp::{
-    BassGuardEffect, DspPipeline, GraphicEqEffect, LowPassFilterEffect, MixerEffect, PassthroughEffect, PresetEqEffect, StereoWidenerEffect,
+    BassGuardEffect, DspPipeline, GraphicEqEffect, LowPassFilterEffect, MixerEffect, PassthroughEffect, PresetEqEffect, SplitterEffect, StereoWidenerEffect,
     TubeWarmerEffect, VolumeAttenuatorEffect, EQ_FREQUENCIES,
 };
 pub use engine::AudioEngineController;

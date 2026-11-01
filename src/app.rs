@@ -827,69 +827,25 @@ impl LunulaApp {
     pub fn set_chain_mode(&mut self, mode: ChainMode) {
         self.chain_mode = mode;
 
-        let has_custom_nodes = self.nodes.iter().any(|n| n.is_removable);
-        if !has_custom_nodes {
-            match mode {
-                ChainMode::BitPerfect => {
-                    // Option B: Cable jumps directly from 2 (RAM Buffer) to 4 (Output Engine), bypassing 3 (DSP Engine)
-                    self.connections = vec![
-                        CableConnection { from_node: 1, to_node: 2 },
-                        CableConnection { from_node: 2, to_node: 4 },
-                        CableConnection { from_node: 4, to_node: 5 },
-                    ];
-                    self.eq_bypass = true;
-                }
-                ChainMode::DspActive => {
-                    // Cable goes through DSP: 1 -> 2 -> 3 -> 4 -> 5
-                    self.connections = vec![
-                        CableConnection { from_node: 1, to_node: 2 },
-                        CableConnection { from_node: 2, to_node: 3 },
-                        CableConnection { from_node: 3, to_node: 4 },
-                        CableConnection { from_node: 4, to_node: 5 },
-                    ];
-                    self.eq_bypass = false;
-                }
-                ChainMode::OsResampled => {
-                    self.connections = vec![
-                        CableConnection { from_node: 1, to_node: 2 },
-                        CableConnection { from_node: 2, to_node: 4 },
-                        CableConnection { from_node: 4, to_node: 5 },
-                    ];
-                    self.eq_bypass = true;
-                }
+        match mode {
+            ChainMode::BitPerfect => {
+                self.eq_bypass = true;
             }
-        } else {
-            // When custom modular nodes exist on canvas:
-            match mode {
-                ChainMode::BitPerfect => {
-                    self.eq_bypass = true;
-                    // In Bit-Perfect mode, bypass Node 3 if directly wired
-                    if self.connections.contains(&CableConnection { from_node: 2, to_node: 3 })
-                        && self.connections.contains(&CableConnection { from_node: 3, to_node: 4 })
-                    {
-                        self.connections.retain(|c| !(c.from_node == 2 && c.to_node == 3) && !(c.from_node == 3 && c.to_node == 4));
-                        if !self.connections.contains(&CableConnection { from_node: 2, to_node: 4 }) {
-                            self.connections.push(CableConnection { from_node: 2, to_node: 4 });
-                        }
-                    }
-                }
-                ChainMode::DspActive => {
-                    self.eq_bypass = false;
-                    // In DspActive mode, route through Node 3 if currently bypassed
-                    if self.connections.contains(&CableConnection { from_node: 2, to_node: 4 }) {
-                        self.connections.retain(|c| !(c.from_node == 2 && c.to_node == 4));
-                        if !self.connections.contains(&CableConnection { from_node: 2, to_node: 3 }) {
-                            self.connections.push(CableConnection { from_node: 2, to_node: 3 });
-                        }
-                        if !self.connections.contains(&CableConnection { from_node: 3, to_node: 4 }) {
-                            self.connections.push(CableConnection { from_node: 3, to_node: 4 });
-                        }
-                    }
-                }
-                ChainMode::OsResampled => {
-                    self.eq_bypass = true;
-                }
+            ChainMode::DspActive => {
+                self.eq_bypass = false;
             }
+            ChainMode::OsResampled => {
+                self.eq_bypass = true;
+            }
+        }
+
+        if self.connections.is_empty() {
+            self.connections = vec![
+                CableConnection { from_node: 1, to_node: 2 },
+                CableConnection { from_node: 2, to_node: 3 },
+                CableConnection { from_node: 3, to_node: 4 },
+                CableConnection { from_node: 4, to_node: 5 },
+            ];
         }
 
         if let Some(ref report) = self.signal_path_report {
@@ -1146,7 +1102,7 @@ impl LunulaApp {
         use std::collections::{HashMap, VecDeque};
         use crate::models::NodeType;
         use crate::audio::{
-            BassGuardEffect, Effect, GraphicEqEffect, LowPassFilterEffect, MixerEffect, PassthroughEffect, PresetEqEffect, StereoWidenerEffect,
+            BassGuardEffect, Effect, GraphicEqEffect, LowPassFilterEffect, MixerEffect, PassthroughEffect, PresetEqEffect, SplitterEffect, StereoWidenerEffect,
             TubeWarmerEffect, VolumeAttenuatorEffect,
         };
 
@@ -1231,6 +1187,9 @@ impl LunulaApp {
                     NodeType::Mixer => {
                         let mix = if (0.0..=1.0).contains(&node.param_val) { node.param_val } else { 0.5 };
                         Box::new(MixerEffect::new(mix))
+                    }
+                    NodeType::Splitter => {
+                        Box::new(SplitterEffect)
                     }
                     NodeType::SavedEqPreset(name) => {
                         Box::new(PresetEqEffect::from_preset(name, sample_rate))
