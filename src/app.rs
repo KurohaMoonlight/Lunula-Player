@@ -1185,11 +1185,11 @@ impl LunulaApp {
                     }
                     NodeType::StereoWidener => {
                         let width = if (0.0..=100.0).contains(&node.param_val) {
-                            1.0 + (node.param_val / 100.0) as f64 * 1.5
+                            1.0 + (node.param_val / 100.0) as f64
                         } else if (1.0..=3.0).contains(&node.param_val) {
                             node.param_val as f64
                         } else {
-                            1.525
+                            1.35
                         };
                         Box::new(StereoWidenerEffect::new(width))
                     }

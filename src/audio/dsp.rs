@@ -384,20 +384,15 @@ impl Effect for TubeWarmerEffect {
         // Triode saturation formula:
         // Asymmetric even harmonics (xd^2) add musical warmth and body,
         // odd harmonics (xd^3) add presence.
-        let d = 1.0 + k * 1.6;
-        let c2 = 0.38 * k;
-        let c3 = 0.10 * k;
-        let norm = 1.0 / (1.0 + 0.12 * k);
+        let d = 1.0 + k * 1.5;
+        let c2 = 0.22 * k;
+        let c3 = 0.08 * k;
+        let norm = 1.0 / (1.0 + 0.40 * k);
 
         let warm = |x: f32| -> f32 {
             let xd = x * d;
-            let sat = if xd > 0.0 {
-                xd + c2 * xd * xd - c3 * xd * xd * xd
-            } else {
-                xd - (c2 * 0.35) * xd * xd - c3 * xd * xd * xd
-            };
-            let y = sat * norm;
-            soft_limit(y as f64) as f32
+            let y = xd + c2 * xd * xd - c3 * xd * xd * xd;
+            (y * norm).clamp(-1.0, 1.0)
         };
 
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
@@ -466,7 +461,7 @@ impl Effect for StereoWidenerEffect {
     fn set_param(&mut self, param_id: u32, val: f32) {
         if param_id == 0 {
             let w = if (0.0..=100.0).contains(&val) {
-                1.0 + (val as f64 / 100.0) * 1.5
+                1.0 + (val as f64 / 100.0)
             } else if val >= 1.0 {
                 val as f64
             } else {
@@ -1757,7 +1752,7 @@ mod tests {
         assert!((out_l - 0.6).abs() < 1e-5);
         assert!((out_r - 0.2).abs() < 1e-5);
 
-        // Adjust to +60% (1.9x with enhanced 1.5x scaling)
+        // Adjust to +60% (1.6x)
         widener.set_param(0, 60.0);
         for _ in 0..50 {
             let mut buf_l = [0.6f32];
@@ -1767,7 +1762,7 @@ mod tests {
         let (out_w_l, out_w_r) = widener.process_frame(0.6, 0.2);
         let out_side = (out_w_l - out_w_r) * 0.5;
         let in_side = (0.6 - 0.2) * 0.5;
-        assert!((out_side - in_side * 1.9).abs() < 1e-2, "Soundstage must expand by 1.9x (+60%)");
+        assert!((out_side - in_side * 1.6).abs() < 1e-2, "Soundstage must expand by 1.6x (+60%)");
     }
 
     #[test]

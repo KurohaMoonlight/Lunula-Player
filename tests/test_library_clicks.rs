@@ -99,7 +99,7 @@ fn test_print_card_rects_for_grid() {
     println!("app.library_category: {:?}", app.library_category);
     println!("app.selected_album_filter: {:?}", app.selected_album_filter);
 
-    assert!(app.current_track.album == "Encore" || app.current_track.album == "Happy End", "Must play second row card, got: {}", app.current_track.album);
+    assert_eq!(app.current_track.album, "Encore", "Must play second row card!");
 }
 
 #[test]
