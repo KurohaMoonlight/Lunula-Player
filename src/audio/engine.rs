@@ -104,6 +104,10 @@ impl AudioEngineController {
         let _ = self.cmd_tx.send(AudioCommand::SetEqBypass(bypass));
     }
 
+    pub fn set_limiter_enabled(&self, enabled: bool) {
+        let _ = self.cmd_tx.send(AudioCommand::SetLimiterEnabled(enabled));
+    }
+
     pub fn set_chain_mode(&self, mode: ChainMode) {
         let _ = self.cmd_tx.send(AudioCommand::SetChainMode(mode));
     }
@@ -256,10 +260,12 @@ fn run_audio_worker(
     let mut last_graph = SignalChainGraph::default();
     let mut last_eq_bands = [0.0f32; 10];
     let mut last_bypass = false;
+    let mut last_limiter = false;
 
-    let sync_output_dsp = |out: &AudioOutput, rate: u32, mode: ChainMode, bp: bool, graph: &SignalChainGraph, eq: &[f32; 10]| {
+    let sync_output_dsp = |out: &AudioOutput, rate: u32, bp: bool, limiter: bool, graph: &SignalChainGraph, eq: &[f32; 10]| {
         out.send_dsp_command(DspCommand::SetSampleRate(rate as f32));
-        out.send_dsp_command(DspCommand::SetEqBypass(mode != ChainMode::DspActive || bp));
+        out.send_dsp_command(DspCommand::SetEqBypass(bp));
+        out.send_dsp_command(DspCommand::SetLimiterEnabled(limiter));
         out.send_dsp_command(DspCommand::SetSignalChainGraph(graph.clone()));
         for (idx, &gain) in eq.iter().enumerate() {
             out.send_dsp_command(DspCommand::SetEqBand { index: idx, gain_db: gain });
@@ -323,7 +329,7 @@ fn run_audio_worker(
                                         event_tx.clone(),
                                     ) {
                                         Ok((out, prod)) => {
-                                            sync_output_dsp(&out, desired_rate, chain_mode, last_bypass, &last_graph, &last_eq_bands);
+                                            sync_output_dsp(&out, desired_rate, last_bypass, last_limiter, &last_graph, &last_eq_bands);
                                             output = Some(out);
                                             producer = Some(prod);
                                             current_stream_mode = Some(chain_mode);
@@ -362,9 +368,9 @@ fn run_audio_worker(
                                     // Always sync resampler: from track rate to actual device consumption rate
                                     resampler.reset(track_sample_rate, device_rate);
                                     dsp.set_sample_rate(device_rate as f32);
-                                    dsp.set_eq_bypass(chain_mode != ChainMode::DspActive);
-                                    dsp.reset_states();
-                                    sync_output_dsp(out, device_rate, chain_mode, last_bypass, &last_graph, &last_eq_bands);
+                                    dsp.set_eq_bypass(last_bypass);
+                                    dsp.set_limiter_enabled(last_limiter);
+                                    sync_output_dsp(out, device_rate, last_bypass, last_limiter, &last_graph, &last_eq_bands);
 
                                     let report = create_signal_path_report(out, track_sample_rate, track_bit_depth, chain_mode);
                                     shared_bit_perfect.store(report.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
@@ -528,7 +534,14 @@ fn run_audio_worker(
                         last_bypass = bypass;
                         dsp.set_eq_bypass(bypass);
                         if let Some(out) = &output {
-                            out.send_dsp_command(DspCommand::SetEqBypass(chain_mode != ChainMode::DspActive || bypass));
+                            out.send_dsp_command(DspCommand::SetEqBypass(bypass));
+                        }
+                    }
+                    AudioCommand::SetLimiterEnabled(enabled) => {
+                        last_limiter = enabled;
+                        dsp.set_limiter_enabled(enabled);
+                        if let Some(out) = &output {
+                            out.send_dsp_command(DspCommand::SetLimiterEnabled(enabled));
                         }
                     }
                     AudioCommand::SetOutputDevice(dev) => {
@@ -557,9 +570,9 @@ fn run_audio_worker(
                                     let device_rate = new_out.sample_rate();
                                     resampler.reset(track_sample_rate, device_rate);
                                     dsp.set_sample_rate(device_rate as f32);
-                                    dsp.set_eq_bypass(chain_mode != ChainMode::DspActive);
-                                    dsp.reset_states();
-                                    sync_output_dsp(&new_out, device_rate, chain_mode, last_bypass, &last_graph, &last_eq_bands);
+                                    dsp.set_eq_bypass(last_bypass);
+                                    dsp.set_limiter_enabled(last_limiter);
+                                    sync_output_dsp(&new_out, device_rate, last_bypass, last_limiter, &last_graph, &last_eq_bands);
 
                                     let report = create_signal_path_report(&new_out, track_sample_rate, track_bit_depth, chain_mode);
                                     shared_bit_perfect.store(report.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
@@ -621,7 +634,7 @@ fn run_audio_worker(
                                         if state == PlaybackState::Playing {
                                             new_out.resume();
                                         }
-                                        sync_output_dsp(&new_out, desired_rate, chain_mode, last_bypass, &last_graph, &last_eq_bands);
+                                        sync_output_dsp(&new_out, desired_rate, last_bypass, last_limiter, &last_graph, &last_eq_bands);
                                         output = Some(new_out);
                                         producer = Some(new_prod);
                                         current_stream_mode = Some(chain_mode);
@@ -647,9 +660,9 @@ fn run_audio_worker(
                                 let device_rate = out.sample_rate();
                                 resampler.reset(track_sample_rate, device_rate);
                                 dsp.set_sample_rate(device_rate as f32);
-                                dsp.set_eq_bypass(chain_mode != ChainMode::DspActive);
-                                dsp.reset_states();
-                                sync_output_dsp(out, device_rate, chain_mode, last_bypass, &last_graph, &last_eq_bands);
+                                dsp.set_eq_bypass(last_bypass);
+                                dsp.set_limiter_enabled(last_limiter);
+                                sync_output_dsp(out, device_rate, last_bypass, last_limiter, &last_graph, &last_eq_bands);
 
                                 let report = create_signal_path_report(out, track_sample_rate, track_bit_depth, chain_mode);
                                 shared_bit_perfect.store(report.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);

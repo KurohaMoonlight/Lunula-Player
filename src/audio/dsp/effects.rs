@@ -1,0 +1,1141 @@
+use super::biquad::{soft_limit, BiquadCoeffs, BiquadState};
+use crate::audio::types::Effect;
+
+// 10-Band Graphic EQ Frequencies matching LunulaPlayer
+pub const EQ_FREQUENCIES: [f64; 10] = [
+    31.0, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
+];
+
+/// 10-Band Peaking Graphic EQ Effect with Auto-Preamp Headroom and Slew Rate Smoothing
+#[derive(Clone, Debug)]
+pub struct GraphicEqEffect {
+    sample_rate: f64,
+    eq_coeffs: [BiquadCoeffs; 10],
+    eq_state_l: [BiquadState; 10],
+    eq_state_r: [BiquadState; 10],
+    target_gains: [f64; 10],
+    current_gains: [f64; 10],
+    auto_preamp: f64,
+    pub is_flat: bool,
+}
+
+impl GraphicEqEffect {
+    pub fn new(gains: [f32; 10], sample_rate: f64) -> Self {
+        let mut eq = Self {
+            sample_rate: sample_rate.max(8000.0),
+            eq_coeffs: [BiquadCoeffs::identity(); 10],
+            eq_state_l: [BiquadState::default(); 10],
+            eq_state_r: [BiquadState::default(); 10],
+            target_gains: [0.0; 10],
+            current_gains: [0.0; 10],
+            auto_preamp: 1.0,
+            is_flat: true,
+        };
+        for (i, &g) in gains.iter().enumerate() {
+            let val = g.clamp(-12.0, 12.0) as f64;
+            eq.target_gains[i] = val;
+            eq.current_gains[i] = val;
+        }
+        eq.recompute_all();
+        eq
+    }
+
+    fn update_auto_preamp(&mut self) {
+        let max_boost = self.current_gains.iter().cloned().fold(0.0f64, f64::max);
+        self.auto_preamp = if max_boost > 0.0 {
+            10.0_f64.powf(-max_boost / 20.0)
+        } else {
+            1.0
+        };
+    }
+
+    fn recompute_band(&mut self, idx: usize) {
+        let f0 = EQ_FREQUENCIES[idx];
+        let gain = self.current_gains[idx];
+        self.eq_coeffs[idx] = BiquadCoeffs::peaking_eq(f0, gain, self.sample_rate, 1.414);
+    }
+
+    fn recompute_all(&mut self) {
+        self.update_auto_preamp();
+        self.is_flat = self.current_gains.iter().all(|&g| g.abs() < 0.05);
+        for i in 0..10 {
+            self.recompute_band(i);
+        }
+    }
+}
+
+impl Effect for GraphicEqEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        // Parameter smoothing (A8): slew current_gains towards target_gains to eliminate zipper noise
+        let mut need_recompute = false;
+        for i in 0..10 {
+            let diff = self.target_gains[i] - self.current_gains[i];
+            if diff.abs() > 0.001 {
+                self.current_gains[i] += diff * 0.5;
+                need_recompute = true;
+            } else if (self.current_gains[i] - self.target_gains[i]).abs() > 1e-6 {
+                self.current_gains[i] = self.target_gains[i];
+                need_recompute = true;
+            }
+        }
+        if need_recompute {
+            self.recompute_all();
+        }
+
+        // Fast zero-cost flat bypass
+        if self.is_flat {
+            let pre = self.auto_preamp as f32;
+            if (pre - 1.0).abs() > 0.0001 {
+                for l in left.iter_mut() { *l *= pre; }
+                for r in right.iter_mut() { *r *= pre; }
+            }
+            return;
+        }
+
+        let pre = self.auto_preamp;
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let mut fl = (*l as f64) * pre;
+            let mut fr = (*r as f64) * pre;
+            for i in 0..10 {
+                fl = self.eq_state_l[i].process(fl, &self.eq_coeffs[i]);
+                fr = self.eq_state_r[i].process(fr, &self.eq_coeffs[i]);
+            }
+            *l = fl as f32;
+            *r = fr as f32;
+        }
+    }
+
+    fn reset(&mut self) {
+        for i in 0..10 {
+            self.eq_state_l[i].reset();
+            self.eq_state_r[i].reset();
+        }
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        let sr = (sample_rate as f64).max(8000.0);
+        if (self.sample_rate - sr).abs() > 1.0 {
+            self.sample_rate = sr;
+            self.recompute_all();
+            self.reset();
+        }
+    }
+
+    fn name(&self) -> &str {
+        "10-Band Graphic EQ"
+    }
+
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        let idx = param_id as usize;
+        if idx < 10 {
+            self.target_gains[idx] = (val as f64).clamp(-12.0, 12.0);
+            if self.is_flat && self.target_gains[idx].abs() >= 0.05 {
+                self.is_flat = false;
+            }
+        }
+    }
+
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Tube Warmer Effect: Asymmetric triode saturation adding 2nd and 3rd harmonics
+#[derive(Clone, Debug)]
+pub struct TubeWarmerEffect {
+    drive: f32,          // 0.0 to 100.0 (%)
+    current_drive: f32,  // For click-free parameter slewing
+}
+
+impl TubeWarmerEffect {
+    pub fn new(drive: f32) -> Self {
+        let d = drive.clamp(0.0, 100.0);
+        Self {
+            drive: d,
+            current_drive: d,
+        }
+    }
+}
+
+impl Default for TubeWarmerEffect {
+    fn default() -> Self {
+        Self::new(35.0)
+    }
+}
+
+impl Effect for TubeWarmerEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        // Smooth parameter slewing to eliminate zipper noise during live slider dragging
+        let diff = self.drive - self.current_drive;
+        if diff.abs() > 0.01 {
+            self.current_drive += diff * 0.15;
+        } else {
+            self.current_drive = self.drive;
+        }
+
+        let k = (self.current_drive / 100.0).clamp(0.0, 1.0);
+        if k < 0.001 {
+            return; // 0% Warmth is pure transparent bypass
+        }
+
+        // Triode saturation formula:
+        // Asymmetric even harmonics (xd^2) add musical warmth and body,
+        // odd harmonics (xd^3) add presence.
+        let d = 1.0 + k * 1.5;
+        let c2 = 0.22 * k;
+        let c3 = 0.08 * k;
+        let norm = 1.0 / (1.0 + 0.40 * k);
+
+        let warm = |x: f32| -> f32 {
+            let xd = x * d;
+            let y = xd + c2 * xd * xd - c3 * xd * xd * xd;
+            (y * norm).clamp(-1.0, 1.0)
+        };
+
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            *l = warm(*l);
+            *r = warm(*r);
+        }
+    }
+
+    fn reset(&mut self) {}
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
+    fn name(&self) -> &str {
+        "Tube Warmer (Triode Saturation)"
+    }
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        if param_id == 0 {
+            self.drive = val.clamp(0.0, 100.0);
+        }
+    }
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Stereo Widener Effect: Mid-Side Haas stereo field widening
+#[derive(Clone, Debug)]
+pub struct StereoWidenerEffect {
+    width: f64,
+    current_width: f64,
+}
+
+impl StereoWidenerEffect {
+    pub fn new(width: f64) -> Self {
+        let w = width.clamp(1.0, 3.0);
+        Self {
+            width: w,
+            current_width: w,
+        }
+    }
+}
+
+impl Effect for StereoWidenerEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        // Smooth parameter slewing to eliminate zipper clicks during live slider adjustments
+        let diff = (self.width - self.current_width) as f32;
+        if diff.abs() > 0.005 {
+            self.current_width += (diff * 0.15) as f64;
+        } else {
+            self.current_width = self.width;
+        }
+
+        let w = self.current_width as f32;
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let mid = (*l + *r) * 0.5;
+            let side = (*l - *r) * 0.5;
+            let widened = side * w;
+            *l = mid + widened;
+            *r = mid - widened;
+        }
+    }
+
+    fn reset(&mut self) {}
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
+    fn name(&self) -> &str {
+        "Stereo Widener (Haas 3D)"
+    }
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        if param_id == 0 {
+            let w = if (0.0..=100.0).contains(&val) {
+                1.0 + (val as f64 / 100.0)
+            } else if val >= 1.0 {
+                val as f64
+            } else {
+                1.35
+            };
+            self.width = w.clamp(1.0, 3.0);
+        }
+    }
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Bass Guard Effect: 24 Hz 2nd-order Butterworth sub-sonic high-pass filter
+#[derive(Clone, Debug)]
+pub struct BassGuardEffect {
+    sample_rate: f64,
+    hpf_coeffs: BiquadCoeffs,
+    state_l: BiquadState,
+    state_r: BiquadState,
+}
+
+impl BassGuardEffect {
+    pub fn new(sample_rate: f64) -> Self {
+        let mut bg = Self {
+            sample_rate: sample_rate.max(8000.0),
+            hpf_coeffs: BiquadCoeffs::identity(),
+            state_l: BiquadState::default(),
+            state_r: BiquadState::default(),
+        };
+        bg.recompute();
+        bg
+    }
+
+    fn recompute(&mut self) {
+        self.hpf_coeffs = BiquadCoeffs::high_pass(24.0, self.sample_rate, 0.7071067811865476);
+    }
+}
+
+impl Effect for BassGuardEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            *l = self.state_l.process(*l as f64, &self.hpf_coeffs) as f32;
+            *r = self.state_r.process(*r as f64, &self.hpf_coeffs) as f32;
+        }
+    }
+
+    fn reset(&mut self) {
+        self.state_l.reset();
+        self.state_r.reset();
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        let sr = (sample_rate as f64).max(8000.0);
+        if (self.sample_rate - sr).abs() > 1.0 {
+            self.sample_rate = sr;
+            self.recompute();
+            self.reset();
+        }
+    }
+
+    fn name(&self) -> &str {
+        "Bass Guard (24Hz Sub-Sonic Filter)"
+    }
+
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Volume Attenuator: Precision passive -6.02 dB pad
+#[derive(Clone, Debug)]
+pub struct VolumeAttenuatorEffect {
+    gain: f32,
+}
+
+impl VolumeAttenuatorEffect {
+    pub fn new(gain_db: f64) -> Self {
+        let gain = 10.0_f64.powf(gain_db / 20.0) as f32;
+        Self { gain }
+    }
+}
+
+impl Effect for VolumeAttenuatorEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            *l *= self.gain;
+            *r *= self.gain;
+        }
+    }
+
+    fn reset(&mut self) {}
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
+    fn name(&self) -> &str {
+        "Volume Attenuator (-6dB Pad)"
+    }
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Pure Volume Booster Effect: Uncolored linear gain (0.0 to +24.0 dB) with transparent soft-limit guard
+#[derive(Clone, Debug)]
+pub struct VolumeBoosterEffect {
+    boost_db: f32,       // 0.0 to +24.0 dB
+    target_gain: f32,
+    current_gain: f32,   // Slew-smoothed linear multiplier
+}
+
+impl VolumeBoosterEffect {
+    pub fn new(boost_db: f32) -> Self {
+        let b = boost_db.clamp(0.0, 24.0);
+        let g = 10.0_f32.powf(b / 20.0);
+        Self {
+            boost_db: b,
+            target_gain: g,
+            current_gain: g,
+        }
+    }
+}
+
+impl Default for VolumeBoosterEffect {
+    fn default() -> Self {
+        Self::new(6.0)
+    }
+}
+
+impl Effect for VolumeBoosterEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let diff = self.target_gain - self.current_gain;
+        if diff.abs() > 0.001 {
+            self.current_gain += diff * 0.2;
+        } else {
+            self.current_gain = self.target_gain;
+        }
+
+        let gain = self.current_gain;
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let amplified_l = *l * gain;
+            let amplified_r = *r * gain;
+            *l = soft_limit(amplified_l as f64) as f32;
+            *r = soft_limit(amplified_r as f64) as f32;
+        }
+    }
+
+    fn reset(&mut self) {}
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
+    fn name(&self) -> &str {
+        "Pure Volume Booster (0 to +24dB)"
+    }
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        if param_id == 0 {
+            self.boost_db = val.clamp(0.0, 24.0);
+            self.target_gain = 10.0_f32.powf(self.boost_db / 20.0);
+        }
+    }
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Analog Preamp & Trim Effect: Studio console gain stage (-24.0 to +12.0 dB) with Class-A warm transformer touch
+#[derive(Clone, Debug)]
+pub struct AnalogPreampEffect {
+    trim_db: f32,       // -24.0 to +12.0 dB
+    target_gain: f32,
+    current_gain: f32,
+}
+
+impl AnalogPreampEffect {
+    pub fn new(trim_db: f32) -> Self {
+        let t = trim_db.clamp(-24.0, 12.0);
+        let g = 10.0_f32.powf(t / 20.0);
+        Self {
+            trim_db: t,
+            target_gain: g,
+            current_gain: g,
+        }
+    }
+}
+
+impl Default for AnalogPreampEffect {
+    fn default() -> Self {
+        Self::new(0.0)
+    }
+}
+
+impl Effect for AnalogPreampEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let diff = self.target_gain - self.current_gain;
+        if diff.abs() > 0.001 {
+            self.current_gain += diff * 0.2;
+        } else {
+            self.current_gain = self.target_gain;
+        }
+
+        let gain = self.current_gain;
+        let is_driven = self.trim_db > 3.0;
+
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let mut sl = *l * gain;
+            let mut sr = *r * gain;
+
+            if is_driven {
+                let drive_factor = ((self.trim_db - 3.0) / 9.0).clamp(0.0, 1.0) * 0.04;
+                sl = sl - drive_factor * sl * sl * sl;
+                sr = sr - drive_factor * sr * sr * sr;
+            }
+
+            *l = soft_limit(sl as f64) as f32;
+            *r = soft_limit(sr as f64) as f32;
+        }
+    }
+
+    fn reset(&mut self) {}
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
+    fn name(&self) -> &str {
+        "Analog Preamp & Trim (-24 to +12dB)"
+    }
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        if param_id == 0 {
+            self.trim_db = val.clamp(-24.0, 12.0);
+            self.target_gain = 10.0_f32.powf(self.trim_db / 20.0);
+        }
+    }
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Dynamic Loudness Effect: Fletcher-Munson ISO 226 low-level acoustic contouring
+#[derive(Clone, Debug)]
+pub struct DynamicLoudnessEffect {
+    depth: f32, // 0.0 to 100.0 (%)
+    sample_rate: f64,
+    low_shelf_coeffs: BiquadCoeffs,
+    high_shelf_coeffs: BiquadCoeffs,
+    state_l_low: BiquadState,
+    state_r_low: BiquadState,
+    state_l_high: BiquadState,
+    state_r_high: BiquadState,
+}
+
+impl DynamicLoudnessEffect {
+    pub fn new(depth: f32, sample_rate: f64) -> Self {
+        let mut effect = Self {
+            depth: depth.clamp(0.0, 100.0),
+            sample_rate: sample_rate.max(8000.0),
+            low_shelf_coeffs: BiquadCoeffs::identity(),
+            high_shelf_coeffs: BiquadCoeffs::identity(),
+            state_l_low: BiquadState::default(),
+            state_r_low: BiquadState::default(),
+            state_l_high: BiquadState::default(),
+            state_r_high: BiquadState::default(),
+        };
+        effect.recompute();
+        effect
+    }
+
+    fn recompute(&mut self) {
+        if self.depth < 0.5 {
+            self.low_shelf_coeffs = BiquadCoeffs::identity();
+            self.high_shelf_coeffs = BiquadCoeffs::identity();
+            return;
+        }
+        let k = (self.depth / 100.0) as f64;
+        let low_boost = k * 8.5; // up to +8.5 dB below 120 Hz
+        let high_boost = k * 5.0; // up to +5.0 dB above 9 kHz
+
+        self.low_shelf_coeffs = BiquadCoeffs::low_shelf(120.0, low_boost, self.sample_rate, 0.7071067811865476);
+        self.high_shelf_coeffs = BiquadCoeffs::high_shelf(9000.0, high_boost, self.sample_rate, 0.7071067811865476);
+    }
+}
+
+impl Default for DynamicLoudnessEffect {
+    fn default() -> Self {
+        Self::new(50.0, 44100.0)
+    }
+}
+
+impl Effect for DynamicLoudnessEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        if self.depth < 0.5 {
+            return; // Zero-cost transparent bypass
+        }
+
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let mut sl = self.state_l_low.process(*l as f64, &self.low_shelf_coeffs);
+            let mut sr = self.state_r_low.process(*r as f64, &self.low_shelf_coeffs);
+
+            sl = self.state_l_high.process(sl, &self.high_shelf_coeffs);
+            sr = self.state_r_high.process(sr, &self.high_shelf_coeffs);
+
+            *l = soft_limit(sl) as f32;
+            *r = soft_limit(sr) as f32;
+        }
+    }
+
+    fn reset(&mut self) {
+        self.state_l_low.reset();
+        self.state_r_low.reset();
+        self.state_l_high.reset();
+        self.state_r_high.reset();
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        let sr = (sample_rate as f64).max(8000.0);
+        if (self.sample_rate - sr).abs() > 1.0 {
+            self.sample_rate = sr;
+            self.recompute();
+            self.reset();
+        }
+    }
+
+    fn name(&self) -> &str {
+        "Dynamic Loudness (Fletcher-Munson ISO 226)"
+    }
+
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        if param_id == 0 {
+            self.depth = val.clamp(0.0, 100.0);
+            self.recompute();
+        }
+    }
+
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Audiophile Stepped Attenuator Effect: Resistor ladder 64-step passive attenuator with DIM -20dB and Mute
+#[derive(Clone, Debug)]
+pub struct SteppedAttenuatorEffect {
+    step_db: f32,        // -60.0 to 0.0 dB
+    is_dimmed: bool,     // -20dB DIM
+    is_muted: bool,      // Mute
+    target_gain: f32,
+    current_gain: f32,
+}
+
+impl SteppedAttenuatorEffect {
+    pub fn new(step_db: f32, is_dimmed: bool) -> Self {
+        let s = step_db.clamp(-60.0, 0.0).round(); // Discrete 1dB steps
+        let effective_db = if is_dimmed { s - 20.0 } else { s };
+        let g = 10.0_f32.powf(effective_db / 20.0);
+        Self {
+            step_db: s,
+            is_dimmed,
+            is_muted: false,
+            target_gain: g,
+            current_gain: g,
+        }
+    }
+
+    fn recompute_gain(&mut self) {
+        if self.is_muted {
+            self.target_gain = 0.0;
+        } else {
+            let effective_db = if self.is_dimmed { self.step_db - 20.0 } else { self.step_db };
+            self.target_gain = 10.0_f32.powf(effective_db / 20.0);
+        }
+    }
+}
+
+impl Default for SteppedAttenuatorEffect {
+    fn default() -> Self {
+        Self::new(-12.0, false)
+    }
+}
+
+impl Effect for SteppedAttenuatorEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let diff = self.target_gain - self.current_gain;
+        if diff.abs() > 0.0005 {
+            self.current_gain += diff * 0.25;
+        } else {
+            self.current_gain = self.target_gain;
+        }
+
+        let gain = self.current_gain;
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            *l *= gain;
+            *r *= gain;
+        }
+    }
+
+    fn reset(&mut self) {}
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
+    fn name(&self) -> &str {
+        "Stepped Attenuator (-60 to 0dB)"
+    }
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        if param_id == 0 {
+            self.step_db = val.clamp(-60.0, 0.0).round();
+            self.recompute_gain();
+        } else if param_id == 1 {
+            self.is_dimmed = val > 0.5;
+            self.recompute_gain();
+        } else if param_id == 2 {
+            self.is_muted = val > 0.5;
+            self.recompute_gain();
+        }
+    }
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Studio Optical Leveler Effect: Teletronix LA-2A style optocoupler dynamic leveler with Gain Reduction VU needle
+#[derive(Clone, Debug)]
+pub struct OpticalLevelerEffect {
+    target_drive: f32, // 0.0 to 100.0 (%)
+    envelope: f32,
+    pub gain_reduction_db: f32,
+    sample_rate: f32,
+}
+
+impl OpticalLevelerEffect {
+    pub fn new(target_drive: f32, sample_rate: f32) -> Self {
+        Self {
+            target_drive: target_drive.clamp(0.0, 100.0),
+            envelope: 0.0,
+            gain_reduction_db: 0.0,
+            sample_rate: sample_rate.max(8000.0),
+        }
+    }
+}
+
+impl Default for OpticalLevelerEffect {
+    fn default() -> Self {
+        Self::new(50.0, 44100.0)
+    }
+}
+
+impl Effect for OpticalLevelerEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let drive = (self.target_drive / 100.0).clamp(0.0, 1.0);
+        if drive < 0.01 {
+            self.gain_reduction_db = 0.0;
+            return; // Bypass
+        }
+
+        let threshold = 0.85 - drive * 0.65;
+        let attack_coeff = (-1.0 / (0.010 * self.sample_rate)).exp();
+        let release_coeff_fast = (-1.0 / (0.060 * self.sample_rate)).exp();
+        let release_coeff_slow = (-1.0 / (1.500 * self.sample_rate)).exp();
+
+        let mut max_gr = 0.0f32;
+
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let peak = l.abs().max(r.abs());
+
+            if peak > self.envelope {
+                self.envelope = peak + attack_coeff * (self.envelope - peak);
+            } else {
+                let coeff = if self.envelope > threshold * 1.5 {
+                    release_coeff_fast
+                } else {
+                    release_coeff_slow
+                };
+                self.envelope = peak + coeff * (self.envelope - peak);
+            }
+
+            let gain = if self.envelope > threshold {
+                let over_db = 20.0 * (self.envelope / threshold).log10();
+                let compressed_over_db = over_db / 3.0;
+                let gr_db = over_db - compressed_over_db;
+                if gr_db > max_gr {
+                    max_gr = gr_db;
+                }
+                10.0_f32.powf(-gr_db / 20.0)
+            } else {
+                1.0
+            };
+
+            *l = (*l * gain).clamp(-1.0, 1.0);
+            *r = (*r * gain).clamp(-1.0, 1.0);
+        }
+
+        self.gain_reduction_db = max_gr;
+    }
+
+    fn reset(&mut self) {
+        self.envelope = 0.0;
+        self.gain_reduction_db = 0.0;
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        let sr = sample_rate.max(8000.0);
+        if (self.sample_rate - sr).abs() > 1.0 {
+            self.sample_rate = sr;
+            self.reset();
+        }
+    }
+
+    fn name(&self) -> &str {
+        "Studio Optical Leveler (LA-2A Night Dynamic Control)"
+    }
+
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        if param_id == 0 {
+            self.target_drive = val.clamp(0.0, 100.0);
+        }
+    }
+
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Dual-Channel Stereo Balance & Trim Effect: Constant-power stereo panning with center detent
+#[derive(Clone, Debug)]
+pub struct StereoBalanceEffect {
+    balance: f32, // -100.0 (Left) to +100.0 (Right), 0.0 = Center
+    current_balance: f32,
+}
+
+impl StereoBalanceEffect {
+    pub fn new(balance: f32) -> Self {
+        let b = balance.clamp(-100.0, 100.0);
+        Self {
+            balance: b,
+            current_balance: b,
+        }
+    }
+}
+
+impl Default for StereoBalanceEffect {
+    fn default() -> Self {
+        Self::new(0.0)
+    }
+}
+
+impl Effect for StereoBalanceEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let diff = self.balance - self.current_balance;
+        if diff.abs() > 0.01 {
+            self.current_balance += diff * 0.2;
+        } else {
+            self.current_balance = self.balance;
+        }
+
+        if self.current_balance.abs() < 0.5 {
+            return; // Center detent is zero-cost passthrough (1.0, 1.0)
+        }
+
+        let norm = (self.current_balance / 100.0).clamp(-1.0, 1.0);
+        let theta = (norm + 1.0) * 0.25 * std::f32::consts::PI; // 0 to pi/2
+        let gain_l = std::f32::consts::SQRT_2 * theta.cos();
+        let gain_r = std::f32::consts::SQRT_2 * theta.sin();
+
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            *l *= gain_l;
+            *r *= gain_r;
+        }
+    }
+
+    fn reset(&mut self) {}
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
+    fn name(&self) -> &str {
+        "Stereo Balance & Trim"
+    }
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        if param_id == 0 {
+            self.balance = val.clamp(-100.0, 100.0);
+        }
+    }
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Low-Pass Filter: 2nd-order Butterworth low-pass filter (default cutoff 800 Hz)
+/// Dramatic audible difference (muffled / underwater effect) cutting treble above cutoff.
+#[derive(Clone, Debug)]
+pub struct LowPassFilterEffect {
+    cutoff_hz: f64,
+    current_cutoff_hz: f64,
+    sample_rate: f64,
+    lpf_coeffs: BiquadCoeffs,
+    state_l: BiquadState,
+    state_r: BiquadState,
+}
+
+impl LowPassFilterEffect {
+    pub fn new(cutoff_hz: f64, sample_rate: f64) -> Self {
+        let clamped = cutoff_hz.clamp(50.0, 20000.0);
+        let sr = sample_rate.max(8000.0);
+        let mut effect = Self {
+            cutoff_hz: clamped,
+            current_cutoff_hz: clamped,
+            sample_rate: sr,
+            lpf_coeffs: BiquadCoeffs::identity(),
+            state_l: BiquadState::default(),
+            state_r: BiquadState::default(),
+        };
+        effect.recompute();
+        effect
+    }
+
+    fn recompute(&mut self) {
+        // Butterworth Q = 1/sqrt(2) approx 0.70710678
+        self.lpf_coeffs = BiquadCoeffs::low_pass(self.current_cutoff_hz, self.sample_rate, 0.7071067811865476);
+    }
+}
+
+impl Effect for LowPassFilterEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let diff = self.cutoff_hz - self.current_cutoff_hz;
+        if diff.abs() > 0.5 {
+            self.current_cutoff_hz += diff * 0.15;
+            self.recompute();
+        } else if diff.abs() > 0.0 {
+            self.current_cutoff_hz = self.cutoff_hz;
+            self.recompute();
+        }
+
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            *l = self.state_l.process(*l as f64, &self.lpf_coeffs) as f32;
+            *r = self.state_r.process(*r as f64, &self.lpf_coeffs) as f32;
+        }
+    }
+
+    fn reset(&mut self) {
+        self.state_l.reset();
+        self.state_r.reset();
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        let sr = (sample_rate as f64).max(8000.0);
+        if (self.sample_rate - sr).abs() > 1.0 {
+            self.sample_rate = sr;
+            self.recompute();
+            self.reset();
+        }
+    }
+
+    fn name(&self) -> &str {
+        "Low-Pass Filter"
+    }
+
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        if param_id == 0 && val >= 20.0 {
+            self.cutoff_hz = (val as f64).clamp(50.0, 20000.0);
+        }
+    }
+
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Mixer / Summing Bus: Crossfader between input branches with linear crossfade headroom
+#[derive(Clone, Debug)]
+pub struct MixerEffect {
+    mix: f32, // 0.0 = 100% A, 1.0 = 100% B, 0.5 = 50% A / 50% B
+}
+
+impl MixerEffect {
+    pub fn new(mix: f32) -> Self {
+        Self { mix: mix.clamp(0.0, 1.0) }
+    }
+}
+
+impl Effect for MixerEffect {
+    fn process_block(&mut self, _left: &mut [f32], _right: &mut [f32]) {
+        // Mixing/summing is executed in topological bus summing in DspPipeline
+    }
+
+    fn reset(&mut self) {}
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
+    fn name(&self) -> &str {
+        "Mixer / Summing Bus"
+    }
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        if param_id == 0 {
+            self.mix = val.clamp(0.0, 1.0);
+        }
+    }
+    fn mix_ratio(&self) -> Option<f32> {
+        Some(self.mix)
+    }
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Passthrough / Wire: Pure identity effect for graph routing nodes (Source, Buffer, Resampler, DAC)
+#[derive(Clone, Debug, Default)]
+pub struct PassthroughEffect;
+
+impl PassthroughEffect {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Effect for PassthroughEffect {
+    fn process_block(&mut self, _left: &mut [f32], _right: &mut [f32]) {}
+    fn reset(&mut self) {}
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
+    fn name(&self) -> &str {
+        "Passthrough (Wire)"
+    }
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Splitter / Y-Branch Bus: 1 Input -> Dual Output (Pin A & Pin B) with lossless 64-bit precision
+#[derive(Clone, Debug, Default)]
+pub struct SplitterEffect;
+
+impl SplitterEffect {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Effect for SplitterEffect {
+    fn process_block(&mut self, _left: &mut [f32], _right: &mut [f32]) {
+        // Splitting is executed losslessly by routing the node output buffer to multiple downstream nodes
+    }
+    fn reset(&mut self) {}
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
+    fn name(&self) -> &str {
+        "Splitter / Y-Branch Bus"
+    }
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Generic Parametric EQ Band Configuration
+#[derive(Clone, Debug)]
+pub struct ParametricBandConfig {
+    pub freq: f64,
+    pub gain_db: f64,
+    pub q: f64,
+    pub filter_type: String, // "peak", "low_shelf", "high_shelf", "hpf"
+}
+
+/// Generic Parametric Equalizer Effect replacing hardcoded preset names (A3)
+#[derive(Clone, Debug)]
+pub struct ParametricEqEffect {
+    name: String,
+    sample_rate: f64,
+    bands: Vec<ParametricBandConfig>,
+    coeffs: Vec<BiquadCoeffs>,
+    state_l: Vec<BiquadState>,
+    state_r: Vec<BiquadState>,
+    auto_preamp: f64,
+}
+
+impl ParametricEqEffect {
+    pub fn new(name: &str, bands: Vec<ParametricBandConfig>, sample_rate: f64) -> Self {
+        let mut effect = Self {
+            name: name.to_string(),
+            sample_rate: sample_rate.max(8000.0),
+            bands,
+            coeffs: Vec::new(),
+            state_l: Vec::new(),
+            state_r: Vec::new(),
+            auto_preamp: 1.0,
+        };
+        effect.recompute();
+        effect
+    }
+
+    pub fn from_preset(name: &str, sample_rate: f64) -> Self {
+        let presets = crate::models::ParametricEqPreset::default_presets();
+        if let Some(preset) = presets.into_iter().find(|p| p.name == name) {
+            let configs: Vec<ParametricBandConfig> = preset.bands.into_iter().map(|b| {
+                let f_type = match b.filter_type {
+                    crate::models::FilterType::LowShelf => "low_shelf",
+                    crate::models::FilterType::HighShelf => "high_shelf",
+                    crate::models::FilterType::HighPass => "hpf",
+                    _ => "peak",
+                }.to_string();
+                ParametricBandConfig {
+                    freq: b.freq as f64,
+                    gain_db: if b.enabled { b.gain_db as f64 } else { 0.0 },
+                    q: b.q as f64,
+                    filter_type: f_type,
+                }
+            }).collect();
+            Self::new(name, configs, sample_rate)
+        } else {
+            let bands = match name {
+                "Vocal Clarity" => vec![
+                    ParametricBandConfig { freq: 250.0, gain_db: -2.5, q: 1.414, filter_type: "peak".to_string() },
+                    ParametricBandConfig { freq: 2000.0, gain_db: 3.0, q: 1.414, filter_type: "peak".to_string() },
+                    ParametricBandConfig { freq: 4000.0, gain_db: 3.5, q: 1.414, filter_type: "peak".to_string() },
+                ],
+                "Bass Boost & Warmth" | "Bass Boost Matrix" => vec![
+                    ParametricBandConfig { freq: 63.0, gain_db: 5.0, q: 1.2, filter_type: "low_shelf".to_string() },
+                    ParametricBandConfig { freq: 125.0, gain_db: 3.0, q: 1.414, filter_type: "peak".to_string() },
+                    ParametricBandConfig { freq: 250.0, gain_db: 1.5, q: 1.414, filter_type: "peak".to_string() },
+                ],
+                "Air & Sparkle" => vec![
+                    ParametricBandConfig { freq: 8000.0, gain_db: 2.5, q: 1.414, filter_type: "high_shelf".to_string() },
+                    ParametricBandConfig { freq: 16000.0, gain_db: 4.0, q: 1.0, filter_type: "high_shelf".to_string() },
+                ],
+                "Warm Vinyl / Acoustic" | "Warm Tube Vintage" => vec![
+                    ParametricBandConfig { freq: 125.0, gain_db: 2.0, q: 1.414, filter_type: "peak".to_string() },
+                    ParametricBandConfig { freq: 8000.0, gain_db: -2.0, q: 1.414, filter_type: "peak".to_string() },
+                    ParametricBandConfig { freq: 16000.0, gain_db: -3.5, q: 1.0, filter_type: "peak".to_string() },
+                ],
+                _ => vec![
+                    // Generic parametric default
+                    ParametricBandConfig { freq: 1000.0, gain_db: 0.0, q: 1.414, filter_type: "peak".to_string() },
+                ],
+            };
+            Self::new(name, bands, sample_rate)
+        }
+    }
+
+    fn recompute(&mut self) {
+        let max_boost = self.bands.iter().map(|b| b.gain_db).fold(0.0f64, f64::max);
+        self.auto_preamp = if max_boost > 0.0 {
+            10.0_f64.powf(-max_boost / 20.0)
+        } else {
+            1.0
+        };
+
+        self.coeffs = self.bands.iter().map(|b| {
+            match b.filter_type.as_str() {
+                "low_shelf" => BiquadCoeffs::low_shelf(b.freq, b.gain_db, self.sample_rate, b.q),
+                "high_shelf" => BiquadCoeffs::high_shelf(b.freq, b.gain_db, self.sample_rate, b.q),
+                "hpf" => BiquadCoeffs::high_pass(b.freq, self.sample_rate, b.q),
+                _ => BiquadCoeffs::peaking_eq(b.freq, b.gain_db, self.sample_rate, b.q),
+            }
+        }).collect();
+
+        self.state_l = vec![BiquadState::default(); self.coeffs.len()];
+        self.state_r = vec![BiquadState::default(); self.coeffs.len()];
+    }
+}
+
+impl Effect for ParametricEqEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let pre = self.auto_preamp;
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let mut fl = (*l as f64) * pre;
+            let mut fr = (*r as f64) * pre;
+            for i in 0..self.coeffs.len() {
+                fl = self.state_l[i].process(fl, &self.coeffs[i]);
+                fr = self.state_r[i].process(fr, &self.coeffs[i]);
+            }
+            *l = fl as f32;
+            *r = fr as f32;
+        }
+    }
+
+    fn reset(&mut self) {
+        for s in &mut self.state_l { s.reset(); }
+        for s in &mut self.state_r { s.reset(); }
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        let sr = (sample_rate as f64).max(8000.0);
+        if (self.sample_rate - sr).abs() > 1.0 {
+            self.sample_rate = sr;
+            self.recompute();
+            self.reset();
+        }
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Backwards compatibility alias for PresetEqEffect
+pub type PresetEqEffect = ParametricEqEffect;
+

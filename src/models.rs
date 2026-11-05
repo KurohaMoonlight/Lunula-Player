@@ -299,10 +299,34 @@ pub struct ModularNode {
     pub param_val: f32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CableConnection {
     pub from_node: usize,
+    #[serde(default)]
+    pub from_port: u8,
     pub to_node: usize,
+    #[serde(default)]
+    pub to_port: u8,
+}
+
+impl CableConnection {
+    pub fn new(from_node: usize, to_node: usize) -> Self {
+        Self {
+            from_node,
+            from_port: 0,
+            to_node,
+            to_port: 0,
+        }
+    }
+
+    pub fn with_ports(from_node: usize, from_port: u8, to_node: usize, to_port: u8) -> Self {
+        Self {
+            from_node,
+            from_port,
+            to_node,
+            to_port,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -316,7 +340,7 @@ pub struct ChainEvaluation {
     pub is_complete: bool,
     pub reachable_from_source: std::collections::HashSet<usize>,
     pub flowing_nodes: std::collections::HashSet<usize>,
-    pub flowing_cables: std::collections::HashSet<(usize, usize)>,
+    pub flowing_cables: std::collections::HashSet<CableConnection>,
 }
 
 impl ChainEvaluation {

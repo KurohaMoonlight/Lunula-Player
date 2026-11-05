@@ -81,12 +81,47 @@ impl std::fmt::Debug for GraphNode {
     }
 }
 
+/// Directed edge in the signal chain graph with port/pin awareness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub struct GraphEdge {
+    pub from_node: u32,
+    pub from_port: u8,
+    pub to_node: u32,
+    pub to_port: u8,
+}
+
+impl GraphEdge {
+    pub fn new(from_node: u32, to_node: u32) -> Self {
+        Self {
+            from_node,
+            from_port: 0,
+            to_node,
+            to_port: 0,
+        }
+    }
+
+    pub fn with_ports(from_node: u32, from_port: u8, to_node: u32, to_port: u8) -> Self {
+        Self {
+            from_node,
+            from_port,
+            to_node,
+            to_port,
+        }
+    }
+}
+
+impl From<(u32, u32)> for GraphEdge {
+    fn from((from, to): (u32, u32)) -> Self {
+        Self::new(from, to)
+    }
+}
+
 /// Compiled modular signal chain graph.
 /// Contains the full DAG topology (nodes, edges, topological order) and completeness status.
 pub struct SignalChainGraph {
     pub is_complete: bool,
     pub nodes: Vec<GraphNode>,
-    pub edges: Vec<(u32, u32)>,
+    pub edges: Vec<GraphEdge>,
     pub topological_order: Vec<u32>,
     pub effects: Vec<Box<dyn Effect>>,
 }
@@ -144,6 +179,7 @@ pub enum AudioCommand {
     SetEqBand { index: usize, gain_db: f32 },
     SetNodeParam { node_id: u32, param_id: u32, value: f32 },
     SetEqBypass(bool),
+    SetLimiterEnabled(bool),
     /// Atomically switch the entire signal chain mode.
     SetChainMode(ChainMode),
     /// Select specific audio hardware output device by friendly name (None = default OS endpoint)
@@ -158,6 +194,7 @@ pub enum DspCommand {
     SetNodeParam { node_id: u32, param_id: u32, value: f32 },
     SetEqBand { index: usize, gain_db: f32 },
     SetEqBypass(bool),
+    SetLimiterEnabled(bool),
     SetChainMode(ChainMode),
     SetSignalChainGraph(SignalChainGraph),
     ResetStates,

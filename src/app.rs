@@ -22,7 +22,9 @@ pub struct LunulaApp {
     pub is_panning_canvas: bool,
 
     // Cable patch dragging state
-    pub connecting_from_node: Option<usize>, // When dragging from an output pin
+    pub connecting_from_node: Option<usize>, // When dragging from an output pin or input pin
+    pub connecting_from_port: u8,
+    pub connecting_is_input_drag: bool,
 
     // Playback state
     pub is_playing: bool,
@@ -217,9 +219,9 @@ impl LunulaApp {
 
         // Default chain connections: in Bit-Perfect (Option B), cable directly jumps 2 -> 4 bypassing 3
         let initial_connections = vec![
-            CableConnection { from_node: 1, to_node: 2 },
-            CableConnection { from_node: 2, to_node: 4 },
-            CableConnection { from_node: 4, to_node: 5 },
+            CableConnection::new(1, 2),
+            CableConnection::new(2, 4),
+            CableConnection::new(4, 5),
         ];
 
         let (cover_req_tx, cover_req_rx) = std::sync::mpsc::channel::<(String, String)>();
@@ -257,6 +259,8 @@ impl LunulaApp {
             patchbay_pan: Vec2::ZERO,
             is_panning_canvas: false,
             connecting_from_node: None,
+            connecting_from_port: 0,
+            connecting_is_input_drag: false,
 
             is_playing: false,
             current_time: 0.0,
@@ -855,9 +859,9 @@ impl LunulaApp {
 
         if self.connections.is_empty() {
             self.connections = vec![
-                CableConnection { from_node: 1, to_node: 2 },
-                CableConnection { from_node: 2, to_node: 4 },
-                CableConnection { from_node: 4, to_node: 5 },
+                CableConnection::new(1, 2),
+                CableConnection::new(2, 4),
+                CableConnection::new(4, 5),
             ];
         }
 
@@ -1094,7 +1098,7 @@ impl LunulaApp {
             }
             for conn in &self.connections {
                 if flowing_nodes.contains(&conn.from_node) && flowing_nodes.contains(&conn.to_node) {
-                    flowing_cables.insert((conn.from_node, conn.to_node));
+                    flowing_cables.insert(*conn);
                 }
             }
         }
@@ -1136,10 +1140,10 @@ impl LunulaApp {
             adj.insert(node_id, Vec::new());
         }
 
-        for &(from, to) in &chain_eval.flowing_cables {
-            if chain_eval.flowing_nodes.contains(&from) && chain_eval.flowing_nodes.contains(&to) {
-                *in_degree.entry(to).or_insert(0) += 1;
-                adj.entry(from).or_default().push(to);
+        for conn in &chain_eval.flowing_cables {
+            if chain_eval.flowing_nodes.contains(&conn.from_node) && chain_eval.flowing_nodes.contains(&conn.to_node) {
+                *in_degree.entry(conn.to_node).or_insert(0) += 1;
+                adj.entry(conn.from_node).or_default().push(conn.to_node);
             }
         }
 
@@ -1278,11 +1282,16 @@ impl LunulaApp {
             }
         }
 
-        // Preserve connection order so Pin A is always parent 0 and Pin B is parent 1
-        let mut edges: Vec<(u32, u32)> = Vec::new();
+        // Preserve exact ports for each connection
+        let mut edges: Vec<crate::audio::GraphEdge> = Vec::new();
         for conn in &self.connections {
-            if chain_eval.flowing_cables.contains(&(conn.from_node, conn.to_node)) {
-                edges.push((conn.from_node as u32, conn.to_node as u32));
+            if chain_eval.flowing_cables.contains(conn) {
+                edges.push(crate::audio::GraphEdge::with_ports(
+                    conn.from_node as u32,
+                    conn.from_port,
+                    conn.to_node as u32,
+                    conn.to_port,
+                ));
             }
         }
 
@@ -1932,10 +1941,10 @@ mod tests {
         app.chain_mode = ChainMode::DspActive;
         // Connect 1 -> 2 -> 3 -> 4 -> 5 (DSP ENGINE is in path, but NO EQ preset card)
         app.connections = vec![
-            CableConnection { from_node: 1, to_node: 2 },
-            CableConnection { from_node: 2, to_node: 3 },
-            CableConnection { from_node: 3, to_node: 4 },
-            CableConnection { from_node: 4, to_node: 5 },
+            CableConnection::new(1, 2),
+            CableConnection::new(2, 3),
+            CableConnection::new(3, 4),
+            CableConnection::new(4, 5),
         ];
         app.invalidate_chain_cache();
 
@@ -1981,10 +1990,10 @@ mod tests {
 
         // Connect 1 -> 2 -> 99 -> 4 -> 5
         app.connections = vec![
-            CableConnection { from_node: 1, to_node: 2 },
-            CableConnection { from_node: 2, to_node: eq_card_id },
-            CableConnection { from_node: eq_card_id, to_node: 4 },
-            CableConnection { from_node: 4, to_node: 5 },
+            CableConnection::new(1, 2),
+            CableConnection::new(2, eq_card_id),
+            CableConnection::new(eq_card_id, 4),
+            CableConnection::new(4, 5),
         ];
         app.invalidate_chain_cache();
 

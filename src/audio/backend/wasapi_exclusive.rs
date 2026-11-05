@@ -239,6 +239,9 @@ impl WasapiExclusiveBackend {
                                 DspCommand::SetEqBypass(bp) => {
                                     dsp.set_eq_bypass(bp);
                                 }
+                                DspCommand::SetLimiterEnabled(enabled) => {
+                                    dsp.set_limiter_enabled(enabled);
+                                }
                                 DspCommand::SetSignalChainGraph(g) => {
                                     dsp.set_signal_chain(g);
                                 }
