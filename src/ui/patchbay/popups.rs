@@ -92,6 +92,7 @@ impl LunulaApp {
                         ui.add_space(6.0);
 
                         egui::ScrollArea::vertical()
+                            .id_salt("saved_eq_popup_scroll")
                             .max_height(popup_h - 110.0)
                             .show(ui, |ui| {
                                 for preset in &self.eq_presets {

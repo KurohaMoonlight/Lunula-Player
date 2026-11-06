@@ -22,6 +22,11 @@ impl LunulaApp {
 
     // Add a new modular filter node to the canvas
     pub fn add_modular_filter(&mut self, node_type: NodeType) {
+        // Block modules that are currently Coming Soon
+        if matches!(node_type, NodeType::VolumeAttenuator | NodeType::BassGuard) {
+            return;
+        }
+
         let id = self.next_node_id;
         self.next_node_id += 1;
 
@@ -394,6 +399,7 @@ impl LunulaApp {
                         if world_rect.contains(pos) {
                             clicked_on_any_node = true;
                             self.selected_node = Some(node.id);
+                            self.advance_studio_state.selected_cable_idx = None;
 
                             let has_slider = get_interactive_slider_bounds_and_val(&node.node_type, world_rect, n_size.x, pos.x).is_some();
                             let is_slider_hit = get_interactive_slider_bounds_and_val(&node.node_type, world_rect, n_size.x, pos.x)
@@ -424,6 +430,8 @@ impl LunulaApp {
                     // Panning canvas ONLY if clicked on empty background outside all nodes and sliders
                     if !clicked_on_any_node && self.dragging_node.is_none() && self.dragging_slider_node.is_none() {
                         self.is_panning_canvas = true;
+                        self.selected_node = None;
+                        self.advance_studio_state.selected_cable_idx = None;
                     }
                 }
             }
@@ -681,16 +689,24 @@ impl LunulaApp {
 
                 // Check if user clicked or right-clicked on cable to disconnect
                 let mid = points[12];
-                let is_hover_cable = mouse_pos.map_or(false, |p| p.distance(mid) <= 14.0 || points.iter().any(|pt| pt.distance(p) <= 6.0));
+                let is_hover_cut = mouse_pos.map_or(false, |p| p.distance(mid) <= 10.0);
+                let is_hover_cable = mouse_pos.map_or(false, |p| points.iter().any(|pt| pt.distance(p) <= 6.0) || p.distance(mid) <= 14.0);
 
-                if is_hover_cable && (response.clicked() || response.secondary_clicked()) {
+                if is_hover_cut && (response.clicked() || response.secondary_clicked()) {
                     connection_to_remove = Some(conn_idx);
+                } else if is_hover_cable && response.clicked() {
+                    self.advance_studio_state.selected_cable_idx = Some(conn_idx);
+                    self.selected_node = None;
                 }
+
+                let is_selected_cable = self.advance_studio_state.selected_cable_idx == Some(conn_idx);
 
                 let is_effect_cable = (from_n.node_type.is_dsp_or_effect() || to_n.node_type.is_dsp_or_effect())
                     && (self.chain_mode == ChainMode::BitPerfect || self.chain_mode == ChainMode::OsResampled);
 
-                let cable_color = if is_hover_cable {
+                let cable_color = if is_selected_cable {
+                    Color32::from_rgb(52, 211, 153) // Emerald green when selected for probe
+                } else if is_hover_cable {
                     Color32::from_rgb(239, 68, 68) // Red on hover to cut
                 } else if is_effect_cable {
                     Color32::from_rgb(203, 213, 225) // Muted slate gray when connected to bypassed effect
@@ -703,6 +719,11 @@ impl LunulaApp {
                 // Drop shadow (single batched polyline)
                 let shadow_pts: Vec<Pos2> = points.iter().map(|p| *p + Vec2::new(0.0, 1.5)).collect();
                 painter.add(egui::Shape::line(shadow_pts, Stroke::new(3.0, Color32::from_black_alpha(18))));
+
+                // Selected cable outer neon halo
+                if is_selected_cable {
+                    painter.add(egui::Shape::line(points.clone(), Stroke::new(5.5, Color32::from_rgba_premultiplied(52, 211, 153, 90))));
+                }
 
                 // Cable path: draw dashed line if connected to a bypassed effect, or single batched polyline
                 let stroke_w = if is_hover_cable { 2.8 } else if is_flowing_cable { 2.3 } else { 1.8 };
@@ -843,6 +864,13 @@ impl LunulaApp {
         // Remove disconnected cable
         if let Some(idx) = connection_to_remove {
             self.connections.remove(idx);
+            if self.advance_studio_state.selected_cable_idx == Some(idx) {
+                self.advance_studio_state.selected_cable_idx = None;
+            } else if let Some(sel) = self.advance_studio_state.selected_cable_idx {
+                if sel > idx {
+                    self.advance_studio_state.selected_cable_idx = Some(sel - 1);
+                }
+            }
             topology_changed = true;
         }
 
@@ -2839,10 +2867,12 @@ impl LunulaApp {
                     self.add_modular_filter(NodeType::StereoWidener);
                     ui.close();
                 }
-                if ui.button("🔉 Volume Attenuator (-6dB)").clicked() {
-                    self.add_modular_filter(NodeType::VolumeAttenuator);
-                    ui.close();
-                }
+                ui.add_enabled_ui(false, |ui| {
+                    let _ = ui.button("🔒 Volume Attenuator (Coming Soon)");
+                });
+                ui.add_enabled_ui(false, |ui| {
+                    let _ = ui.button("🔒 Bass Guard Limiter (Coming Soon)");
+                });
                 ui.separator();
                 ui.label(egui::RichText::new("🔊 Manipulasi Volume & Gain:").size(10.5).color(Color32::from_rgb(100, 116, 139)));
                 if ui.button("⚡ Volume Booster (0 s/d +24dB)").clicked() {

@@ -29,6 +29,8 @@ pub struct LunulaApp {
     // Studio Mode (Simple Modular Patchbay vs Advance Pro Studio)
     pub studio_mode: crate::models::StudioMode,
     pub advance_studio_state: crate::ui::patchbay::AdvanceStudioState,
+    pub patchbay_filter_search: String,
+    pub patchbay_category_idx: usize,
 
     // Playback state
     pub is_playing: bool,
@@ -268,6 +270,8 @@ impl LunulaApp {
 
             studio_mode: crate::models::StudioMode::Simple,
             advance_studio_state: crate::ui::patchbay::AdvanceStudioState::default(),
+            patchbay_filter_search: String::new(),
+            patchbay_category_idx: 0,
 
             is_playing: false,
             current_time: 0.0,
@@ -1893,8 +1897,8 @@ impl eframe::App for LunulaApp {
                             crate::models::StudioMode::Simple => {
                                 // Simple Studio Mode: 3/4 Width Interactive Patchbay Canvas + 1/4 Width FX & Filters Palette
                                 let total_width = ui.available_width();
-                                let canvas_width = total_width * 0.74;
-                                let palette_width = total_width - canvas_width - 12.0;
+                                let canvas_width = total_width * 0.76;
+                                let palette_width = total_width - canvas_width - 10.0;
                                 let full_height = ui.available_height() - 8.0;
 
                                 ui.horizontal(|ui| {
@@ -1945,8 +1949,60 @@ impl eframe::App for LunulaApp {
                                 });
                             }
                             crate::models::StudioMode::Advance => {
-                                // Advance Studio Mode: Audio Analyzer + Hardware Racks + Matrix
-                                self.render_advance_studio(ui);
+                                // Advance Studio Mode (Idea 2: Hybrid Modular):
+                                // Top 60%: Interactive Modular Patchbay Canvas (76% width) + Compact FX Palette (24% width)
+                                // Bottom 40%: Studio Telemetry & Circuit Inspection Desk
+                                let total_width = ui.available_width();
+                                let canvas_width = total_width * 0.76;
+                                let palette_width = total_width - canvas_width - 10.0;
+                                let full_height = ui.available_height() - 4.0;
+
+                                let is_minimized = self.advance_studio_state.is_desk_minimized;
+                                let (top_height, desk_height) = if is_minimized {
+                                    (full_height - 34.0, 28.0)
+                                } else {
+                                    let desk_h = (full_height * 0.38).clamp(190.0, 240.0);
+                                    (full_height - desk_h - 8.0, desk_h)
+                                };
+
+                                ui.vertical(|ui| {
+                                    // Upper Area: Canvas + Palette
+                                    ui.horizontal(|ui| {
+                                        ui.allocate_ui(Vec2::new(canvas_width, top_height), |ui| {
+                                            render_card_frame(ui, |ui| {
+                                                ui.vertical(|ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(
+                                                            egui::RichText::new("⚡ MODULAR PATCHBAY CANVAS")
+                                                                .strong()
+                                                                .size(13.0)
+                                                                .color(Color32::from_rgb(15, 23, 42)),
+                                                        );
+                                                        ui.label(
+                                                            egui::RichText::new("• Klik modul atau kabel untuk inspeksi sirkuit di Telemetry Desk bawah")
+                                                                .size(10.5)
+                                                                .color(Color32::from_rgb(100, 116, 139)),
+                                                        );
+                                                    });
+                                                    ui.add_space(3.0);
+                                                    let studio_canvas_size = ui.available_size();
+                                                    self.render_modular_patchbay_canvas(ui, studio_canvas_size);
+                                                });
+                                            });
+                                        });
+
+                                        ui.add_space(8.0);
+
+                                        ui.allocate_ui(Vec2::new(palette_width, top_height), |ui| {
+                                            self.render_fx_sidebar_palette(ui);
+                                        });
+                                    });
+
+                                    ui.add_space(6.0);
+
+                                    // Lower Area: Studio Telemetry & Circuit Inspection Desk
+                                    self.render_telemetry_inspection_desk(ui, desk_height);
+                                });
                             }
                         }
                     }
@@ -2133,16 +2189,16 @@ mod tests {
         app.studio_mode = crate::models::StudioMode::Advance;
         app.current_tab = crate::models::AppTab::SignalChain;
 
-        // Render each graph mode headlessly
-        let graph_modes = [
-            crate::ui::patchbay::AdvanceGraphMode::CumulativeCurve,
-            crate::ui::patchbay::AdvanceGraphMode::DualSpectrumRta,
-            crate::ui::patchbay::AdvanceGraphMode::StereoVectorscope,
-            crate::ui::patchbay::AdvanceGraphMode::MasterMetering,
+        // 1. Render all telemetry tabs headlessly
+        let telemetry_tabs = [
+            crate::ui::patchbay::TelemetryTab::AutoInspect,
+            crate::ui::patchbay::TelemetryTab::CumulativeNet,
+            crate::ui::patchbay::TelemetryTab::StereoVectorscope,
+            crate::ui::patchbay::TelemetryTab::MasterMetering,
         ];
 
-        for mode in graph_modes {
-            app.advance_studio_state.graph_mode = mode;
+        for tab in telemetry_tabs {
+            app.advance_studio_state.telemetry_tab = tab;
             let mut out = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: screen,
@@ -2150,22 +2206,18 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    app.render_advance_studio(ui);
+                    app.render_telemetry_inspection_desk(ui, 220.0);
                 },
             );
-            assert!(!out.shapes.is_empty(), "Advance studio must render shapes in {:?} mode", mode);
+            assert!(!out.shapes.is_empty(), "Telemetry desk must render shapes in {:?} tab", tab);
             out.textures_delta.clear();
         }
 
-        // Test all 3 lower rack tabs
-        let rack_tabs = [
-            crate::ui::patchbay::AdvanceRackTab::RackUnits,
-            crate::ui::patchbay::AdvanceRackTab::SignalMatrix,
-            crate::ui::patchbay::AdvanceRackTab::MasterSection,
-        ];
-
-        for tab in rack_tabs {
-            app.advance_studio_state.rack_tab = tab;
+        // 2. Test node inspection for TubeWarmer, LPF, and Mixer
+        app.advance_studio_state.telemetry_tab = crate::ui::patchbay::TelemetryTab::AutoInspect;
+        app.add_modular_filter(crate::models::NodeType::TubeWarmer);
+        if let Some(tube_node) = app.nodes.iter().find(|n| n.node_type == crate::models::NodeType::TubeWarmer) {
+            app.selected_node = Some(tube_node.id);
             let mut out = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: screen,
@@ -2173,12 +2225,76 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    app.render_advance_studio(ui);
+                    app.render_telemetry_inspection_desk(ui, 220.0);
                 },
             );
-            assert!(!out.shapes.is_empty(), "Advance studio must render shapes in {:?} rack tab", tab);
+            assert!(!out.shapes.is_empty(), "Must render Tube Warmer circuit inspection");
             out.textures_delta.clear();
         }
+
+        // 3. Test cable probe mode
+        app.selected_node = None;
+        app.advance_studio_state.selected_cable_idx = Some(0);
+        let mut out_cable = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: screen,
+                time: Some(0.3),
+                ..Default::default()
+            },
+            |ui| {
+                app.render_telemetry_inspection_desk(ui, 220.0);
+            },
+        );
+        assert!(!out_cable.shapes.is_empty(), "Must render Cable Probe telemetry");
+        out_cable.textures_delta.clear();
+
+        // 4. Test minimized desk state
+        app.advance_studio_state.is_desk_minimized = true;
+        let mut out_min = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: screen,
+                time: Some(0.4),
+                ..Default::default()
+            },
+            |ui| {
+                app.render_telemetry_inspection_desk(ui, 28.0);
+            },
+        );
+        assert!(!out_min.shapes.is_empty(), "Must render minimized desk bar");
+        out_min.textures_delta.clear();
+    }
+
+    #[test]
+    fn test_coming_soon_filters_blocked_and_rendered() {
+        let mut app = LunulaApp::default();
+        let initial_node_count = app.nodes.len();
+
+        // 1. Verify add_modular_filter blocks VolumeAttenuator and BassGuard
+        app.add_modular_filter(crate::models::NodeType::VolumeAttenuator);
+        assert_eq!(app.nodes.len(), initial_node_count, "VolumeAttenuator must not be added to canvas");
+
+        app.add_modular_filter(crate::models::NodeType::BassGuard);
+        assert_eq!(app.nodes.len(), initial_node_count, "BassGuard must not be added to canvas");
+
+        // 2. Verify allowed filter can still be added
+        app.add_modular_filter(crate::models::NodeType::TubeWarmer);
+        assert_eq!(app.nodes.len(), initial_node_count + 1, "TubeWarmer must be allowed on canvas");
+
+        // 3. Headless UI render of FX sidebar palette with Coming Soon tiles
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::new(340.0, 700.0));
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                time: Some(0.1),
+                ..Default::default()
+            },
+            |ui| {
+                app.render_fx_sidebar_palette(ui);
+            },
+        );
+        assert!(!out.shapes.is_empty(), "FX sidebar palette must render shapes cleanly");
+        out.textures_delta.clear();
     }
 }
 
