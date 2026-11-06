@@ -26,6 +26,10 @@ pub struct LunulaApp {
     pub connecting_from_port: u8,
     pub connecting_is_input_drag: bool,
 
+    // Studio Mode (Simple Modular Patchbay vs Advance Pro Studio)
+    pub studio_mode: crate::models::StudioMode,
+    pub advance_studio_state: crate::ui::patchbay::AdvanceStudioState,
+
     // Playback state
     pub is_playing: bool,
     pub current_time: f32,
@@ -261,6 +265,9 @@ impl LunulaApp {
             connecting_from_node: None,
             connecting_from_port: 0,
             connecting_is_input_drag: false,
+
+            studio_mode: crate::models::StudioMode::Simple,
+            advance_studio_state: crate::ui::patchbay::AdvanceStudioState::default(),
 
             is_playing: false,
             current_time: 0.0,
@@ -1787,122 +1794,161 @@ impl eframe::App for LunulaApp {
                         self.render_spectrum_visualizer(ui);
                     }
                     AppTab::SignalChain => {
-                        // Full Studio Mode: 3/4 Width Interactive Patchbay Canvas + 1/4 Width FX & Filters Palette
-                        let total_width = ui.available_width();
-                        let canvas_width = total_width * 0.74;
-                        let palette_width = total_width - canvas_width - 12.0;
-                        let full_height = ui.available_height() - 8.0;
-
+                        // Header bar: Studio Mode Selection (Simple Studio vs Advance Studio) + Device Selector + Chain Mode
                         ui.horizontal(|ui| {
-                            // Left 3/4 Canvas
-                            ui.allocate_ui(Vec2::new(canvas_width, full_height), |ui| {
-                                render_card_frame(ui, |ui| {
-                                    ui.vertical(|ui| {
-                                        // Row 1: Studio Title & Mode Selection + Reset View
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                egui::RichText::new("⚡ MODULAR PATCHBAY STUDIO")
-                                                    .strong()
-                                                    .size(14.5)
-                                                    .color(Color32::from_rgb(15, 23, 42)),
-                                            );
+                            // Mode Switcher Pills: [ 🎛️ Simple Studio ] | [ 🔬 Advance Studio ]
+                            let is_simple = self.studio_mode == crate::models::StudioMode::Simple;
+                            let is_advance = self.studio_mode == crate::models::StudioMode::Advance;
 
-                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                if ui.button(egui::RichText::new("↺ Reset Posisi").size(11.5).strong())
-                                                    .on_hover_text("Pusatkan kembali view dan susun rapi 5 blok utama")
-                                                    .clicked()
-                                                {
-                                                    self.reset_patchbay_layout(ui.available_width(), ui.available_height());
+                            let simple_text = if is_simple {
+                                egui::RichText::new("🎛️ Simple Studio").strong().size(12.0).color(Color32::WHITE)
+                            } else {
+                                egui::RichText::new("🎛️ Simple Studio").size(12.0).color(Color32::from_rgb(100, 116, 139))
+                            };
+                            let simple_bg = if is_simple { Color32::from_rgb(79, 70, 229) } else { Color32::from_rgb(241, 245, 249) };
+                            if ui.add(egui::Button::new(simple_text).fill(simple_bg).corner_radius(6.0)).on_hover_text("Buka tampilan kanvas modular patchbay standar").clicked() {
+                                self.studio_mode = crate::models::StudioMode::Simple;
+                            }
+
+                            let advance_text = if is_advance {
+                                egui::RichText::new("🔬 Advance Studio").strong().size(12.0).color(Color32::WHITE)
+                            } else {
+                                egui::RichText::new("🔬 Advance Studio").size(12.0).color(Color32::from_rgb(100, 116, 139))
+                            };
+                            let advance_bg = if is_advance { Color32::from_rgb(79, 70, 229) } else { Color32::from_rgb(241, 245, 249) };
+                            if ui.add(egui::Button::new(advance_text).fill(advance_bg).corner_radius(6.0)).on_hover_text("Buka konsol audio profesional dengan grafik respon frekuensi, RTA spektrum, dan rack unit").clicked() {
+                                self.studio_mode = crate::models::StudioMode::Advance;
+                            }
+
+                            if is_advance {
+                                ui.label(egui::RichText::new("PROTOTYPE GUI").size(10.0).strong().color(Color32::from_rgb(245, 158, 11)));
+                            }
+
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if is_simple {
+                                    if ui.button(egui::RichText::new("↺ Reset Posisi").size(11.5).strong())
+                                        .on_hover_text("Pusatkan kembali view dan susun rapi 5 blok utama")
+                                        .clicked()
+                                    {
+                                        self.reset_patchbay_layout(ui.available_width(), ui.available_height());
+                                    }
+                                }
+
+                                let current_dev_label = self.selected_output_device.as_deref().unwrap_or("Default System Output");
+                                let truncated_label = if current_dev_label.len() > 22 {
+                                    format!("🔊 {}...", &current_dev_label[..19])
+                                } else {
+                                    format!("🔊 {}", current_dev_label)
+                                };
+
+                                egui::ComboBox::from_id_salt("patchbay_output_device_combo")
+                                    .selected_text(egui::RichText::new(truncated_label).size(11.0).strong())
+                                    .width(170.0)
+                                    .show_ui(ui, |ui| {
+                                        if ui.button("🔄 Pindai Ulang Device (Scan)").clicked() {
+                                            self.available_output_devices = crate::audio::backend::enumerate_output_devices();
+                                        }
+                                        ui.separator();
+                                        let is_default = self.selected_output_device.is_none();
+                                        if ui.selectable_label(is_default, "🔊 Default System Output").clicked() {
+                                            self.selected_output_device = None;
+                                            if let Some(ref engine) = self.audio_engine {
+                                                engine.set_output_device(None);
+                                            }
+                                            self.save_library_state();
+                                        }
+                                        for dev in &self.available_output_devices {
+                                            let is_sel = self.selected_output_device.as_ref() == Some(&dev.name);
+                                            let label = if dev.is_default {
+                                                format!("🔊 {} [Default]", dev.name)
+                                            } else {
+                                                format!("🎧 {}", dev.name)
+                                            };
+                                            if ui.selectable_label(is_sel, label).clicked() {
+                                                self.selected_output_device = Some(dev.name.clone());
+                                                if let Some(ref engine) = self.audio_engine {
+                                                    engine.set_output_device(Some(dev.name.clone()));
                                                 }
-
-                                                let current_dev_label = self.selected_output_device.as_deref().unwrap_or("Default System Output");
-                                                let truncated_label = if current_dev_label.len() > 22 {
-                                                    format!("🔊 {}...", &current_dev_label[..19])
-                                                } else {
-                                                    format!("🔊 {}", current_dev_label)
-                                                };
-
-                                                egui::ComboBox::from_id_salt("patchbay_output_device_combo")
-                                                    .selected_text(egui::RichText::new(truncated_label).size(11.0).strong())
-                                                    .width(170.0)
-                                                    .show_ui(ui, |ui| {
-                                                        if ui.button("🔄 Pindai Ulang Device (Scan)").clicked() {
-                                                            self.available_output_devices = crate::audio::backend::enumerate_output_devices();
-                                                        }
-                                                        ui.separator();
-                                                        let is_default = self.selected_output_device.is_none();
-                                                        if ui.selectable_label(is_default, "🔊 Default System Output").clicked() {
-                                                            self.selected_output_device = None;
-                                                            if let Some(ref engine) = self.audio_engine {
-                                                                engine.set_output_device(None);
-                                                            }
-                                                            self.save_library_state();
-                                                        }
-                                                        for dev in &self.available_output_devices {
-                                                            let is_sel = self.selected_output_device.as_ref() == Some(&dev.name);
-                                                            let label = if dev.is_default {
-                                                                format!("🔊 {} [Default]", dev.name)
-                                                            } else {
-                                                                format!("🎧 {}", dev.name)
-                                                            };
-                                                            if ui.selectable_label(is_sel, label).clicked() {
-                                                                self.selected_output_device = Some(dev.name.clone());
-                                                                if let Some(ref engine) = self.audio_engine {
-                                                                    engine.set_output_device(Some(dev.name.clone()));
-                                                                }
-                                                                self.save_library_state();
-                                                            }
-                                                        }
-                                                    });
-
-                                                if ui.selectable_label(self.chain_mode == ChainMode::OsResampled, egui::RichText::new("OS Resampled").size(11.0).strong()).clicked() {
-                                                    self.set_chain_mode(ChainMode::OsResampled);
-                                                }
-                                                if ui.selectable_label(self.chain_mode == ChainMode::DspActive, egui::RichText::new("DSP Active").size(11.0).strong()).clicked() {
-                                                    self.set_chain_mode(ChainMode::DspActive);
-                                                }
-                                                if ui.selectable_label(self.chain_mode == ChainMode::BitPerfect, egui::RichText::new("Bit-Perfect").size(11.0).strong()).clicked() {
-                                                    self.set_chain_mode(ChainMode::BitPerfect);
-                                                }
-                                                ui.label(egui::RichText::new("Mode:").size(11.0).color(Color32::from_rgb(100, 116, 139)));
-                                            });
-                                        });
-
-                                        ui.add_space(3.0);
-
-                                        // Row 2: Tips & Navigation Guidance (Separated row, never overlaps)
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                egui::RichText::new("💡 Tarik pin Output (kanan) ke pin Input (kiri) untuk menyambung • Klik kabel untuk memutus • Klik kanan tahan untuk geser canvas")
-                                                    .size(11.0)
-                                                    .color(Color32::from_rgb(100, 116, 139)),
-                                            );
-                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                let tut_text = if self.show_patchbay_tutorial {
-                                                    egui::RichText::new("📖 Tutup Tutorial").size(11.0).strong().color(Color32::from_rgb(147, 51, 234))
-                                                } else {
-                                                    egui::RichText::new("📖 Panduan / Tutorial Pemula").size(11.0).strong().color(Color32::from_rgb(99, 102, 241))
-                                                };
-                                                if ui.button(tut_text).on_hover_text("Buka modul tutorial bergambar cara kerja Signal Chain Studio").clicked() {
-                                                    self.show_patchbay_tutorial = !self.show_patchbay_tutorial;
-                                                }
-                                            });
-                                        });
-
-                                        ui.add_space(6.0);
-                                        let studio_canvas_size = ui.available_size();
-                                        self.render_modular_patchbay_canvas(ui, studio_canvas_size);
+                                                self.save_library_state();
+                                            }
+                                        }
                                     });
-                                });
-                            });
 
-                            ui.add_space(8.0);
-
-                            // Right 1/4 FX Library & Filters Palette
-                            ui.allocate_ui(Vec2::new(palette_width, full_height), |ui| {
-                                self.render_fx_sidebar_palette(ui);
+                                if ui.selectable_label(self.chain_mode == ChainMode::OsResampled, egui::RichText::new("OS Resampled").size(11.0).strong()).clicked() {
+                                    self.set_chain_mode(ChainMode::OsResampled);
+                                }
+                                if ui.selectable_label(self.chain_mode == ChainMode::DspActive, egui::RichText::new("DSP Active").size(11.0).strong()).clicked() {
+                                    self.set_chain_mode(ChainMode::DspActive);
+                                }
+                                if ui.selectable_label(self.chain_mode == ChainMode::BitPerfect, egui::RichText::new("Bit-Perfect").size(11.0).strong()).clicked() {
+                                    self.set_chain_mode(ChainMode::BitPerfect);
+                                }
+                                ui.label(egui::RichText::new("Mode:").size(11.0).color(Color32::from_rgb(100, 116, 139)));
                             });
                         });
+
+                        ui.add_space(6.0);
+
+                        match self.studio_mode {
+                            crate::models::StudioMode::Simple => {
+                                // Simple Studio Mode: 3/4 Width Interactive Patchbay Canvas + 1/4 Width FX & Filters Palette
+                                let total_width = ui.available_width();
+                                let canvas_width = total_width * 0.74;
+                                let palette_width = total_width - canvas_width - 12.0;
+                                let full_height = ui.available_height() - 8.0;
+
+                                ui.horizontal(|ui| {
+                                    // Left 3/4 Canvas
+                                    ui.allocate_ui(Vec2::new(canvas_width, full_height), |ui| {
+                                        render_card_frame(ui, |ui| {
+                                            ui.vertical(|ui| {
+                                                // Row 1: Studio Title & Tips
+                                                ui.horizontal(|ui| {
+                                                    ui.label(
+                                                        egui::RichText::new("⚡ MODULAR PATCHBAY STUDIO")
+                                                            .strong()
+                                                            .size(13.5)
+                                                            .color(Color32::from_rgb(15, 23, 42)),
+                                                    );
+
+                                                    ui.label(
+                                                        egui::RichText::new("• Tarik pin Output ke Input • Klik kabel untuk memutus • Klik kanan tahan untuk geser canvas")
+                                                            .size(10.5)
+                                                            .color(Color32::from_rgb(100, 116, 139)),
+                                                    );
+
+                                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                        let tut_text = if self.show_patchbay_tutorial {
+                                                            egui::RichText::new("📖 Tutup Tutorial").size(11.0).strong().color(Color32::from_rgb(147, 51, 234))
+                                                        } else {
+                                                            egui::RichText::new("📖 Panduan Pemula").size(11.0).strong().color(Color32::from_rgb(99, 102, 241))
+                                                        };
+                                                        if ui.button(tut_text).on_hover_text("Buka modul tutorial bergambar cara kerja Signal Chain Studio").clicked() {
+                                                            self.show_patchbay_tutorial = !self.show_patchbay_tutorial;
+                                                        }
+                                                    });
+                                                });
+
+                                                ui.add_space(4.0);
+                                                let studio_canvas_size = ui.available_size();
+                                                self.render_modular_patchbay_canvas(ui, studio_canvas_size);
+                                            });
+                                        });
+                                    });
+
+                                    ui.add_space(8.0);
+
+                                    // Right 1/4 FX Library & Filters Palette
+                                    ui.allocate_ui(Vec2::new(palette_width, full_height), |ui| {
+                                        self.render_fx_sidebar_palette(ui);
+                                    });
+                                });
+                            }
+                            crate::models::StudioMode::Advance => {
+                                // Advance Studio Mode: Audio Analyzer + Hardware Racks + Matrix
+                                self.render_advance_studio(ui);
+                            }
+                        }
                     }
                     AppTab::Library => {
                         self.render_library_panel(ui);
@@ -2074,6 +2120,65 @@ mod tests {
             },
         );
         out3.textures_delta.clear();
+    }
+
+    #[test]
+    fn test_studio_mode_toggle_and_advance_studio_headless_render() {
+        let ctx = egui::Context::default();
+        let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 900.0)));
+        let mut app = LunulaApp::default();
+        assert_eq!(app.studio_mode, crate::models::StudioMode::Simple);
+
+        // Switch to Advance Studio
+        app.studio_mode = crate::models::StudioMode::Advance;
+        app.current_tab = crate::models::AppTab::SignalChain;
+
+        // Render each graph mode headlessly
+        let graph_modes = [
+            crate::ui::patchbay::AdvanceGraphMode::CumulativeCurve,
+            crate::ui::patchbay::AdvanceGraphMode::DualSpectrumRta,
+            crate::ui::patchbay::AdvanceGraphMode::StereoVectorscope,
+            crate::ui::patchbay::AdvanceGraphMode::MasterMetering,
+        ];
+
+        for mode in graph_modes {
+            app.advance_studio_state.graph_mode = mode;
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: screen,
+                    time: Some(0.1),
+                    ..Default::default()
+                },
+                |ui| {
+                    app.render_advance_studio(ui);
+                },
+            );
+            assert!(!out.shapes.is_empty(), "Advance studio must render shapes in {:?} mode", mode);
+            out.textures_delta.clear();
+        }
+
+        // Test all 3 lower rack tabs
+        let rack_tabs = [
+            crate::ui::patchbay::AdvanceRackTab::RackUnits,
+            crate::ui::patchbay::AdvanceRackTab::SignalMatrix,
+            crate::ui::patchbay::AdvanceRackTab::MasterSection,
+        ];
+
+        for tab in rack_tabs {
+            app.advance_studio_state.rack_tab = tab;
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: screen,
+                    time: Some(0.2),
+                    ..Default::default()
+                },
+                |ui| {
+                    app.render_advance_studio(ui);
+                },
+            );
+            assert!(!out.shapes.is_empty(), "Advance studio must render shapes in {:?} rack tab", tab);
+            out.textures_delta.clear();
+        }
     }
 }
 

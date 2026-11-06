@@ -237,6 +237,12 @@ pub enum AppTab {
     Equalizer,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StudioMode {
+    Simple,
+    Advance,
+}
+
 pub use crate::audio::ChainMode;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
