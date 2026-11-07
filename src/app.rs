@@ -1272,16 +1272,6 @@ impl LunulaApp {
                     node.sub1 = "RingBuffer".to_string();
                     node.sub2 = "100% Loaded".to_string();
                 }
-                3 => {
-                    node.title = "DSP ENGINE".to_string();
-                    if report.is_dsp_active {
-                        node.sub1 = "Active (64-bit Float)".to_string();
-                        node.sub2 = "10-Band Biquad f64 • Headroom Guard".to_string();
-                    } else {
-                        node.sub1 = "BYPASSED (Direct Wire)".to_string();
-                        node.sub2 = "0.0 dB Pure Master".to_string();
-                    }
-                }
                 4 => {
                     node.title = "APP RESAMPLER".to_string();
                     node.sub1 = report.device_name.clone();
@@ -1357,15 +1347,6 @@ impl LunulaApp {
             let dev_name = self.selected_output_device.clone().unwrap_or_else(|| "Default Audio Endpoint".to_string());
             for n in &mut self.nodes {
                 match n.id {
-                    3 => {
-                        if mode == ChainMode::DspActive {
-                            n.sub1 = "Active (64-bit Float)".to_string();
-                            n.sub2 = "64-bit DSP Bus • Clean Passthrough".to_string();
-                        } else {
-                            n.sub1 = "BYPASSED (Direct Wire)".to_string();
-                            n.sub2 = "0.0 dB Pure Master".to_string();
-                        }
-                    }
                     4 => {
                         n.title = "APP RESAMPLER".to_string();
                         n.sub1 = dev_name.clone();
@@ -2524,7 +2505,17 @@ impl eframe::App for LunulaApp {
                                         } else if r.actual_mode == ChainMode::BitPerfect {
                                             ui.label(egui::RichText::new(format!("✓ Sinyal Bit-Perfect Mengalir ({:.1} kHz Native)", r.device_rate as f32 / 1000.0)).size(11.5).color(Color32::from_rgb(16, 185, 129)).strong());
                                         } else if r.actual_mode == ChainMode::DspActive {
-                                            ui.label(egui::RichText::new(format!("✓ DSP Engine Aktif (10-Band EQ • {:.1} kHz)", r.device_rate as f32 / 1000.0)).size(11.5).color(Color32::from_rgb(99, 102, 241)).strong());
+                                            let eval = self.evaluate_signal_chain();
+                                            let flowing_fx: Vec<&str> = self.nodes.iter()
+                                                .filter(|n| n.node_type.is_dsp_or_effect() && eval.flowing_nodes.contains(&n.id))
+                                                .map(|n| n.title.as_str())
+                                                .collect();
+                                            let fx_desc = if flowing_fx.is_empty() {
+                                                "Direct Passthrough".to_string()
+                                            } else {
+                                                flowing_fx.join(", ")
+                                            };
+                                            ui.label(egui::RichText::new(format!("✓ Rantai Modular Aktif ({} • {:.1} kHz)", fx_desc, r.device_rate as f32 / 1000.0)).size(11.5).color(Color32::from_rgb(99, 102, 241)).strong());
                                         } else {
                                             ui.label(egui::RichText::new("✓ OS Resampled (48.0 kHz Shared)").size(11.5).color(Color32::from_rgb(217, 119, 6)).strong());
                                         }
@@ -2534,7 +2525,7 @@ impl eframe::App for LunulaApp {
                                                 ui.label(egui::RichText::new("✓ Sinyal Bit-Perfect Siap").size(11.5).color(Color32::from_rgb(16, 185, 129)).strong());
                                             }
                                             ChainMode::DspActive => {
-                                                ui.label(egui::RichText::new("✓ DSP Engine Siap").size(11.5).color(Color32::from_rgb(99, 102, 241)).strong());
+                                                ui.label(egui::RichText::new("✓ Rantai Modular Siap").size(11.5).color(Color32::from_rgb(99, 102, 241)).strong());
                                             }
                                             ChainMode::OsResampled => {
                                                 ui.label(egui::RichText::new("✓ OS Resampled Siap (48 kHz)").size(11.5).color(Color32::from_rgb(217, 119, 6)).strong());
