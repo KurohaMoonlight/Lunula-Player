@@ -872,37 +872,49 @@ impl Effect for StereoBalanceEffect {
     }
 }
 
-/// Low-Pass Filter: 2nd-order Butterworth low-pass filter (default cutoff 800 Hz)
-/// Dramatic audible difference (muffled / underwater effect) cutting treble above cutoff.
+/// Low-Pass Filter: Variable slope (12/24/48 dB/oct) and resonance fringe Q (0.5 to 4.0)
 #[derive(Clone, Debug)]
 pub struct LowPassFilterEffect {
-    cutoff_hz: f64,
+    pub cutoff_hz: f64,
     current_cutoff_hz: f64,
     sample_rate: f64,
+    pub slope_db: u32,
+    pub fringe_q: f64,
     lpf_coeffs: BiquadCoeffs,
-    state_l: BiquadState,
-    state_r: BiquadState,
+    state_l: [BiquadState; 4],
+    state_r: [BiquadState; 4],
 }
 
 impl LowPassFilterEffect {
     pub fn new(cutoff_hz: f64, sample_rate: f64) -> Self {
-        let clamped = cutoff_hz.clamp(50.0, 20000.0);
+        Self::with_slope_and_fringe(cutoff_hz, 12, 0.7071067811865476, sample_rate)
+    }
+
+    pub fn with_slope_and_fringe(cutoff_hz: f64, slope_db: u32, fringe_q: f64, sample_rate: f64) -> Self {
+        let clamped = cutoff_hz.clamp(20.0, 20000.0);
         let sr = sample_rate.max(8000.0);
+        let slope = match slope_db {
+            24 => 24,
+            48 => 48,
+            _ => 12,
+        };
+        let q = fringe_q.clamp(0.2, 10.0);
         let mut effect = Self {
             cutoff_hz: clamped,
             current_cutoff_hz: clamped,
             sample_rate: sr,
+            slope_db: slope,
+            fringe_q: q,
             lpf_coeffs: BiquadCoeffs::identity(),
-            state_l: BiquadState::default(),
-            state_r: BiquadState::default(),
+            state_l: [BiquadState::default(); 4],
+            state_r: [BiquadState::default(); 4],
         };
         effect.recompute();
         effect
     }
 
     fn recompute(&mut self) {
-        // Butterworth Q = 1/sqrt(2) approx 0.70710678
-        self.lpf_coeffs = BiquadCoeffs::low_pass(self.current_cutoff_hz, self.sample_rate, 0.7071067811865476);
+        self.lpf_coeffs = BiquadCoeffs::low_pass(self.current_cutoff_hz, self.sample_rate, self.fringe_q);
     }
 }
 
@@ -917,15 +929,31 @@ impl Effect for LowPassFilterEffect {
             self.recompute();
         }
 
+        let stages = match self.slope_db {
+            48 => 4,
+            24 => 2,
+            _ => 1,
+        };
+
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            *l = self.state_l.process(*l as f64, &self.lpf_coeffs) as f32;
-            *r = self.state_r.process(*r as f64, &self.lpf_coeffs) as f32;
+            let mut sample_l = *l as f64;
+            let mut sample_r = *r as f64;
+            for st in 0..stages {
+                sample_l = self.state_l[st].process(sample_l, &self.lpf_coeffs);
+                sample_r = self.state_r[st].process(sample_r, &self.lpf_coeffs);
+            }
+            *l = sample_l as f32;
+            *r = sample_r as f32;
         }
     }
 
     fn reset(&mut self) {
-        self.state_l.reset();
-        self.state_r.reset();
+        for s in &mut self.state_l {
+            s.reset();
+        }
+        for s in &mut self.state_r {
+            s.reset();
+        }
     }
 
     fn set_sample_rate(&mut self, sample_rate: f32) {
@@ -946,8 +974,443 @@ impl Effect for LowPassFilterEffect {
     }
 
     fn set_param(&mut self, param_id: u32, val: f32) {
+        match param_id {
+            0 => {
+                if val >= 20.0 {
+                    self.cutoff_hz = (val as f64).clamp(20.0, 20000.0);
+                }
+            }
+            1 => {
+                self.slope_db = match val as u32 {
+                    24 => 24,
+                    48 => 48,
+                    _ => 12,
+                };
+            }
+            2 => {
+                self.fringe_q = (val as f64).clamp(0.2, 10.0);
+                self.recompute();
+            }
+            _ => {}
+        }
+    }
+
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// High-Pass Filter: Variable slope (12/24/48 dB/oct) and resonance fringe Q (0.5 to 4.0)
+#[derive(Clone, Debug)]
+pub struct HighPassFilterEffect {
+    pub cutoff_hz: f64,
+    current_cutoff_hz: f64,
+    sample_rate: f64,
+    pub slope_db: u32,
+    pub fringe_q: f64,
+    hpf_coeffs: BiquadCoeffs,
+    state_l: [BiquadState; 4],
+    state_r: [BiquadState; 4],
+}
+
+impl HighPassFilterEffect {
+    pub fn new(cutoff_hz: f64, sample_rate: f64) -> Self {
+        Self::with_slope_and_fringe(cutoff_hz, 12, 0.7071067811865476, sample_rate)
+    }
+
+    pub fn with_slope_and_fringe(cutoff_hz: f64, slope_db: u32, fringe_q: f64, sample_rate: f64) -> Self {
+        let clamped = cutoff_hz.clamp(20.0, 20000.0);
+        let sr = sample_rate.max(8000.0);
+        let slope = match slope_db {
+            24 => 24,
+            48 => 48,
+            _ => 12,
+        };
+        let q = fringe_q.clamp(0.2, 10.0);
+        let mut effect = Self {
+            cutoff_hz: clamped,
+            current_cutoff_hz: clamped,
+            sample_rate: sr,
+            slope_db: slope,
+            fringe_q: q,
+            hpf_coeffs: BiquadCoeffs::identity(),
+            state_l: [BiquadState::default(); 4],
+            state_r: [BiquadState::default(); 4],
+        };
+        effect.recompute();
+        effect
+    }
+
+    fn recompute(&mut self) {
+        self.hpf_coeffs = BiquadCoeffs::high_pass(self.current_cutoff_hz, self.sample_rate, self.fringe_q);
+    }
+}
+
+impl Effect for HighPassFilterEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let diff = self.cutoff_hz - self.current_cutoff_hz;
+        if diff.abs() > 0.5 {
+            self.current_cutoff_hz += diff * 0.15;
+            self.recompute();
+        } else if diff.abs() > 0.0 {
+            self.current_cutoff_hz = self.cutoff_hz;
+            self.recompute();
+        }
+
+        let stages = match self.slope_db {
+            48 => 4,
+            24 => 2,
+            _ => 1,
+        };
+
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let mut sample_l = *l as f64;
+            let mut sample_r = *r as f64;
+            for st in 0..stages {
+                sample_l = self.state_l[st].process(sample_l, &self.hpf_coeffs);
+                sample_r = self.state_r[st].process(sample_r, &self.hpf_coeffs);
+            }
+            *l = sample_l as f32;
+            *r = sample_r as f32;
+        }
+    }
+
+    fn reset(&mut self) {
+        for s in &mut self.state_l {
+            s.reset();
+        }
+        for s in &mut self.state_r {
+            s.reset();
+        }
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        let sr = (sample_rate as f64).max(8000.0);
+        if (self.sample_rate - sr).abs() > 1.0 {
+            self.sample_rate = sr;
+            self.recompute();
+            self.reset();
+        }
+    }
+
+    fn name(&self) -> &str {
+        "High-Pass Filter"
+    }
+
+    fn effect_type(&self) -> EffectType {
+        EffectType::HighPassFilter
+    }
+
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        match param_id {
+            0 => {
+                if val >= 20.0 {
+                    self.cutoff_hz = (val as f64).clamp(20.0, 20000.0);
+                }
+            }
+            1 => {
+                self.slope_db = match val as u32 {
+                    24 => 24,
+                    48 => 48,
+                    _ => 12,
+                };
+            }
+            2 => {
+                self.fringe_q = (val as f64).clamp(0.2, 10.0);
+                self.recompute();
+            }
+            _ => {}
+        }
+    }
+
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Band-Pass Filter: Constant 0 dB peak gain with variable center frequency, fringe Q/bandwidth, and slope
+#[derive(Clone, Debug)]
+pub struct BandPassFilterEffect {
+    pub center_freq_hz: f64,
+    current_center_freq_hz: f64,
+    sample_rate: f64,
+    pub fringe_q: f64,
+    pub slope_db: u32,
+    bpf_coeffs: BiquadCoeffs,
+    state_l: [BiquadState; 2],
+    state_r: [BiquadState; 2],
+}
+
+impl BandPassFilterEffect {
+    pub fn new(center_freq_hz: f64, sample_rate: f64) -> Self {
+        Self::with_slope_and_fringe(center_freq_hz, 12, 1.414, sample_rate)
+    }
+
+    pub fn with_slope_and_fringe(center_freq_hz: f64, slope_db: u32, fringe_q: f64, sample_rate: f64) -> Self {
+        let clamped = center_freq_hz.clamp(20.0, 20000.0);
+        let sr = sample_rate.max(8000.0);
+        let slope = if slope_db == 24 { 24 } else { 12 };
+        let q = fringe_q.clamp(0.2, 20.0);
+        let mut effect = Self {
+            center_freq_hz: clamped,
+            current_center_freq_hz: clamped,
+            sample_rate: sr,
+            fringe_q: q,
+            slope_db: slope,
+            bpf_coeffs: BiquadCoeffs::identity(),
+            state_l: [BiquadState::default(); 2],
+            state_r: [BiquadState::default(); 2],
+        };
+        effect.recompute();
+        effect
+    }
+
+    fn recompute(&mut self) {
+        self.bpf_coeffs = BiquadCoeffs::band_pass(self.current_center_freq_hz, self.sample_rate, self.fringe_q);
+    }
+}
+
+impl Effect for BandPassFilterEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let diff = self.center_freq_hz - self.current_center_freq_hz;
+        if diff.abs() > 0.5 {
+            self.current_center_freq_hz += diff * 0.15;
+            self.recompute();
+        } else if diff.abs() > 0.0 {
+            self.current_center_freq_hz = self.center_freq_hz;
+            self.recompute();
+        }
+
+        let stages = if self.slope_db == 24 { 2 } else { 1 };
+
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let mut sample_l = *l as f64;
+            let mut sample_r = *r as f64;
+            for st in 0..stages {
+                sample_l = self.state_l[st].process(sample_l, &self.bpf_coeffs);
+                sample_r = self.state_r[st].process(sample_r, &self.bpf_coeffs);
+            }
+            *l = sample_l as f32;
+            *r = sample_r as f32;
+        }
+    }
+
+    fn reset(&mut self) {
+        for s in &mut self.state_l {
+            s.reset();
+        }
+        for s in &mut self.state_r {
+            s.reset();
+        }
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        let sr = (sample_rate as f64).max(8000.0);
+        if (self.sample_rate - sr).abs() > 1.0 {
+            self.sample_rate = sr;
+            self.recompute();
+            self.reset();
+        }
+    }
+
+    fn name(&self) -> &str {
+        "Band-Pass Filter"
+    }
+
+    fn effect_type(&self) -> EffectType {
+        EffectType::BandPassFilter
+    }
+
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        match param_id {
+            0 => {
+                if val >= 20.0 {
+                    self.center_freq_hz = (val as f64).clamp(20.0, 20000.0);
+                }
+            }
+            1 => {
+                self.slope_db = if val as u32 == 24 { 24 } else { 12 };
+            }
+            2 => {
+                self.fringe_q = (val as f64).clamp(0.2, 20.0);
+                self.recompute();
+            }
+            _ => {}
+        }
+    }
+
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Linkwitz-Riley 4th-Order (LR4 24 dB/oct) Low-Pass Branch for Crossover
+#[derive(Clone, Debug)]
+pub struct CrossoverLowEffect {
+    pub crossover_freq: f64,
+    sample_rate: f64,
+    coeffs: BiquadCoeffs,
+    state_l: [BiquadState; 2],
+    state_r: [BiquadState; 2],
+}
+
+impl CrossoverLowEffect {
+    pub fn new(crossover_freq: f64, sample_rate: f64) -> Self {
+        let safe_f = crossover_freq.clamp(20.0, 10000.0);
+        let sr = sample_rate.max(8000.0);
+        let mut effect = Self {
+            crossover_freq: safe_f,
+            sample_rate: sr,
+            coeffs: BiquadCoeffs::identity(),
+            state_l: [BiquadState::default(); 2],
+            state_r: [BiquadState::default(); 2],
+        };
+        effect.recompute();
+        effect
+    }
+
+    fn recompute(&mut self) {
+        // Linkwitz-Riley LR4: cascade of two Butterworth filters (Q = 0.70710678)
+        self.coeffs = BiquadCoeffs::low_pass(self.crossover_freq, self.sample_rate, 0.7071067811865476);
+    }
+}
+
+impl Effect for CrossoverLowEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let mut sample_l = *l as f64;
+            let mut sample_r = *r as f64;
+            for st in 0..2 {
+                sample_l = self.state_l[st].process(sample_l, &self.coeffs);
+                sample_r = self.state_r[st].process(sample_r, &self.coeffs);
+            }
+            *l = sample_l as f32;
+            *r = sample_r as f32;
+        }
+    }
+
+    fn reset(&mut self) {
+        for s in &mut self.state_l {
+            s.reset();
+        }
+        for s in &mut self.state_r {
+            s.reset();
+        }
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        self.sample_rate = (sample_rate as f64).max(8000.0);
+        self.recompute();
+        self.reset();
+    }
+
+    fn name(&self) -> &str {
+        "Crossover (Low Output)"
+    }
+
+    fn effect_type(&self) -> EffectType {
+        EffectType::Crossover
+    }
+
+    fn set_param(&mut self, param_id: u32, val: f32) {
         if param_id == 0 && val >= 20.0 {
-            self.cutoff_hz = (val as f64).clamp(50.0, 20000.0);
+            self.crossover_freq = (val as f64).clamp(20.0, 10000.0);
+            self.recompute();
+        }
+    }
+
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
+
+/// Linkwitz-Riley 4th-Order (LR4 24 dB/oct) High-Pass Branch for Crossover
+#[derive(Clone, Debug)]
+pub struct CrossoverHighEffect {
+    pub crossover_freq: f64,
+    sample_rate: f64,
+    pub invert_phase: bool,
+    coeffs: BiquadCoeffs,
+    state_l: [BiquadState; 2],
+    state_r: [BiquadState; 2],
+}
+
+impl CrossoverHighEffect {
+    pub fn new(crossover_freq: f64, invert_phase: bool, sample_rate: f64) -> Self {
+        let safe_f = crossover_freq.clamp(20.0, 10000.0);
+        let sr = sample_rate.max(8000.0);
+        let mut effect = Self {
+            crossover_freq: safe_f,
+            sample_rate: sr,
+            invert_phase,
+            coeffs: BiquadCoeffs::identity(),
+            state_l: [BiquadState::default(); 2],
+            state_r: [BiquadState::default(); 2],
+        };
+        effect.recompute();
+        effect
+    }
+
+    fn recompute(&mut self) {
+        // Linkwitz-Riley LR4: cascade of two Butterworth filters (Q = 0.70710678)
+        self.coeffs = BiquadCoeffs::high_pass(self.crossover_freq, self.sample_rate, 0.7071067811865476);
+    }
+}
+
+impl Effect for CrossoverHighEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let mut sample_l = *l as f64;
+            let mut sample_r = *r as f64;
+            for st in 0..2 {
+                sample_l = self.state_l[st].process(sample_l, &self.coeffs);
+                sample_r = self.state_r[st].process(sample_r, &self.coeffs);
+            }
+            if self.invert_phase {
+                *l = -sample_l as f32;
+                *r = -sample_r as f32;
+            } else {
+                *l = sample_l as f32;
+                *r = sample_r as f32;
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        for s in &mut self.state_l {
+            s.reset();
+        }
+        for s in &mut self.state_r {
+            s.reset();
+        }
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        self.sample_rate = (sample_rate as f64).max(8000.0);
+        self.recompute();
+        self.reset();
+    }
+
+    fn name(&self) -> &str {
+        "Crossover (High Output)"
+    }
+
+    fn effect_type(&self) -> EffectType {
+        EffectType::Crossover
+    }
+
+    fn set_param(&mut self, param_id: u32, val: f32) {
+        match param_id {
+            0 => {
+                if val >= 20.0 {
+                    self.crossover_freq = (val as f64).clamp(20.0, 10000.0);
+                    self.recompute();
+                }
+            }
+            1 => {
+                self.invert_phase = val > 0.5;
+            }
+            _ => {}
         }
     }
 

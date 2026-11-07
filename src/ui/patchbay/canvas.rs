@@ -42,7 +42,10 @@ impl LunulaApp {
             NodeType::StereoWidener => ("🌐 STEREO WIDENER".to_string(), "Haas Effect 3D".to_string(), "+35% Soundstage".to_string()),
             NodeType::BassGuard => ("🛡️ BASS GUARD".to_string(), "Sub-sonic Limiter".to_string(), "Protects Woofer".to_string()),
             NodeType::VolumeAttenuator => ("🔉 ATTENUATOR".to_string(), "Volume -6 dB".to_string(), "Passive Pad".to_string()),
-            NodeType::LowPassFilter => ("🌊 LOW-PASS FILTER".to_string(), "Cutoff 800 Hz".to_string(), "Muffled / Underwater".to_string()),
+            NodeType::LowPassFilter => ("🌊 LOW-PASS FILTER".to_string(), "Cutoff 800 Hz".to_string(), "Slope 12dB • Q 0.71".to_string()),
+            NodeType::HighPassFilter => ("🏔️ HIGH-PASS FILTER".to_string(), "Cutoff 80 Hz".to_string(), "Slope 12dB • Q 0.71".to_string()),
+            NodeType::BandPassFilter => ("🎯 BAND-PASS FILTER".to_string(), "Center 1.0 kHz".to_string(), "Slope 12dB • Q 1.41".to_string()),
+            NodeType::Crossover => ("✂️ 2-WAY CROSSOVER".to_string(), "X-Over 500 Hz".to_string(), "LR4 (24 dB/oct)".to_string()),
             NodeType::Mixer => ("🎚️ MIXER / SUMMING".to_string(), "Mix: 50% A • 50% B".to_string(), "Dual-Bus Gerbang".to_string()),
             NodeType::Splitter => ("🔀 SPLITTER / Y-BRANCH".to_string(), "Dual-Out (Pin A & B)".to_string(), "Dual-Bus Gerbang".to_string()),
             NodeType::SavedEqPreset(name) => ("🎛️ EQ PRESET".to_string(), name.clone(), "Klik untuk Buka".to_string()),
@@ -60,6 +63,9 @@ impl LunulaApp {
         let spawn_y = 120.0 - self.patchbay_pan.y + (id as f32 * 20.0) % 80.0;
         let param_val = match &node_type {
             NodeType::LowPassFilter => 800.0,
+            NodeType::HighPassFilter => 80.0,
+            NodeType::BandPassFilter => 1000.0,
+            NodeType::Crossover => 500.0,
             NodeType::Mixer => 0.5,
             NodeType::StereoWidener => 35.0,
             NodeType::VolumeAttenuator => -6.02,
@@ -367,7 +373,7 @@ impl LunulaApp {
 
                     // 1. Output Pin (Right dot) - Except Endpoint
                     if node.node_type != NodeType::Endpoint {
-                        let hit_out_pin = if node.node_type == NodeType::Splitter {
+                        let hit_out_pin = if node.node_type == NodeType::Splitter || node.node_type == NodeType::Crossover {
                             let pin_a = Pos2::new(world_rect.max.x, world_rect.center().y - 14.0);
                             let pin_b = Pos2::new(world_rect.max.x, world_rect.center().y + 14.0);
                             if pos.distance(pin_a) <= 20.0 {
@@ -545,7 +551,7 @@ impl LunulaApp {
                                         self.connections.retain(|c| !(c.to_node == node.id && c.to_port == target_port));
                                     }
 
-                                    let is_from_splitter = self.nodes.iter().find(|n| n.id == from_id).map_or(false, |n| n.node_type == NodeType::Splitter);
+                                    let is_from_splitter = self.nodes.iter().find(|n| n.id == from_id).map_or(false, |n| n.node_type == NodeType::Splitter || n.node_type == NodeType::Crossover);
                                     if !is_from_splitter {
                                         self.connections.retain(|c| c.from_node != from_id);
                                     } else {
@@ -576,7 +582,7 @@ impl LunulaApp {
                                 ),
                                 n_size,
                             );
-                            let is_splitter = node.node_type == NodeType::Splitter;
+                            let is_splitter = node.node_type == NodeType::Splitter || node.node_type == NodeType::Crossover;
                             let (hit_out_pin, target_out_port) = if is_splitter {
                                 let pin_a = Pos2::new(world_rect.max.x, world_rect.center().y - 14.0);
                                 let pin_b = Pos2::new(world_rect.max.x, world_rect.center().y + 14.0);
@@ -681,7 +687,7 @@ impl LunulaApp {
             if let (Some(from_n), Some(to_n)) = (from_node, to_node) {
                 let from_size = get_node_size(&from_n.node_type);
                 let to_size = get_node_size(&to_n.node_type);
-                let p_start = if from_n.node_type == NodeType::Splitter {
+                let p_start = if from_n.node_type == NodeType::Splitter || from_n.node_type == NodeType::Crossover {
                     let pin_offset_y = if conn.from_port == 1 { 12.0 } else { -12.0 };
                     Pos2::new(
                         canvas_rect.min.x + self.patchbay_pan.x + from_n.pos.x + from_size.x,
@@ -706,24 +712,11 @@ impl LunulaApp {
                     )
                 };
 
-                let is_bypass_jumper = conn.from_node == 2 && conn.to_node == 4;
-                let (cp1, cp2) = if is_bypass_jumper {
-                    // Option B: Arch upward over DSP Engine node cleanly
-                    let node3_top = self.nodes.iter().find(|n| n.id == 3).map(|n| n.pos.y).unwrap_or(from_n.pos.y);
-                    let top_y = p_start.y.min(p_end.y).min(canvas_rect.min.y + self.patchbay_pan.y + node3_top);
-                    let arch_cp_y = top_y - 20.0;
-                    let dx = (p_end.x - p_start.x).abs() * 0.5;
-                    (
-                        Pos2::new(p_start.x + dx * 0.45, arch_cp_y),
-                        Pos2::new(p_end.x - dx * 0.45, arch_cp_y),
-                    )
-                } else {
-                    let dx = (p_end.x - p_start.x).abs().max(40.0) * 0.5;
-                    (
-                        Pos2::new(p_start.x + dx, p_start.y),
-                        Pos2::new(p_end.x - dx, p_end.y),
-                    )
-                };
+                let dx = (p_end.x - p_start.x).abs().max(40.0) * 0.5;
+                let (cp1, cp2) = (
+                    Pos2::new(p_start.x + dx, p_start.y),
+                    Pos2::new(p_end.x - dx, p_end.y),
+                );
 
                 let steps = 24;
                 let mut points = Vec::with_capacity(steps + 1);
@@ -739,7 +732,7 @@ impl LunulaApp {
 
                 // Check if user clicked or right-clicked on cable to disconnect
                 let mid = points[12];
-                if (conn.from_node == 2 && (conn.to_node == 4 || conn.to_node == 3)) || (conn.from_node == 3 && conn.to_node == 4) {
+                if conn.from_node == 2 && conn.to_node == 4 {
                     self.quest_rect_cable_mute_target = Some(Rect::from_center_size(mid, Vec2::new(90.0, 50.0)));
                 }
                 let is_hover_cut = mouse_pos.map_or(false, |p| p.distance(mid) <= 10.0);
@@ -811,20 +804,6 @@ impl LunulaApp {
                     }
                 }
 
-                // Option B: DIRECT BYPASS badge on arching jumper wire
-                if is_bypass_jumper && is_flowing_cable {
-                    let (badge_text, badge_bg) = if is_fallback {
-                        ("⚠️ FALLBACK 48kHz", Color32::from_rgba_premultiplied(217, 119, 6, 240))
-                    } else if self.chain_mode == ChainMode::OsResampled {
-                        ("⚡ 48kHz OS MIXER", Color32::from_rgba_premultiplied(245, 158, 11, 235))
-                    } else {
-                        ("⚡ DIRECT BYPASS", Color32::from_rgba_premultiplied(16, 185, 129, 235))
-                    };
-                    let badge_rect = Rect::from_center_size(mid - Vec2::new(0.0, 10.0), Vec2::new(120.0, 18.0));
-                    painter.rect_filled(badge_rect, 4.0, badge_bg);
-                    painter.rect_stroke(badge_rect, 4.0, Stroke::new(1.0, Color32::WHITE), egui::StrokeKind::Outside);
-                    painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER, badge_text, egui::FontId::proportional(10.5), Color32::WHITE);
-                }
 
                 // Cut hint bubble on hover
                 if is_hover_cable {
@@ -867,17 +846,8 @@ impl LunulaApp {
                             canvas_rect.min.y + self.patchbay_pan.y + to_n.pos.y + to_size.y * 0.5,
                         );
 
-                        let is_jumper_gap = from_id == 2 && to_id == 4;
-                        let (cp1, cp2) = if is_jumper_gap {
-                            let node3_top = self.nodes.iter().find(|n| n.id == 3).map(|n| n.pos.y).unwrap_or(from_n.pos.y);
-                            let top_y = p_start.y.min(p_end.y).min(canvas_rect.min.y + self.patchbay_pan.y + node3_top);
-                            let arch_cp_y = top_y - 20.0;
-                            let dx = (p_end.x - p_start.x).abs() * 0.5;
-                            (Pos2::new(p_start.x + dx * 0.45, arch_cp_y), Pos2::new(p_end.x - dx * 0.45, arch_cp_y))
-                        } else {
-                            let dx = (p_end.x - p_start.x).abs() * 0.5;
-                            (Pos2::new(p_start.x + dx, p_start.y), Pos2::new(p_end.x - dx, p_end.y))
-                        };
+                        let dx = (p_end.x - p_start.x).abs() * 0.5;
+                        let (cp1, cp2) = (Pos2::new(p_start.x + dx, p_start.y), Pos2::new(p_end.x - dx, p_end.y));
 
                         let steps = 18;
                         let mut points = Vec::with_capacity(steps + 1);
@@ -948,7 +918,7 @@ impl LunulaApp {
                     (pos, p_in)
                 } else {
                     // Standard Drag: Originates from Output Pin (Right), target cursor searching for Input Pin
-                    let p_out = if from_n.node_type == NodeType::Splitter {
+                    let p_out = if from_n.node_type == NodeType::Splitter || from_n.node_type == NodeType::Crossover {
                         let pin_offset_y = if self.connecting_from_port == 1 { 14.0 } else { -14.0 };
                         Pos2::new(
                             canvas_rect.min.x + self.patchbay_pan.x + from_n.pos.x + from_size.x,
@@ -1282,59 +1252,123 @@ impl LunulaApp {
                 title_col,
             );
 
-            if node.node_type == NodeType::LowPassFilter {
-                let cutoff = if node.param_val > 50.0 { node.param_val } else { 800.0 };
-                let active_cutoff = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(cutoff);
+            if node.node_type == NodeType::LowPassFilter || node.node_type == NodeType::HighPassFilter || node.node_type == NodeType::BandPassFilter || node.node_type == NodeType::Crossover {
+                let default_f = match node.node_type {
+                    NodeType::HighPassFilter => 80.0,
+                    NodeType::BandPassFilter => 1000.0,
+                    NodeType::Crossover => 500.0,
+                    _ => 800.0,
+                };
+                let freq = if node.param_val > 10.0 { node.param_val } else { default_f };
+                let active_freq = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(freq);
 
-                // Interactive Mini Cutoff Slider
+                let (accent_col, track_col, stroke_col, label_prefix) = match node.node_type {
+                    NodeType::HighPassFilter => (Color32::from_rgb(56, 189, 248), Color32::from_rgb(224, 242, 254), Color32::from_rgb(2, 132, 199), "Cutoff"),
+                    NodeType::BandPassFilter => (Color32::from_rgb(245, 158, 11), Color32::from_rgb(254, 243, 199), Color32::from_rgb(217, 119, 6), "Center"),
+                    NodeType::Crossover => (Color32::from_rgb(168, 85, 247), Color32::from_rgb(250, 245, 255), Color32::from_rgb(147, 51, 234), "X-Over"),
+                    _ => (Color32::from_rgb(14, 165, 233), Color32::from_rgb(224, 242, 254), Color32::from_rgb(2, 132, 199), "Cutoff"),
+                };
+
+                // Interactive Mini Cutoff Slider & High-Contrast Dual Telemetry Badges
                 if !is_bypassed_effect {
                     let slider_track_rect = Rect::from_min_size(
-                        Pos2::new(node_rect.min.x + 26.0, node_rect.min.y + 42.0),
-                        Vec2::new((node_width - 52.0).max(10.0), 5.0),
+                        Pos2::new(node_rect.min.x + 24.0, node_rect.min.y + 35.0),
+                        Vec2::new((node_width - 48.0).max(10.0), 5.0),
                     );
 
-                    let fill_ratio = ((active_cutoff / 50.0).log10() / (400.0_f32).log10()).clamp(0.0, 1.0);
+                    let fill_ratio = ((active_freq / 20.0).log10() / (1000.0_f32).log10()).clamp(0.0, 1.0);
                     let thumb_x = slider_track_rect.min.x + slider_track_rect.width() * fill_ratio;
                     let cy = slider_track_rect.center().y;
 
                     painter.rect_filled(
                         Rect::from_min_size(Pos2::new(slider_track_rect.min.x, cy - 2.0), Vec2::new(slider_track_rect.width(), 4.0)),
                         2.0,
-                        Color32::from_rgb(224, 242, 254),
+                        track_col,
                     );
                     painter.rect_filled(
                         Rect::from_min_size(Pos2::new(slider_track_rect.min.x, cy - 2.0), Vec2::new(thumb_x - slider_track_rect.min.x, 4.0)),
                         2.0,
-                        Color32::from_rgb(14, 165, 233),
+                        accent_col,
                     );
                     painter.circle_filled(Pos2::new(thumb_x, cy), 5.0, Color32::WHITE);
-                    painter.circle_stroke(Pos2::new(thumb_x, cy), 5.0, Stroke::new(1.8, Color32::from_rgb(2, 132, 199)));
+                    painter.circle_stroke(Pos2::new(thumb_x, cy), 5.0, Stroke::new(1.8, stroke_col));
 
-                    let readout = if active_cutoff >= 1000.0 {
-                        format!("Cutoff {:.1} kHz", active_cutoff / 1000.0)
+                    let readout = if active_freq >= 1000.0 {
+                        format!("{} {:.1}k", label_prefix, active_freq / 1000.0)
                     } else {
-                        format!("Cutoff {:.0} Hz", active_cutoff)
+                        format!("{} {:.0}Hz", label_prefix, active_freq)
                     };
+
+                    let slope_str = if node.sub2.contains("48dB") {
+                        "48dB"
+                    } else if node.sub2.contains("24dB") {
+                        "24dB"
+                    } else {
+                        "12dB"
+                    };
+
+                    let badge_y = node_rect.min.y + 61.0;
+                    let badge_w = (node_width - 34.0) * 0.48;
+                    let badge_h = 20.0;
+
+                    // Left Badge: Frequency Readout (Luminous & high-contrast)
+                    let b_left_rect = Rect::from_center_size(
+                        Pos2::new(node_rect.center().x - badge_w * 0.52, badge_y),
+                        Vec2::new(badge_w, badge_h),
+                    );
+                    painter.rect_filled(b_left_rect, 3.5, track_col);
+                    painter.rect_stroke(b_left_rect, 3.5, Stroke::new(1.2, stroke_col), egui::StrokeKind::Outside);
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 68.0),
+                        b_left_rect.center(),
                         egui::Align2::CENTER_CENTER,
                         readout,
-                        egui::FontId::proportional(11.0),
-                        Color32::from_rgb(2, 132, 199),
+                        egui::FontId::proportional(10.5),
+                        stroke_col,
+                    );
+
+                    // Right Badge: Slope & Quality Telemetry (Crisp White on Dark Pill)
+                    let b_right_rect = Rect::from_center_size(
+                        Pos2::new(node_rect.center().x + badge_w * 0.52, badge_y),
+                        Vec2::new(badge_w, badge_h),
+                    );
+                    painter.rect_filled(b_right_rect, 3.5, Color32::from_rgb(15, 23, 42));
+                    painter.rect_stroke(b_right_rect, 3.5, Stroke::new(1.0, Color32::from_rgb(71, 85, 105)), egui::StrokeKind::Outside);
+
+                    let tele_sub2 = if node.node_type == NodeType::Crossover {
+                        format!("LR4 {}", slope_str)
+                    } else if let Some(idx) = node.sub2.find("Q ") {
+                        let q_str = node.sub2[idx + 2..].split_whitespace().next().unwrap_or("0.7");
+                        format!("{} • Q{}", slope_str, q_str)
+                    } else {
+                        format!("Slope {}", slope_str)
+                    };
+
+                    painter.text(
+                        b_right_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        tele_sub2,
+                        egui::FontId::proportional(10.0),
+                        Color32::from_rgb(241, 245, 249),
                     );
                 } else {
+                    let b_rect = Rect::from_center_size(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 44.0),
+                        Vec2::new(154.0, 22.0),
+                    );
+                    painter.rect_filled(b_rect, 4.0, Color32::from_rgb(241, 245, 249));
+                    painter.rect_stroke(b_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(203, 213, 225)), egui::StrokeKind::Outside);
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 38.0),
+                        b_rect.center(),
                         egui::Align2::CENTER_CENTER,
-                        "DILEWATI (Bypassed)",
-                        egui::FontId::proportional(12.0),
-                        Color32::from_rgb(148, 163, 184),
+                        "DILEWATI (Bit-Perfect)",
+                        egui::FontId::proportional(11.0),
+                        Color32::from_rgb(100, 116, 139),
                     );
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 56.0),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 66.0),
                         egui::Align2::CENTER_CENTER,
-                        "Nonaktif di Bit-Perfect",
-                        egui::FontId::proportional(11.0),
+                        "Passthrough 1:1 Stream",
+                        egui::FontId::proportional(10.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                 }
@@ -2752,6 +2786,16 @@ impl LunulaApp {
                     }
                     draw_single_out_pin(pin_a, is_hover_a, is_output_receptive, Some("A"));
                     draw_single_out_pin(pin_b, is_hover_b, is_output_receptive, Some("B"));
+                } else if node.node_type == NodeType::Crossover {
+                    let pin_low = Pos2::new(node_rect.max.x, node_rect.center().y - 14.0);
+                    let pin_high = Pos2::new(node_rect.max.x, node_rect.center().y + 14.0);
+                    let is_hover_low = mouse_pos.map_or(false, |p| p.distance(pin_low) <= 18.0);
+                    let is_hover_high = mouse_pos.map_or(false, |p| p.distance(pin_high) <= 18.0);
+                    if is_hover_low || is_hover_high {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                    }
+                    draw_single_out_pin(pin_low, is_hover_low, is_output_receptive, Some("LOW"));
+                    draw_single_out_pin(pin_high, is_hover_high, is_output_receptive, Some("HIGH"));
                 } else {
                     let out_pin = Pos2::new(node_rect.max.x, node_rect.center().y);
                     let is_hover_out = mouse_pos.map_or(false, |p| p.distance(out_pin) <= 18.0);
@@ -2768,11 +2812,25 @@ impl LunulaApp {
             if let Some(n) = self.nodes.iter_mut().find(|n| n.id == node_id) {
                 n.param_val = new_val;
                 match n.node_type {
-                    NodeType::LowPassFilter => {
+                    NodeType::LowPassFilter | NodeType::HighPassFilter => {
                         n.sub1 = if new_val >= 1000.0 {
                             format!("Cutoff {:.1} kHz", new_val / 1000.0)
                         } else {
                             format!("Cutoff {:.0} Hz", new_val)
+                        };
+                    }
+                    NodeType::BandPassFilter => {
+                        n.sub1 = if new_val >= 1000.0 {
+                            format!("Center {:.1} kHz", new_val / 1000.0)
+                        } else {
+                            format!("Center {:.0} Hz", new_val)
+                        };
+                    }
+                    NodeType::Crossover => {
+                        n.sub1 = if new_val >= 1000.0 {
+                            format!("X-Over {:.1} kHz", new_val / 1000.0)
+                        } else {
+                            format!("X-Over {:.0} Hz", new_val)
                         };
                     }
                     NodeType::Mixer => {
@@ -2841,7 +2899,7 @@ impl LunulaApp {
                         Color32::from_rgba_premultiplied(254, 243, 199, 230),
                         Stroke::new(1.0, Color32::from_rgb(253, 230, 138)),
                         "⚠️",
-                        "FALLBACK KE OS RESAMPLED — Hardware tidak mendukung sample rate asli file, dialihkan ke 48.0 kHz",
+                        "FALLBACK KE OS RESAMPLED — Hardware tidak mendukung sample rate asli file, dialihkan ke 48.0 kHz".to_string(),
                         Color32::from_rgb(146, 64, 14),
                     )
                 } else {
@@ -2857,52 +2915,36 @@ impl LunulaApp {
                                 Color32::from_rgba_premultiplied(236, 253, 245, 230),
                                 Stroke::new(1.0, Color32::from_rgb(167, 243, 208)),
                                 "🟢",
-                                sub_text,
+                                sub_text.to_string(),
                                 Color32::from_rgb(6, 95, 70),
                             )
                         }
                         ChainMode::DspActive => {
-                            let has_flowing_eq = chain_eval.flowing_nodes.contains(&3)
-                                || self.nodes.iter().any(|n| matches!(n.node_type, NodeType::SavedEqPreset(_)) && chain_eval.flowing_nodes.contains(&n.id));
+                            let flowing_fx: Vec<&str> = self.nodes.iter()
+                                .filter(|n| n.node_type.is_dsp_or_effect() && chain_eval.flowing_nodes.contains(&n.id))
+                                .map(|n| n.title.as_str())
+                                .collect();
 
-                            let other_dsp_count = self.nodes.iter().filter(|n| {
-                                n.node_type.is_dsp_or_effect()
-                                    && n.id != 3
-                                    && !matches!(n.node_type, NodeType::SavedEqPreset(_))
-                                    && chain_eval.flowing_nodes.contains(&n.id)
-                            }).count();
-
-                            if has_flowing_eq && other_dsp_count > 0 {
+                            if !flowing_fx.is_empty() {
+                                let fx_summary = if flowing_fx.len() <= 3 {
+                                    flowing_fx.join(" • ")
+                                } else {
+                                    format!("{} Modul ({})", flowing_fx.len(), flowing_fx[..2].join(" • ") + " • ...")
+                                };
                                 (
                                     Color32::from_rgba_premultiplied(238, 242, 255, 230),
                                     Stroke::new(1.0, Color32::from_rgb(199, 210, 254)),
                                     "🟣",
-                                    "JALUR AUDIO AKTIF (DSP ACTIVE) — 10-Band EQ & Modul Efek Aktif (Presisi 64-bit Float)",
-                                    Color32::from_rgb(67, 56, 202),
-                                )
-                            } else if has_flowing_eq {
-                                (
-                                    Color32::from_rgba_premultiplied(238, 242, 255, 230),
-                                    Stroke::new(1.0, Color32::from_rgb(199, 210, 254)),
-                                    "🟣",
-                                    "JALUR AUDIO AKTIF (DSP ACTIVE) — 10-Band Peaking EQ dalam presisi 64-bit Float (f64) dengan Headroom Guard",
-                                    Color32::from_rgb(67, 56, 202),
-                                )
-                            } else if other_dsp_count > 0 {
-                                (
-                                    Color32::from_rgba_premultiplied(238, 242, 255, 230),
-                                    Stroke::new(1.0, Color32::from_rgb(199, 210, 254)),
-                                    "🟣",
-                                    "JALUR AUDIO AKTIF (DSP ACTIVE) — Modul FX Aktif (10-Band EQ Tidak Tersambung)",
+                                    format!("JALUR MODULAR AKTIF (64-BIT FLOAT) — Memproses: {}", fx_summary),
                                     Color32::from_rgb(67, 56, 202),
                                 )
                             } else {
                                 (
-                                    Color32::from_rgba_premultiplied(241, 245, 249, 230),
-                                    Stroke::new(1.0, Color32::from_rgb(226, 232, 240)),
-                                    "⚪",
-                                    "JALUR AUDIO AKTIF (DSP ACTIVE) — Passthrough Murni (Modul DSP dilewati / tidak tersambung)",
-                                    Color32::from_rgb(71, 85, 105),
+                                    Color32::from_rgba_premultiplied(236, 253, 245, 230),
+                                    Stroke::new(1.0, Color32::from_rgb(167, 243, 208)),
+                                    "🟢",
+                                    "JALUR AUDIO DIRECT — Alur Passthrough 1:1 Bersih (Belum ada modul efek yang disisipkan)".to_string(),
+                                    Color32::from_rgb(6, 95, 70),
                                 )
                             }
                         }
@@ -2910,7 +2952,7 @@ impl LunulaApp {
                             Color32::from_rgba_premultiplied(254, 243, 199, 230),
                             Stroke::new(1.0, Color32::from_rgb(253, 230, 138)),
                             "🟡",
-                            "JALUR AUDIO AKTIF (OS RESAMPLED) — Resampling ke 48.0 kHz via Rubato Sinc SRC Shared Mode",
+                            "JALUR AUDIO AKTIF (OS RESAMPLED) — Resampling ke 48.0 kHz via Rubato Sinc SRC Shared Mode".to_string(),
                             Color32::from_rgb(146, 64, 14),
                         ),
                     }
@@ -2920,7 +2962,7 @@ impl LunulaApp {
                     Color32::from_rgba_premultiplied(241, 245, 249, 230),
                     Stroke::new(1.0, Color32::from_rgb(226, 232, 240)),
                     "⚪",
-                    "SIGNAL CHAIN LENGKAP — Rantai audio terhubung sempurna (Tekan Play untuk memutar)",
+                    "SIGNAL CHAIN LENGKAP — Rantai audio terhubung sempurna (Tekan Play untuk memutar)".to_string(),
                     Color32::from_rgb(71, 85, 105),
                 )
             }
@@ -2929,7 +2971,7 @@ impl LunulaApp {
                 Color32::from_rgba_premultiplied(254, 242, 242, 240),
                 Stroke::new(1.2, Color32::from_rgb(252, 165, 165)),
                 "🔴",
-                "JALUR SINYAL TERPUTUS — Audio dibisukan otomatis. Klik tanda ✕ merah untuk menyambung!",
+                "JALUR SINYAL TERPUTUS — Audio dibisukan otomatis. Klik tanda ✕ merah untuk menyambung!".to_string(),
                 Color32::from_rgb(185, 28, 28),
             )
         };
@@ -2997,8 +3039,20 @@ impl LunulaApp {
             response.context_menu(|ui| {
                 ui.label(egui::RichText::new("➕ TAMBAH MODUL STUDIO").strong().size(12.0).color(Color32::from_rgb(15, 23, 42)));
                 ui.separator();
-                if ui.button("🌊 Low-Pass Filter").clicked() {
+                if ui.button("🌊 Low-Pass Filter (LPF)").clicked() {
                     self.add_modular_filter(NodeType::LowPassFilter);
+                    ui.close();
+                }
+                if ui.button("🏔️ High-Pass Filter (HPF)").clicked() {
+                    self.add_modular_filter(NodeType::HighPassFilter);
+                    ui.close();
+                }
+                if ui.button("🎯 Band-Pass Filter (BPF)").clicked() {
+                    self.add_modular_filter(NodeType::BandPassFilter);
+                    ui.close();
+                }
+                if ui.button("✂️ 2-Way Crossover (LR4 24dB)").clicked() {
+                    self.add_modular_filter(NodeType::Crossover);
                     ui.close();
                 }
                 if ui.button("🎚️ Mixer / Summing Bus (Gerbang Paralel)").clicked() {

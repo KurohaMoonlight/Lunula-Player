@@ -887,3 +887,161 @@ fn test_compiler_graph_effect_type_enum_foundation() {
     // Since is_flat became false due to +12 dB on band 0, output is modified
     assert!(!executor.is_flat() || (l[127] - 0.1).abs() > 1e-4 || executor.graph.nodes[0].effect.effect_type() == EffectType::GraphicEq);
 }
+
+#[test]
+fn test_low_pass_filter_slopes_and_fringe() {
+    let sample_rate = 48000.0;
+    let cutoff = 500.0;
+
+    let mut lpf_12 = LowPassFilterEffect::with_slope_and_fringe(cutoff, 12, 0.7071, sample_rate);
+    let mut lpf_24 = LowPassFilterEffect::with_slope_and_fringe(cutoff, 24, 0.7071, sample_rate);
+    let mut lpf_48 = LowPassFilterEffect::with_slope_and_fringe(cutoff, 48, 0.7071, sample_rate);
+
+    // Feed 4000 Hz high tone (3 octaves above cutoff)
+    let freq = 4000.0;
+    let n = 1024;
+    let mut l_12 = vec![0.0f32; n];
+    let mut r_12 = vec![0.0f32; n];
+    let mut l_24 = vec![0.0f32; n];
+    let mut r_24 = vec![0.0f32; n];
+    let mut l_48 = vec![0.0f32; n];
+    let mut r_48 = vec![0.0f32; n];
+
+    for i in 0..n {
+        let val = (2.0 * std::f64::consts::PI * freq * (i as f64) / sample_rate).sin() as f32;
+        l_12[i] = val; r_12[i] = val;
+        l_24[i] = val; r_24[i] = val;
+        l_48[i] = val; r_48[i] = val;
+    }
+
+    lpf_12.process_block(&mut l_12, &mut r_12);
+    lpf_24.process_block(&mut l_24, &mut r_24);
+    lpf_48.process_block(&mut l_48, &mut r_48);
+
+    // Steady state peak amplitudes
+    let peak_12 = l_12[512..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+    let peak_24 = l_24[512..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+    let peak_48 = l_48[512..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+
+    // 48 dB/oct must attenuate more than 24 dB/oct, which attenuates more than 12 dB/oct
+    assert!(peak_12 > peak_24, "12 dB peak ({}) must be > 24 dB peak ({})", peak_12, peak_24);
+    assert!(peak_24 > peak_48, "24 dB peak ({}) must be > 48 dB peak ({})", peak_24, peak_48);
+    assert!(peak_48 < 0.005, "48 dB/oct at 3 octaves above cutoff should be < -46 dB");
+}
+
+#[test]
+fn test_high_pass_filter_slopes_and_fringe() {
+    let sample_rate = 48000.0;
+    let cutoff = 500.0;
+
+    let mut hpf_12 = HighPassFilterEffect::with_slope_and_fringe(cutoff, 12, 0.7071, sample_rate);
+    let mut hpf_24 = HighPassFilterEffect::with_slope_and_fringe(cutoff, 24, 0.7071, sample_rate);
+    let mut hpf_48 = HighPassFilterEffect::with_slope_and_fringe(cutoff, 48, 0.7071, sample_rate);
+
+    // Low tone at 62.5 Hz (3 octaves below cutoff)
+    let freq = 62.5;
+    let n = 2048;
+    let mut l_12 = vec![0.0f32; n];
+    let mut r_12 = vec![0.0f32; n];
+    let mut l_24 = vec![0.0f32; n];
+    let mut r_24 = vec![0.0f32; n];
+    let mut l_48 = vec![0.0f32; n];
+    let mut r_48 = vec![0.0f32; n];
+
+    for i in 0..n {
+        let val = (2.0 * std::f64::consts::PI * freq * (i as f64) / sample_rate).sin() as f32;
+        l_12[i] = val; r_12[i] = val;
+        l_24[i] = val; r_24[i] = val;
+        l_48[i] = val; r_48[i] = val;
+    }
+
+    hpf_12.process_block(&mut l_12, &mut r_12);
+    hpf_24.process_block(&mut l_24, &mut r_24);
+    hpf_48.process_block(&mut l_48, &mut r_48);
+
+    let peak_12 = l_12[1024..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+    let peak_24 = l_24[1024..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+    let peak_48 = l_48[1024..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+
+    assert!(peak_12 > peak_24, "HPF 12dB ({}) must pass more low rumble than 24dB ({})", peak_12, peak_24);
+    assert!(peak_24 > peak_48, "HPF 24dB ({}) must pass more low rumble than 48dB ({})", peak_24, peak_48);
+}
+
+#[test]
+fn test_band_pass_filter_slopes_and_bandwidth() {
+    let sample_rate = 48000.0;
+    let center = 1000.0;
+
+    let mut bpf = BandPassFilterEffect::with_slope_and_fringe(center, 12, 1.414, sample_rate);
+
+    // 1. Center frequency passes with approx 0 dB peak gain
+    let n = 2048;
+    let mut l_center = vec![0.0f32; n];
+    let mut r_center = vec![0.0f32; n];
+    for i in 0..n {
+        let val = (2.0 * std::f64::consts::PI * center * (i as f64) / sample_rate).sin() as f32;
+        l_center[i] = val; r_center[i] = val;
+    }
+    bpf.process_block(&mut l_center, &mut r_center);
+    let peak_center = l_center[1024..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+    assert!((peak_center - 1.0).abs() < 0.08, "BPF peak at center freq must be ~1.0 (got {})", peak_center);
+
+    // 2. Out-of-band tone (100 Hz, 3.3 octaves below) must be heavily attenuated
+    bpf.reset();
+    let mut l_bass = vec![0.0f32; n];
+    let mut r_bass = vec![0.0f32; n];
+    for i in 0..n {
+        let val = (2.0 * std::f64::consts::PI * 100.0 * (i as f64) / sample_rate).sin() as f32;
+        l_bass[i] = val; r_bass[i] = val;
+    }
+    bpf.process_block(&mut l_bass, &mut r_bass);
+    let peak_bass = l_bass[1024..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+    assert!(peak_bass < 0.15, "BPF out-of-band tone at 100 Hz must be attenuated (got {})", peak_bass);
+}
+
+#[test]
+fn test_crossover_lr4_flat_summation() {
+    let sample_rate = 48000.0;
+    let xover_freq = 1000.0;
+
+    let mut low = CrossoverLowEffect::new(xover_freq, sample_rate);
+    let mut high = CrossoverHighEffect::new(xover_freq, false, sample_rate);
+
+    // Test multiple probe frequencies across spectrum: 100 Hz, 1000 Hz (crossover), 10000 Hz
+    for &test_freq in &[100.0, 500.0, 1000.0, 2000.0, 8000.0] {
+        low.reset();
+        high.reset();
+
+        let n = 4096;
+        let mut l_low = vec![0.0f32; n];
+        let mut r_low = vec![0.0f32; n];
+        let mut l_high = vec![0.0f32; n];
+        let mut r_high = vec![0.0f32; n];
+
+        for i in 0..n {
+            let val = (2.0 * std::f64::consts::PI * test_freq * (i as f64) / sample_rate).sin() as f32;
+            l_low[i] = val; r_low[i] = val;
+            l_high[i] = val; r_high[i] = val;
+        }
+
+        low.process_block(&mut l_low, &mut r_low);
+        high.process_block(&mut l_high, &mut r_high);
+
+        // Sum Low and High branches
+        let mut sum_peak = 0.0f32;
+        for i in 2048..n {
+            let sum_val = l_low[i] + l_high[i];
+            if sum_val.abs() > sum_peak {
+                sum_peak = sum_val.abs();
+            }
+        }
+
+        // Linkwitz-Riley 4th order summation is flat unity (1.0 +/- 0.06)
+        assert!(
+            (sum_peak - 1.0).abs() < 0.08,
+            "LR4 sum at {} Hz must reconstruct flat ~1.0, got peak {}",
+            test_freq,
+            sum_peak
+        );
+    }
+}

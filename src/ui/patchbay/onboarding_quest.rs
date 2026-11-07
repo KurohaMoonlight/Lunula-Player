@@ -274,7 +274,7 @@ impl LunulaApp {
                                         egui::RichText::new(
                                             "Di kanvas studio, audio mengalir dari kiri ke kanan melewati modul-modul virtual.\n\n\
                                             • Klik & tahan Pin Output (bulatan di sisi kanan kartu RAM Buffer).\n\
-                                            • Tarik kabel kurva elastis ke Pin Input (bulatan di sisi kiri kartu Output DAC atau DSP Engine).\n\
+                                            • Tarik kabel kurva elastis ke Pin Input (bulatan di sisi kiri kartu App Resampler atau Output DAC).\n\
                                             • Lepaskan klik saat garis tersambung hijau!"
                                         )
                                         .size(12.0)

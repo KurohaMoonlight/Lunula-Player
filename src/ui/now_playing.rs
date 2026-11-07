@@ -961,6 +961,16 @@ impl LunulaApp {
     }
 
     pub fn render_synced_lyric_box(&mut self, ui: &mut egui::Ui) {
+        if self.current_lyrics.is_none() {
+            if let Some(ref p) = self.current_track.file_path {
+                self.current_lyrics = crate::lyrics::Lyrics::load_for_track_smart(
+                    std::path::Path::new(p),
+                    &self.current_track.title,
+                    &self.current_track.artist,
+                );
+            }
+        }
+
         crate::ui::components::render_card_frame(ui, |ui| {
             ui.vertical(|ui| {
                 // 1. Sleek Modern Header Bar
@@ -1014,7 +1024,7 @@ impl LunulaApp {
                         .clicked()
                         {
                             if let Some(path) = rfd::FileDialog::new().add_filter("LRC Lyrics", &["lrc", "txt"]).pick_file() {
-                                if let Ok(content) = std::fs::read_to_string(&path) {
+                                if let Some(content) = crate::lyrics::read_lrc_file_robust(&path) {
                                     self.current_lyrics = Some(crate::lyrics::Lyrics::parse(&content));
                                     self.lyrics_offset_trim_sec = 0.0;
                                 }
@@ -1252,7 +1262,7 @@ impl LunulaApp {
                             .min_size(Vec2::new(170.0, 30.0))
                         ).clicked() {
                             if let Some(path) = rfd::FileDialog::new().add_filter("LRC Lyrics", &["lrc", "txt"]).pick_file() {
-                                if let Ok(content) = std::fs::read_to_string(&path) {
+                                if let Some(content) = crate::lyrics::read_lrc_file_robust(&path) {
                                     self.current_lyrics = Some(crate::lyrics::Lyrics::parse(&content));
                                     self.lyrics_offset_trim_sec = 0.0;
                                 }

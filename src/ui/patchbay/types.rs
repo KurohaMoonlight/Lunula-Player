@@ -54,11 +54,35 @@ pub fn get_node_size(node_type: &NodeType) -> Vec2 {
 pub fn get_interactive_slider_bounds_and_val(node_type: &NodeType, world_rect: Rect, node_width: f32, pos_x: f32) -> Option<(Rect, f32)> {
     match node_type {
         NodeType::LowPassFilter => {
-            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 22.0, world_rect.min.y + 34.0), Vec2::new(node_width - 44.0, 32.0));
-            let track_min_x = world_rect.min.x + 26.0;
-            let track_w = (node_width - 52.0).max(10.0);
+            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 20.0, world_rect.min.y + 24.0), Vec2::new(node_width - 40.0, 24.0));
+            let track_min_x = world_rect.min.x + 24.0;
+            let track_w = (node_width - 48.0).max(10.0);
             let norm = ((pos_x - track_min_x) / track_w).clamp(0.0, 1.0);
             let val = (50.0 * (400.0_f32).powf(norm)).clamp(50.0, 20000.0);
+            Some((hit, val))
+        }
+        NodeType::HighPassFilter => {
+            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 20.0, world_rect.min.y + 24.0), Vec2::new(node_width - 40.0, 24.0));
+            let track_min_x = world_rect.min.x + 24.0;
+            let track_w = (node_width - 48.0).max(10.0);
+            let norm = ((pos_x - track_min_x) / track_w).clamp(0.0, 1.0);
+            let val = (20.0 * (1000.0_f32).powf(norm)).clamp(20.0, 20000.0);
+            Some((hit, val))
+        }
+        NodeType::BandPassFilter => {
+            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 20.0, world_rect.min.y + 24.0), Vec2::new(node_width - 40.0, 24.0));
+            let track_min_x = world_rect.min.x + 24.0;
+            let track_w = (node_width - 48.0).max(10.0);
+            let norm = ((pos_x - track_min_x) / track_w).clamp(0.0, 1.0);
+            let val = (20.0 * (1000.0_f32).powf(norm)).clamp(20.0, 20000.0);
+            Some((hit, val))
+        }
+        NodeType::Crossover => {
+            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 20.0, world_rect.min.y + 24.0), Vec2::new(node_width - 40.0, 24.0));
+            let track_min_x = world_rect.min.x + 24.0;
+            let track_w = (node_width - 48.0).max(10.0);
+            let norm = ((pos_x - track_min_x) / track_w).clamp(0.0, 1.0);
+            let val = (40.0 * (200.0_f32).powf(norm)).clamp(40.0, 8000.0);
             Some((hit, val))
         }
         NodeType::Mixer => {

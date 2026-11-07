@@ -12,7 +12,7 @@ pub use autoeq::parse_autoeq_text;
 
 pub use decoder::AudioDecoder;
 pub use dsp::{
-    AnalogPreampEffect, BassGuardEffect, CompressorEffect, DspPipeline, DynamicLoudnessEffect, GraphicEqEffect, LowPassFilterEffect, MixerEffect, OpticalLevelerEffect,
+    AnalogPreampEffect, BandPassFilterEffect, BassGuardEffect, CompressorEffect, CrossoverHighEffect, CrossoverLowEffect, DspPipeline, DynamicLoudnessEffect, GraphicEqEffect, HighPassFilterEffect, LowPassFilterEffect, MixerEffect, OpticalLevelerEffect,
     ParametricBandConfig, ParametricEqEffect, PassthroughEffect, PresetEqEffect, SplitterEffect, SteppedAttenuatorEffect, StereoBalanceEffect, StereoWidenerEffect, TubeWarmerEffect,
     VolumeAttenuatorEffect, VolumeBoosterEffect, EQ_FREQUENCIES,
 };

@@ -271,6 +271,9 @@ pub enum NodeType {
     VolumeAttenuator,
     SavedEqPreset(String),
     LowPassFilter,
+    HighPassFilter,
+    BandPassFilter,
+    Crossover,
     Mixer,
     Splitter,
     // Volume Manipulation Suite
@@ -294,6 +297,9 @@ impl NodeType {
                 | NodeType::VolumeAttenuator
                 | NodeType::SavedEqPreset(_)
                 | NodeType::LowPassFilter
+                | NodeType::HighPassFilter
+                | NodeType::BandPassFilter
+                | NodeType::Crossover
                 | NodeType::Mixer
                 | NodeType::Splitter
                 | NodeType::VolumeBooster

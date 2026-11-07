@@ -319,7 +319,7 @@ impl LunulaApp {
                             }
                             2 => {
                                 ui.label(egui::RichText::new("Uji Coba: Low-Pass Filter").strong().size(12.0).color(Color32::from_rgb(15, 23, 42)));
-                                ui.label(egui::RichText::new("• Ingin mendengar perbedaannya langsung? Klik '➕ Tambah ke Chain' pada kartu Low-Pass Filter di sidebar kanan.\n• Sambungkan kabel dari RAM Buffer ke Low-Pass Filter, lalu dari filter ke Output Engine.\n• Suara vokal & cymbal langsung teredam tebal (efek underwater)!").size(12.5).color(Color32::from_rgb(71, 85, 105)));
+                                ui.label(egui::RichText::new("• Ingin mendengar perbedaannya langsung? Klik '➕ Tambah ke Chain' pada kartu Low-Pass Filter di sidebar kanan.\n• Sambungkan kabel dari RAM Buffer ke Low-Pass Filter, lalu dari filter ke App Resampler atau Output DAC.\n• Suara vokal & cymbal langsung teredam tebal (efek underwater)!").size(12.5).color(Color32::from_rgb(71, 85, 105)));
                             }
                             3 => {
                                 ui.label(egui::RichText::new("Keamanan Audio (Auto-Mute)").strong().size(12.0).color(Color32::from_rgb(15, 23, 42)));
@@ -382,6 +382,9 @@ impl LunulaApp {
             .show(ui.ctx(), |ui| {
                 let theme_color = match &filter_type {
                     NodeType::LowPassFilter => Color32::from_rgb(14, 165, 233),
+                    NodeType::HighPassFilter => Color32::from_rgb(56, 189, 248),
+                    NodeType::BandPassFilter => Color32::from_rgb(245, 158, 11),
+                    NodeType::Crossover => Color32::from_rgb(168, 85, 247),
                     NodeType::TubeWarmer => Color32::from_rgb(249, 115, 22),
                     NodeType::StereoWidener => Color32::from_rgb(99, 102, 241),
                     NodeType::BassGuard => Color32::from_rgb(16, 185, 129),
@@ -416,7 +419,10 @@ impl LunulaApp {
                         let step = self.filter_tutorial_step % 4;
 
                         let (icon, filter_title, is_added) = match &filter_type {
-                            NodeType::LowPassFilter => ("🌊", "LOW-PASS FILTER", self.nodes.iter().any(|n| n.node_type == NodeType::LowPassFilter)),
+                            NodeType::LowPassFilter => ("🌊", "LOW-PASS FILTER (LPF)", self.nodes.iter().any(|n| n.node_type == NodeType::LowPassFilter)),
+                            NodeType::HighPassFilter => ("🏔️", "HIGH-PASS FILTER (HPF)", self.nodes.iter().any(|n| n.node_type == NodeType::HighPassFilter)),
+                            NodeType::BandPassFilter => ("🎯", "BAND-PASS FILTER (BPF)", self.nodes.iter().any(|n| n.node_type == NodeType::BandPassFilter)),
+                            NodeType::Crossover => ("⚡", "2-WAY CROSSOVER (LR4)", self.nodes.iter().any(|n| n.node_type == NodeType::Crossover)),
                             NodeType::TubeWarmer => ("🔥", "TUBE WARMER", self.nodes.iter().any(|n| n.node_type == NodeType::TubeWarmer)),
                             NodeType::StereoWidener => ("🌐", "STEREO 3D WIDENER", self.nodes.iter().any(|n| n.node_type == NodeType::StereoWidener)),
                             NodeType::BassGuard => ("🛡️", "BASS GUARD & LIMITER", self.nodes.iter().any(|n| n.node_type == NodeType::BassGuard)),
@@ -544,6 +550,176 @@ impl LunulaApp {
                                     p.text(Pos2::new(x_start, y_mute + 4.0), egui::Align2::LEFT_TOP, "20 Hz (Bass Lolos ✅)", egui::FontId::proportional(8.5), Color32::from_rgb(16, 185, 129));
                                     p.text(Pos2::new(x_cut, y_pass - 12.0), egui::Align2::CENTER_BOTTOM, "Cutoff 800 Hz", egui::FontId::proportional(9.0), Color32::from_rgb(2, 132, 199));
                                     p.text(Pos2::new(x_end, y_mute + 4.0), egui::Align2::RIGHT_TOP, "20 kHz (Treble Muted 🔇)", egui::FontId::proportional(8.5), Color32::from_rgb(239, 68, 68));
+                                } else if filter_type == NodeType::HighPassFilter {
+                                    let x_start = diag_rect.min.x + 14.0;
+                                    let x_cut = diag_rect.min.x + diag_rect.width() * 0.45;
+                                    let x_end = diag_rect.max.x - 14.0;
+                                    let y_pass = diag_rect.min.y + 24.0;
+                                    let y_mute = diag_rect.max.y - 20.0;
+
+                                    // Shaded passband area (above cutoff to 20kHz)
+                                    let mut shade_poly = Vec::new();
+                                    shade_poly.push(Pos2::new(x_cut - 20.0, y_mute));
+                                    shade_poly.push(Pos2::new(x_cut, y_pass));
+                                    shade_poly.push(Pos2::new(x_end, y_pass));
+                                    shade_poly.push(Pos2::new(x_end, y_mute));
+                                    p.add(egui::Shape::convex_polygon(shade_poly, Color32::from_rgba_premultiplied(56, 189, 248, 35), Stroke::NONE));
+
+                                    // Flat line in passband
+                                    p.line_segment([Pos2::new(x_cut, y_pass), Pos2::new(x_end, y_pass)], Stroke::new(2.5, Color32::from_rgb(56, 189, 248)));
+                                    // Rolloff slope curve (low frequencies attenuated)
+                                    let cp1 = Pos2::new(x_cut - 6.0, y_pass);
+                                    let cp2 = Pos2::new(x_cut - 14.0, y_mute);
+                                    let p_start = Pos2::new(x_start, y_mute);
+                                    let curve = egui::epaint::CubicBezierShape::from_points_stroke(
+                                        [p_start, cp2, cp1, Pos2::new(x_cut, y_pass)],
+                                        false,
+                                        Color32::TRANSPARENT,
+                                        Stroke::new(2.5, Color32::from_rgb(56, 189, 248)),
+                                    );
+                                    p.add(curve);
+
+                                    // Cutoff Marker Dot & Vertical Guideline
+                                    p.line_segment([Pos2::new(x_cut, y_pass), Pos2::new(x_cut, y_mute)], Stroke::new(1.0, Color32::from_rgb(186, 230, 253)));
+                                    p.circle_filled(Pos2::new(x_cut, y_pass), 4.0, Color32::from_rgb(2, 132, 199));
+                                    p.circle_stroke(Pos2::new(x_cut, y_pass), 4.0, Stroke::new(1.5, Color32::WHITE));
+
+                                    // Dynamic wave ripple if playing
+                                    if self.is_playing {
+                                        let t = ui.input(|i| i.time);
+                                        for step_x in 0..8 {
+                                            let rx = x_cut + step_x as f32 * ((x_end - x_cut) / 8.0);
+                                            let ry = y_pass + (rx * 0.1 + (t * 5.0) as f32).sin() * 2.5;
+                                            p.circle_filled(Pos2::new(rx, ry), 1.2, Color32::from_rgb(14, 165, 233));
+                                        }
+                                    }
+
+                                    // Axis Frequency Labels
+                                    p.text(Pos2::new(x_start, y_mute + 4.0), egui::Align2::LEFT_TOP, "20 Hz (Sub-Bass Muted 🔇)", egui::FontId::proportional(8.5), Color32::from_rgb(239, 68, 68));
+                                    p.text(Pos2::new(x_cut, y_pass - 12.0), egui::Align2::CENTER_BOTTOM, "Cutoff 80 Hz", egui::FontId::proportional(9.0), Color32::from_rgb(2, 132, 199));
+                                    p.text(Pos2::new(x_end, y_mute + 4.0), egui::Align2::RIGHT_TOP, "20 kHz (Treble Lolos ✅)", egui::FontId::proportional(8.5), Color32::from_rgb(16, 185, 129));
+                                } else if filter_type == NodeType::BandPassFilter {
+                                    let x_start = diag_rect.min.x + 14.0;
+                                    let x_center = diag_rect.center().x;
+                                    let x_end = diag_rect.max.x - 14.0;
+                                    let y_peak = diag_rect.min.y + 24.0;
+                                    let y_mute = diag_rect.max.y - 20.0;
+                                    let bw = 35.0;
+
+                                    // Shaded bell area
+                                    let mut shade_poly = Vec::new();
+                                    shade_poly.push(Pos2::new(x_center - bw * 1.5, y_mute));
+                                    shade_poly.push(Pos2::new(x_center - bw * 0.5, y_peak + 8.0));
+                                    shade_poly.push(Pos2::new(x_center, y_peak));
+                                    shade_poly.push(Pos2::new(x_center + bw * 0.5, y_peak + 8.0));
+                                    shade_poly.push(Pos2::new(x_center + bw * 1.5, y_mute));
+                                    p.add(egui::Shape::convex_polygon(shade_poly, Color32::from_rgba_premultiplied(245, 158, 11, 40), Stroke::NONE));
+
+                                    // Left curve (rise)
+                                    let cp1 = Pos2::new(x_center - bw * 0.8, y_mute);
+                                    let cp2 = Pos2::new(x_center - bw * 0.3, y_peak);
+                                    let c_left = egui::epaint::CubicBezierShape::from_points_stroke(
+                                        [Pos2::new(x_start, y_mute), cp1, cp2, Pos2::new(x_center, y_peak)],
+                                        false,
+                                        Color32::TRANSPARENT,
+                                        Stroke::new(2.5, Color32::from_rgb(245, 158, 11)),
+                                    );
+                                    p.add(c_left);
+
+                                    // Right curve (fall)
+                                    let cp3 = Pos2::new(x_center + bw * 0.3, y_peak);
+                                    let cp4 = Pos2::new(x_center + bw * 0.8, y_mute);
+                                    let c_right = egui::epaint::CubicBezierShape::from_points_stroke(
+                                        [Pos2::new(x_center, y_peak), cp3, cp4, Pos2::new(x_end, y_mute)],
+                                        false,
+                                        Color32::TRANSPARENT,
+                                        Stroke::new(2.5, Color32::from_rgb(245, 158, 11)),
+                                    );
+                                    p.add(c_right);
+
+                                    // Center Marker Dot & Guideline
+                                    p.line_segment([Pos2::new(x_center, y_peak), Pos2::new(x_center, y_mute)], Stroke::new(1.0, Color32::from_rgb(253, 230, 138)));
+                                    p.circle_filled(Pos2::new(x_center, y_peak), 4.5, Color32::from_rgb(217, 119, 6));
+                                    p.circle_stroke(Pos2::new(x_center, y_peak), 4.5, Stroke::new(1.5, Color32::WHITE));
+
+                                    // Bandwidth indicator
+                                    let y_3db = y_peak + 10.0;
+                                    p.line_segment([Pos2::new(x_center - bw * 0.6, y_3db), Pos2::new(x_center + bw * 0.6, y_3db)], Stroke::new(1.0, Color32::from_rgb(217, 119, 6)));
+
+                                    // Dynamic ripple if playing
+                                    if self.is_playing {
+                                        let t = ui.input(|i| i.time);
+                                        for step_x in 0..7 {
+                                            let rx = x_center - 24.0 + step_x as f32 * 8.0;
+                                            let ry = y_peak + 6.0 + (rx * 0.2 + (t * 6.0) as f32).sin() * 2.0;
+                                            p.circle_filled(Pos2::new(rx, ry), 1.2, Color32::from_rgb(251, 191, 36));
+                                        }
+                                    }
+
+                                    p.text(Pos2::new(x_start, y_mute + 4.0), egui::Align2::LEFT_TOP, "Bass Cut 🔇", egui::FontId::proportional(8.5), Color32::from_rgb(239, 68, 68));
+                                    p.text(Pos2::new(x_center, y_peak - 12.0), egui::Align2::CENTER_BOTTOM, "Center 1.0 kHz (Q 1.41)", egui::FontId::proportional(9.0), Color32::from_rgb(217, 119, 6));
+                                    p.text(Pos2::new(x_end, y_mute + 4.0), egui::Align2::RIGHT_TOP, "Treble Cut 🔇", egui::FontId::proportional(8.5), Color32::from_rgb(239, 68, 68));
+                                } else if filter_type == NodeType::Crossover {
+                                    let x_start = diag_rect.min.x + 14.0;
+                                    let x_xover = diag_rect.center().x;
+                                    let x_end = diag_rect.max.x - 14.0;
+                                    let y_0db = diag_rect.min.y + 22.0;
+                                    let y_6db = diag_rect.min.y + 36.0;
+                                    let y_mute = diag_rect.max.y - 20.0;
+
+                                    // Flat 0 dB sum line across top
+                                    p.line_segment([Pos2::new(x_start, y_0db), Pos2::new(x_end, y_0db)], Stroke::new(1.5, Color32::from_rgb(168, 85, 247)));
+
+                                    // Low-pass branch (Emerald)
+                                    let cp_lp1 = Pos2::new(x_xover - 25.0, y_0db);
+                                    let curve_lp = egui::epaint::CubicBezierShape::from_points_stroke(
+                                        [Pos2::new(x_start, y_0db), cp_lp1, Pos2::new(x_xover, y_6db), Pos2::new(x_xover + 45.0, y_mute)],
+                                        false,
+                                        Color32::TRANSPARENT,
+                                        Stroke::new(2.4, Color32::from_rgb(16, 185, 129)),
+                                    );
+                                    p.add(curve_lp);
+
+                                    // High-pass branch (Sky Blue)
+                                    let cp_hp2 = Pos2::new(x_xover + 25.0, y_0db);
+                                    let curve_hp = egui::epaint::CubicBezierShape::from_points_stroke(
+                                        [Pos2::new(x_xover - 45.0, y_mute), Pos2::new(x_xover, y_6db), cp_hp2, Pos2::new(x_end, y_0db)],
+                                        false,
+                                        Color32::TRANSPARENT,
+                                        Stroke::new(2.4, Color32::from_rgb(56, 189, 248)),
+                                    );
+                                    p.add(curve_hp);
+
+                                    // -6dB intersection dot & guideline
+                                    p.line_segment([Pos2::new(x_xover, y_0db), Pos2::new(x_xover, y_mute)], Stroke::new(1.0, Color32::from_rgb(233, 213, 255)));
+                                    p.circle_filled(Pos2::new(x_xover, y_6db), 4.5, Color32::from_rgb(147, 51, 234));
+                                    p.circle_stroke(Pos2::new(x_xover, y_6db), 4.5, Stroke::new(1.5, Color32::WHITE));
+
+                                    // Dynamic wave ripple if playing
+                                    if self.is_playing {
+                                        let t = ui.input(|i| i.time);
+                                        for s in 0..6 {
+                                            let rx_lp = x_start + s as f32 * ((x_xover - x_start) / 6.0);
+                                            let ry_lp = y_0db + (rx_lp * 0.1 + (t * 5.0) as f32).sin() * 2.0;
+                                            p.circle_filled(Pos2::new(rx_lp, ry_lp), 1.2, Color32::from_rgb(52, 211, 153));
+
+                                            let rx_hp = x_xover + s as f32 * ((x_end - x_xover) / 6.0);
+                                            let ry_hp = y_0db + (rx_hp * 0.1 + (t * 5.0) as f32).sin() * 2.0;
+                                            p.circle_filled(Pos2::new(rx_hp, ry_hp), 1.2, Color32::from_rgb(14, 165, 233));
+                                        }
+                                    }
+
+                                    p.text(Pos2::new(x_start, y_mute + 4.0), egui::Align2::LEFT_TOP, "Pin 0: LOW (< fc) 🌊", egui::FontId::proportional(8.5), Color32::from_rgb(16, 185, 129));
+                                    p.text(Pos2::new(x_xover, y_0db - 12.0), egui::Align2::CENTER_BOTTOM, "X-Over 2.5 kHz (-6dB LR4)", egui::FontId::proportional(9.0), Color32::from_rgb(147, 51, 234));
+                                    p.text(Pos2::new(x_end, y_mute + 4.0), egui::Align2::RIGHT_TOP, "Pin 1: HIGH (> fc) 🏔️", egui::FontId::proportional(8.5), Color32::from_rgb(2, 132, 199));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 12.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "⚡ Linkwitz-Riley 4th-Order (LR4): Penjumlahan datar 0 dB sempurna tanpa distorsi fase",
+                                        egui::FontId::proportional(8.5),
+                                        Color32::from_rgb(147, 51, 234),
+                                    );
                                 } else if filter_type == NodeType::Mixer {
                                     let cy = diag_rect.center().y - 8.0;
                                     let bar_w = diag_rect.width() - 48.0;
@@ -924,7 +1100,7 @@ impl LunulaApp {
 
                                     p.rect_filled(r1, 5.0, Color32::from_rgb(238, 242, 255));
                                     p.rect_stroke(r1, 5.0, Stroke::new(1.0, Color32::from_rgb(199, 210, 254)), egui::StrokeKind::Outside);
-                                    p.text(r1.center(), egui::Align2::CENTER_CENTER, "RAM / DSP (A)", egui::FontId::proportional(8.0), Color32::from_rgb(67, 56, 202));
+                                    p.text(r1.center(), egui::Align2::CENTER_CENTER, "RAM Buffer (A)", egui::FontId::proportional(8.0), Color32::from_rgb(67, 56, 202));
 
                                     p.rect_filled(r2, 5.0, Color32::from_rgb(240, 249, 255));
                                     p.rect_stroke(r2, 5.0, Stroke::new(1.0, Color32::from_rgb(186, 230, 253)), egui::StrokeKind::Outside);
@@ -1000,6 +1176,69 @@ impl LunulaApp {
                                         egui::FontId::proportional(8.5),
                                         Color32::from_rgb(16, 185, 129),
                                     );
+                                } else if filter_type == NodeType::Crossover {
+                                    let cy = diag_rect.center().y - 8.0;
+
+                                    let r_src = Rect::from_min_size(Pos2::new(diag_rect.min.x + 6.0, cy - 12.0), Vec2::new(48.0, 24.0));
+                                    let r_xover = Rect::from_min_size(Pos2::new(diag_rect.min.x + 60.0, cy - 16.0), Vec2::new(56.0, 32.0));
+                                    let r_fx_a = Rect::from_min_size(Pos2::new(diag_rect.center().x - 6.0, cy - 25.0), Vec2::new(54.0, 22.0));
+                                    let r_fx_b = Rect::from_min_size(Pos2::new(diag_rect.center().x - 6.0, cy + 7.0), Vec2::new(54.0, 22.0));
+                                    let r_mix = Rect::from_min_size(Pos2::new(diag_rect.max.x - 98.0, cy - 16.0), Vec2::new(46.0, 32.0));
+                                    let r_dac = Rect::from_min_size(Pos2::new(diag_rect.max.x - 44.0, cy - 12.0), Vec2::new(40.0, 24.0));
+
+                                    // Box 1: RAM Buffer
+                                    p.rect_filled(r_src, 4.0, Color32::from_rgb(238, 242, 255));
+                                    p.rect_stroke(r_src, 4.0, Stroke::new(1.0, Color32::from_rgb(199, 210, 254)), egui::StrokeKind::Outside);
+                                    p.text(r_src.center(), egui::Align2::CENTER_CENTER, "RAM Buffer", egui::FontId::proportional(7.5), Color32::from_rgb(67, 56, 202));
+
+                                    // Box 2: Crossover
+                                    p.rect_filled(r_xover, 5.0, Color32::from_rgb(250, 245, 255));
+                                    p.rect_stroke(r_xover, 5.0, Stroke::new(1.5, theme_color), egui::StrokeKind::Outside);
+                                    p.text(Pos2::new(r_xover.center().x, r_xover.center().y - 4.0), egui::Align2::CENTER_CENTER, "⚡ CROSSOVER", egui::FontId::proportional(7.0), theme_color);
+                                    p.text(Pos2::new(r_xover.center().x, r_xover.center().y + 7.0), egui::Align2::CENTER_CENTER, "Pin 0 • Pin 1", egui::FontId::proportional(6.5), Color32::from_rgb(147, 51, 234));
+
+                                    // Box 3: Efek Bass (LOW)
+                                    p.rect_filled(r_fx_a, 4.0, Color32::from_rgb(236, 253, 245));
+                                    p.rect_stroke(r_fx_a, 4.0, Stroke::new(1.0, Color32::from_rgb(167, 243, 208)), egui::StrokeKind::Outside);
+                                    p.text(r_fx_a.center(), egui::Align2::CENTER_CENTER, "Efek Bass", egui::FontId::proportional(7.5), Color32::from_rgb(6, 95, 70));
+
+                                    // Box 4: Efek Treble (HIGH)
+                                    p.rect_filled(r_fx_b, 4.0, Color32::from_rgb(240, 249, 255));
+                                    p.rect_stroke(r_fx_b, 4.0, Stroke::new(1.0, Color32::from_rgb(186, 230, 253)), egui::StrokeKind::Outside);
+                                    p.text(r_fx_b.center(), egui::Align2::CENTER_CENTER, "Efek Treble", egui::FontId::proportional(7.5), Color32::from_rgb(2, 132, 199));
+
+                                    // Box 5: Mixer (Menggabungkan kembali Pin A & Pin B ke satu jalur)
+                                    p.rect_filled(r_mix, 4.0, Color32::from_rgb(243, 232, 255));
+                                    p.rect_stroke(r_mix, 4.0, Stroke::new(1.2, Color32::from_rgb(168, 85, 247)), egui::StrokeKind::Outside);
+                                    p.text(Pos2::new(r_mix.center().x, r_mix.center().y - 4.0), egui::Align2::CENTER_CENTER, "MIXER", egui::FontId::proportional(7.5), Color32::from_rgb(126, 34, 206));
+                                    p.text(Pos2::new(r_mix.center().x, r_mix.center().y + 6.0), egui::Align2::CENTER_CENTER, "Pin A + B", egui::FontId::proportional(6.5), Color32::from_rgb(147, 51, 234));
+
+                                    // Box 6: Output DAC (Satu-satunya muara terminal audio hardware)
+                                    p.rect_filled(r_dac, 4.0, Color32::from_rgb(241, 245, 249));
+                                    p.rect_stroke(r_dac, 4.0, Stroke::new(1.0, Color32::from_rgb(203, 213, 225)), egui::StrokeKind::Outside);
+                                    p.text(r_dac.center(), egui::Align2::CENTER_CENTER, "Output DAC", egui::FontId::proportional(7.0), Color32::from_rgb(71, 85, 105));
+
+                                    // Cables
+                                    // RAM Buffer -> Crossover
+                                    p.line_segment([Pos2::new(r_src.max.x, r_src.center().y), Pos2::new(r_xover.min.x, r_xover.center().y)], Stroke::new(2.2, Color32::from_rgb(99, 102, 241)));
+                                    // Pin 0 (LOW) Green Cable -> Efek Bass
+                                    p.line_segment([Pos2::new(r_xover.max.x, r_xover.center().y - 6.0), Pos2::new(r_fx_a.min.x, r_fx_a.center().y)], Stroke::new(2.0, Color32::from_rgb(16, 185, 129)));
+                                    // Pin 1 (HIGH) Sky Blue Cable -> Efek Treble
+                                    p.line_segment([Pos2::new(r_xover.max.x, r_xover.center().y + 6.0), Pos2::new(r_fx_b.min.x, r_fx_b.center().y)], Stroke::new(2.0, Color32::from_rgb(56, 189, 248)));
+                                    // Efek Bass -> Mixer Pin A
+                                    p.line_segment([Pos2::new(r_fx_a.max.x, r_fx_a.center().y), Pos2::new(r_mix.min.x, r_mix.center().y - 5.0)], Stroke::new(2.0, Color32::from_rgb(16, 185, 129)));
+                                    // Efek Treble -> Mixer Pin B
+                                    p.line_segment([Pos2::new(r_fx_b.max.x, r_fx_b.center().y), Pos2::new(r_mix.min.x, r_mix.center().y + 5.0)], Stroke::new(2.0, Color32::from_rgb(56, 189, 248)));
+                                    // Mixer -> Output DAC (Kabel tunggal terpadu)
+                                    p.line_segment([Pos2::new(r_mix.max.x, r_mix.center().y), Pos2::new(r_dac.min.x, r_dac.center().y)], Stroke::new(2.5, Color32::from_rgb(16, 185, 129)));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 12.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "⚡ Alur Dual-Band Studio: Crossover membelah frekuensi ➔ diproses mandiri ➔ disatukan di Mixer ➔ Output DAC",
+                                        egui::FontId::proportional(8.5),
+                                        Color32::from_rgb(147, 51, 234),
+                                    );
                                 } else {
                                     let cy = diag_rect.center().y - 10.0;
                                     let b_w = 66.0;
@@ -1035,7 +1274,7 @@ impl LunulaApp {
                                     p.text(
                                         Pos2::new(diag_rect.center().x, diag_rect.max.y - 12.0),
                                         egui::Align2::CENTER_CENTER,
-                                        "✨ Pasang di antara RAM Buffer dan DSP Engine, atau sesudah DSP",
+                                        "✨ Pasang di antara RAM Buffer dan App Resampler / Output DAC",
                                         egui::FontId::proportional(9.0),
                                         Color32::from_rgb(16, 185, 129),
                                     );
@@ -1054,6 +1293,31 @@ impl LunulaApp {
                                     p.rect_stroke(b1, 6.0, Stroke::new(1.2, Color32::from_rgb(252, 165, 165)), egui::StrokeKind::Outside);
                                     p.text(Pos2::new(b1.center().x, b1.min.y + 13.0), egui::Align2::CENTER_CENTER, "🚫 Feedback Loop", egui::FontId::proportional(9.5), Color32::from_rgb(185, 28, 28));
                                     p.text(Pos2::new(b1.center().x, b1.min.y + 27.0), egui::Align2::CENTER_CENTER, "Output dicolok ke Pin Input sendiri!", egui::FontId::proportional(7.5), Color32::from_rgb(153, 27, 27));
+
+                                    // Bad Box 2: Sesudah DAC
+                                    p.rect_filled(b2, 6.0, Color32::from_rgb(254, 242, 242));
+                                    p.rect_stroke(b2, 6.0, Stroke::new(1.2, Color32::from_rgb(252, 165, 165)), egui::StrokeKind::Outside);
+                                    p.text(Pos2::new(b2.center().x, b2.min.y + 13.0), egui::Align2::CENTER_CENTER, "🚫 Setelah Output DAC", egui::FontId::proportional(9.5), Color32::from_rgb(185, 28, 28));
+                                    p.text(Pos2::new(b2.center().x, b2.min.y + 27.0), egui::Align2::CENTER_CENTER, "DAC adalah hardware fisik!", egui::FontId::proportional(7.5), Color32::from_rgb(153, 27, 27));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 12.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "🔇 LunulaPlayer auto-mute jika loop terdeteksi untuk melindungi speaker",
+                                        egui::FontId::proportional(8.5),
+                                        Color32::from_rgb(239, 68, 68),
+                                    );
+                                } else if filter_type == NodeType::Crossover {
+                                    let cy = diag_rect.center().y - 12.0;
+                                    let half_w = (diag_rect.width() - 36.0) * 0.5;
+                                    let b1 = Rect::from_min_size(Pos2::new(diag_rect.min.x + 12.0, cy - 22.0), Vec2::new(half_w, 44.0));
+                                    let b2 = Rect::from_min_size(Pos2::new(diag_rect.center().x + 6.0, cy - 22.0), Vec2::new(half_w, 44.0));
+
+                                    // Bad Box 1: Output dicolok ke Input sendiri (Feedback Loop)
+                                    p.rect_filled(b1, 6.0, Color32::from_rgb(254, 242, 242));
+                                    p.rect_stroke(b1, 6.0, Stroke::new(1.2, Color32::from_rgb(252, 165, 165)), egui::StrokeKind::Outside);
+                                    p.text(Pos2::new(b1.center().x, b1.min.y + 13.0), egui::Align2::CENTER_CENTER, "🚫 Feedback Loop", egui::FontId::proportional(9.5), Color32::from_rgb(185, 28, 28));
+                                    p.text(Pos2::new(b1.center().x, b1.min.y + 27.0), egui::Align2::CENTER_CENTER, "Pin LOW/HIGH dicolok balik ke Input!", egui::FontId::proportional(7.5), Color32::from_rgb(153, 27, 27));
 
                                     // Bad Box 2: Sesudah DAC
                                     p.rect_filled(b2, 6.0, Color32::from_rgb(254, 242, 242));
@@ -1202,6 +1466,81 @@ impl LunulaApp {
                                         egui::FontId::proportional(8.5),
                                         Color32::from_rgb(79, 70, 229),
                                     );
+                                } else if filter_type == NodeType::HighPassFilter {
+                                    let cy = diag_rect.center().y - 14.0;
+                                    let line_w = diag_rect.width() - 32.0;
+                                    let r_box = Rect::from_min_size(Pos2::new(diag_rect.min.x + 16.0, cy - 18.0), Vec2::new(line_w, 48.0));
+                                    p.rect_filled(r_box, 4.0, Color32::from_rgb(240, 249, 255));
+                                    p.rect_stroke(r_box, 4.0, Stroke::new(1.0, Color32::from_rgb(186, 230, 253)), egui::StrokeKind::Outside);
+
+                                    p.text(Pos2::new(r_box.min.x + 10.0, r_box.min.y + 12.0), egui::Align2::LEFT_CENTER, "Slope: 12dB • 24dB • 48dB", egui::FontId::proportional(8.5), Color32::from_rgb(2, 132, 199));
+                                    p.text(Pos2::new(r_box.center().x, r_box.min.y + 12.0), egui::Align2::CENTER_CENTER, "Cutoff: 20 Hz - 2.0 kHz", egui::FontId::proportional(8.5), Color32::from_rgb(14, 165, 233));
+                                    p.text(Pos2::new(r_box.max.x - 10.0, r_box.min.y + 12.0), egui::Align2::RIGHT_CENTER, "Fringe Q: 0.5 - 2.5", egui::FontId::proportional(8.5), Color32::from_rgb(2, 132, 199));
+
+                                    let s_y = r_box.min.y + 32.0;
+                                    let s_w = line_w - 40.0;
+                                    let s_x = r_box.min.x + 20.0;
+                                    p.line_segment([Pos2::new(s_x, s_y), Pos2::new(s_x + s_w, s_y)], Stroke::new(2.5, Color32::from_rgb(186, 230, 253)));
+                                    p.circle_filled(Pos2::new(s_x + s_w * 0.35, s_y), 5.5, Color32::from_rgb(56, 189, 248));
+                                    p.circle_stroke(Pos2::new(s_x + s_w * 0.35, s_y), 5.5, Stroke::new(1.8, Color32::WHITE));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 12.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "💡 Atur Cutoff, Slope (dB/oct), dan Fringe Q di kanvas atau Inspector Desk secara live",
+                                        egui::FontId::proportional(8.5),
+                                        Color32::from_rgb(2, 132, 199),
+                                    );
+                                } else if filter_type == NodeType::BandPassFilter {
+                                    let cy = diag_rect.center().y - 14.0;
+                                    let line_w = diag_rect.width() - 32.0;
+                                    let r_box = Rect::from_min_size(Pos2::new(diag_rect.min.x + 16.0, cy - 18.0), Vec2::new(line_w, 48.0));
+                                    p.rect_filled(r_box, 4.0, Color32::from_rgb(255, 251, 235));
+                                    p.rect_stroke(r_box, 4.0, Stroke::new(1.0, Color32::from_rgb(253, 230, 138)), egui::StrokeKind::Outside);
+
+                                    p.text(Pos2::new(r_box.min.x + 10.0, r_box.min.y + 12.0), egui::Align2::LEFT_CENTER, "Center: 50 Hz - 16 kHz", egui::FontId::proportional(8.5), Color32::from_rgb(180, 83, 9));
+                                    p.text(Pos2::new(r_box.center().x, r_box.min.y + 12.0), egui::Align2::CENTER_CENTER, "Slope: 12dB • 24dB", egui::FontId::proportional(8.5), Color32::from_rgb(217, 119, 6));
+                                    p.text(Pos2::new(r_box.max.x - 10.0, r_box.min.y + 12.0), egui::Align2::RIGHT_CENTER, "Bandwidth Q: 0.3 - 5.0", egui::FontId::proportional(8.5), Color32::from_rgb(180, 83, 9));
+
+                                    let s_y = r_box.min.y + 32.0;
+                                    let s_w = line_w - 40.0;
+                                    let s_x = r_box.min.x + 20.0;
+                                    p.line_segment([Pos2::new(s_x, s_y), Pos2::new(s_x + s_w, s_y)], Stroke::new(2.5, Color32::from_rgb(253, 230, 138)));
+                                    p.circle_filled(Pos2::new(s_x + s_w * 0.5, s_y), 5.5, Color32::from_rgb(245, 158, 11));
+                                    p.circle_stroke(Pos2::new(s_x + s_w * 0.5, s_y), 5.5, Stroke::new(1.8, Color32::WHITE));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 12.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "💡 Bandwidth Q mengatur ketajaman isolasi frekuensi (Q tinggi = fokus instrumen sempit)",
+                                        egui::FontId::proportional(8.5),
+                                        Color32::from_rgb(180, 83, 9),
+                                    );
+                                } else if filter_type == NodeType::Crossover {
+                                    let cy = diag_rect.center().y - 14.0;
+                                    let line_w = diag_rect.width() - 32.0;
+                                    let r_box = Rect::from_min_size(Pos2::new(diag_rect.min.x + 16.0, cy - 18.0), Vec2::new(line_w, 48.0));
+                                    p.rect_filled(r_box, 4.0, Color32::from_rgb(250, 245, 255));
+                                    p.rect_stroke(r_box, 4.0, Stroke::new(1.0, Color32::from_rgb(233, 213, 255)), egui::StrokeKind::Outside);
+
+                                    p.text(Pos2::new(r_box.min.x + 10.0, r_box.min.y + 12.0), egui::Align2::LEFT_CENTER, "Pin 0: LOW (Nada Rendah)", egui::FontId::proportional(8.5), Color32::from_rgb(16, 185, 129));
+                                    p.text(Pos2::new(r_box.center().x, r_box.min.y + 12.0), egui::Align2::CENTER_CENTER, "X-Over: 80 Hz - 8.0 kHz", egui::FontId::proportional(8.5), Color32::from_rgb(147, 51, 234));
+                                    p.text(Pos2::new(r_box.max.x - 10.0, r_box.min.y + 12.0), egui::Align2::RIGHT_CENTER, "Pin 1: HIGH (Nada Tinggi)", egui::FontId::proportional(8.5), Color32::from_rgb(56, 189, 248));
+
+                                    let s_y = r_box.min.y + 32.0;
+                                    let s_w = line_w - 40.0;
+                                    let s_x = r_box.min.x + 20.0;
+                                    p.line_segment([Pos2::new(s_x, s_y), Pos2::new(s_x + s_w, s_y)], Stroke::new(2.5, Color32::from_rgb(233, 213, 255)));
+                                    p.circle_filled(Pos2::new(s_x + s_w * 0.5, s_y), 5.5, Color32::from_rgb(168, 85, 247));
+                                    p.circle_stroke(Pos2::new(s_x + s_w * 0.5, s_y), 5.5, Stroke::new(1.8, Color32::WHITE));
+
+                                    p.text(
+                                        Pos2::new(diag_rect.center().x, diag_rect.max.y - 12.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "💡 Filter LR4 24dB/oct menjamin magnitude datar sempurna 0 dB saat kedua cabang disatukan",
+                                        egui::FontId::proportional(8.5),
+                                        Color32::from_rgb(147, 51, 234),
+                                    );
                                 } else {
                                     let cy = diag_rect.center().y - 14.0;
                                     let line_w = diag_rect.width() - 32.0;
@@ -1210,7 +1549,7 @@ impl LunulaApp {
                                     let r_dsp = Rect::from_min_size(Pos2::new(diag_rect.min.x + 16.0, cy - 20.0), Vec2::new(line_w, 24.0));
                                     p.rect_filled(r_dsp, 4.0, Color32::from_rgb(238, 242, 255));
                                     p.rect_stroke(r_dsp, 4.0, Stroke::new(1.0, Color32::from_rgb(199, 210, 254)), egui::StrokeKind::Outside);
-                                    p.text(Pos2::new(r_dsp.min.x + 8.0, r_dsp.center().y), egui::Align2::LEFT_CENTER, "🟣 Mode DSP Active", egui::FontId::proportional(9.0), Color32::from_rgb(67, 56, 202));
+                                    p.text(Pos2::new(r_dsp.min.x + 8.0, r_dsp.center().y), egui::Align2::LEFT_CENTER, "🟣 Mode Modular FX (DSP Active)", egui::FontId::proportional(9.0), Color32::from_rgb(67, 56, 202));
                                     p.text(Pos2::new(r_dsp.max.x - 8.0, r_dsp.center().y), egui::Align2::RIGHT_CENTER, "Filter Aktif 64-bit • Slider Real-Time", egui::FontId::proportional(8.5), Color32::from_rgb(79, 70, 229));
 
                                     // Lane 2: Bit-Perfect Mode
@@ -1223,7 +1562,7 @@ impl LunulaApp {
                                     p.text(
                                         Pos2::new(diag_rect.center().x, diag_rect.max.y - 12.0),
                                         egui::Align2::CENTER_CENTER,
-                                        "💡 Klik kartu DSP ENGINE pada kanvas untuk berganti mode seketika",
+                                        "💡 Tekan tombol toggle mode [Modular FX] / [DSP Active] di bilah atas untuk menyalakan modul filter",
                                         egui::FontId::proportional(8.5),
                                         Color32::from_rgb(100, 116, 139),
                                     );
@@ -1238,9 +1577,42 @@ impl LunulaApp {
                             match step {
                                 0 => {
                                     // Slide 1 text
-                                    if filter_type == NodeType::LowPassFilter {
+                                    if filter_type == NodeType::HighPassFilter {
+                                        ui.label(egui::RichText::new("Apa itu High-Pass Filter (HPF)?").strong().size(14.0).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("High-Pass Filter adalah filter frekuensi biquad berpresisi 64-bit float (f64) dengan pilihan kemiringan curam (12dB, 24dB, hingga 48dB/oktaf). Modul ini meloloskan frekuensi treble & midrange serta memotong getaran sub-bass di bawah titik Cutoff.").size(12.0).color(Color32::from_rgb(71, 85, 105)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("Efek Akustik & Karakter Suara:").strong().size(12.5).color(Color32::from_rgb(2, 132, 199)));
+                                        ui.label(egui::RichText::new("• Menghilangkan Gemuruh Sub-Bass (Rumble Filter): Menyaring getaran mekanis panggung, hembusan angin rekaman live, atau desis frekuensi sangat rendah (<40 Hz) yang menguras daya amplifier.\n• Vokal & Gitar Transparan: Membuang resonansi 'dengung/muddy' di frekuensi rendah sehingga artikulasi vokal dan petikan akustik terdengar jernih dan terbuka.\n• Proteksi Driver Speaker/IEM: Mencegah excursion (gerakan konus berlebih) pada earphone IEM atau speaker desktop berukuran kecil.").size(12.0).color(Color32::from_rgb(71, 85, 105)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("Panduan Cutoff, Slope, & Resonansi Q:").strong().size(12.5).color(Color32::from_rgb(56, 189, 248)));
+                                        ui.label(egui::RichText::new("• 30 Hz - 50 Hz (Subsonic Filter): Menjaga dentuman bass punchy sambil membuang infrasonik yang tak terdengar.\n• 80 Hz (Vocal Sweet Spot): Standar studio rekaman untuk kejernihan vokal pria & wanita.\n• 160 Hz - 500 Hz (Radio/Thin Style): Memotong seluruh body nada rendah untuk efek vokal tipis atau fokus simbal.\n• Slope 12dB vs 24dB vs 48dB: 12dB untuk transisi natural lembut; 24dB/48dB untuk pemotongan bass tajam ala crossover profesional.\n• Fringe Q: 0.71 (Butterworth datar maksimal). Naikkan ke 1.2 - 2.0 untuk memberi tonjolan resonansi punchy di titik cutoff.").size(12.0).color(Color32::from_rgb(71, 85, 105)));
+                                    } else if filter_type == NodeType::BandPassFilter {
+                                        ui.label(egui::RichText::new("Apa itu Band-Pass Filter (BPF)?").strong().size(14.0).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("Band-Pass Filter adalah filter biquad 64-bit float yang mengisolasi rentang pita frekuensi tertentu di sekitar Center Frequency (f0) dan meredam seluruh nada bass maupun nada treble di luar pita tersebut.").size(12.0).color(Color32::from_rgb(71, 85, 105)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("Efek Akustik & Karakter Suara:").strong().size(12.5).color(Color32::from_rgb(217, 119, 6)));
+                                        ui.label(egui::RichText::new("• Efek Telepon & Radio Vintage: Mengisolasi rentang 500 Hz s/d 2.5 kHz untuk menciptakan suara percakapan telepon klasik atau transmisi walkie-talkie retro.\n• Isolasi Melodi Instrumen: Menyorot instrumen solo (misal gitar melodi, snare drum, vokal latar) di tengah keramaian aransemen musik.\n• Efek Wah-Wah & Formant: Dengan menaikkan faktor Q, filter ini menghasilkan resonansi formant tajam bergaya instrumen analog.").size(12.0).color(Color32::from_rgb(71, 85, 105)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("Panduan Center & Bandwidth Q:").strong().size(12.5).color(Color32::from_rgb(245, 158, 11)));
+                                        ui.label(egui::RichText::new("• Center 250 Hz (Warm Mid): Fokus pada kehangatan bass petik dan senar cello.\n• Center 1.0 kHz (Vocal Band): Titik tengah artikulasi vokal dan kejelasan lirik.\n• Center 4.0 kHz (Presence): Fokus pada gigitan instrumen petik dan vokal tajam.\n• Bandwidth Q (0.3 - 5.0): Q rendah (0.5 - 0.7) memberikan pita selebar 2 oktaf; Q tinggi (2.0 - 5.0) menyempitkan filter menjadi pita laser super fokus.").size(12.0).color(Color32::from_rgb(71, 85, 105)));
+                                    } else if filter_type == NodeType::Crossover {
+                                        ui.label(egui::RichText::new("Apa itu 2-Way Active Crossover (Linkwitz-Riley LR4)?").strong().size(14.0).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("Crossover Aktif Linkwitz-Riley 4th-Order (LR4) adalah modul pembagi spektrum audio studio berpresisi 64-bit float. Modul ini menerima 1 input audio dan secara simultan membaginya ke 2 pin output mandiri: Pin 0 (LOW untuk frekuensi di bawah titik potong) dan Pin 1 (HIGH untuk frekuensi di atas titik potong).").size(12.0).color(Color32::from_rgb(71, 85, 105)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("Keunggulan Akustik Linkwitz-Riley LR4:").strong().size(12.5).color(Color32::from_rgb(147, 51, 234)));
+                                        ui.label(egui::RichText::new("• Penjumlahan Datar Sempurna 0.00 dB (Flat Amplitude): Pada crossover Butterworth biasa, titik potong menimbulkan lonjakan volume +3 dB. Linkwitz-Riley didesain khusus dengan titik potong tepat di -6 dB pada kedua cabang, sehingga ketika kedua sinyal digabungkan kembali di Mixer, respon suaranya 0.00 dB datar murni tanpa distorsi!\n• Zero Phase Distortion (Fase Selaras 360°): Perbedaan fase antara Pin LOW dan HIGH adalah 360° (netral 0°), mencegah pembatalan fase (comb-filtering) saat disatukan kembali ke Output DAC.\n• Kemiringan Curam 24 dB/Oktaf: Memisahkan rentang bass dan treble dengan pemotongan tajam tanpa kebocoran frekuensi.").size(12.0).color(Color32::from_rgb(71, 85, 105)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("Panduan Titik Frekuensi Crossover:").strong().size(12.5).color(Color32::from_rgb(168, 85, 247)));
+                                        ui.label(egui::RichText::new("• 80 Hz - 120 Hz: Memisahkan getaran sub-bass murni dari instrumen vokal & melodi utama.\n• 300 Hz - 500 Hz: Memisahkan dentuman body bass rendah dari kejelasan vokal midrange.\n• 2.5 kHz - 3.5 kHz: Titik pemisah klasik antara vokal/gitar dengan frekuensi kemilau treble (cymbal, hi-hat, udara analog).").size(12.0).color(Color32::from_rgb(71, 85, 105)));
+                                    } else if filter_type == NodeType::LowPassFilter {
                                         ui.label(egui::RichText::new("Apa itu Low-Pass Filter (LPF)?").strong().size(14.0).color(Color32::from_rgb(15, 23, 42)));
-                                        ui.label(egui::RichText::new("Low-Pass Filter adalah filter frekuensi biquad berpresisi 64-bit float (f64) yang meloloskan frekuensi nada rendah (bass) dan memotong frekuensi nada tinggi (treble) di atas titik Cutoff yang Anda tentukan.").size(12.0).color(Color32::from_rgb(71, 85, 105)));
+                                        ui.label(egui::RichText::new("Low-Pass Filter adalah filter frekuensi biquad berpresisi 64-bit float (f64) dengan pilihan kemiringan rolloff (12dB, 24dB, hingga 48dB/oktaf). Modul ini meloloskan frekuensi nada rendah (bass) dan meredam nada tinggi (treble) di atas titik Cutoff yang ditentukan.").size(12.0).color(Color32::from_rgb(71, 85, 105)));
 
                                         ui.add_space(4.0);
                                         ui.label(egui::RichText::new("Efek Akustik & Karakter Suara:").strong().size(12.5).color(Color32::from_rgb(14, 116, 144)));
@@ -1249,6 +1621,10 @@ impl LunulaApp {
                                         ui.add_space(4.0);
                                         ui.label(egui::RichText::new("Panduan Nilai Cutoff:").strong().size(12.5).color(Color32::from_rgb(2, 132, 199)));
                                         ui.label(egui::RichText::new("• 100 Hz - 300 Hz: Hanya getaran sub-bass murni yang terdengar (vokal hilang total).\n• 500 Hz - 1.2 kHz: Suara vokal teredam berat, bass hangat mendominasi.\n• 3 kHz - 6 kHz: Nuansa piringan hitam klasik, vokal tetap jelas tanpa 's' tajam.\n• 10 kHz: Pemotongan frekuensi ultrasonik, menjaga kehangatan analog sutra.").size(12.0).color(Color32::from_rgb(71, 85, 105)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("Panduan Kemiringan Slope & Fringe Q:").strong().size(12.5).color(Color32::from_rgb(16, 185, 129)));
+                                        ui.label(egui::RichText::new("• Slope 12dB/oct (2nd-Order Butterworth): Transisi pemotongan treble bertahap yang sangat musikal dan lembut, cocok untuk nuansa piringan hitam santai.\n• Slope 24dB/oct (4th-Order Linkwitz-Riley): Pemotongan tajam standar studio profesional untuk isolasi nada bass tanpa kebocoran vokal.\n• Slope 48dB/oct (8th-Order Brickwall): Pemotongan dinding batu curam untuk isolasi frekuensi bass murni.\n• Fringe Q (0.50 s/d 4.00): Nilai 0.707 (Butterworth) memberikan kurva datar tanpa resonansi. Naikkan ke 1.2 - 2.0 untuk memberikan hentakan resonansi punchy di frekuensi cutoff.").size(12.0).color(Color32::from_rgb(71, 85, 105)));
                                     } else if filter_type == NodeType::Mixer {
                                         ui.label(egui::RichText::new("Apa itu Mixer / Summing Bus?").strong().size(14.0).color(Color32::from_rgb(15, 23, 42)));
                                         ui.label(egui::RichText::new("Mixer / Summing Bus adalah gerbang perantara (hub) cerdas yang menggabungkan dua aliran audio terpisah (Pin A dan Pin B) menjadi satu jalur output utuh.").size(12.0).color(Color32::from_rgb(71, 85, 105)));
@@ -1334,9 +1710,30 @@ impl LunulaApp {
                                 }
                                 1 => {
                                     // Slide 2 text
-                                    if filter_type == NodeType::Mixer {
+                                    if filter_type == NodeType::Crossover {
+                                        ui.label(egui::RichText::new("Di Mana Crossover Boleh Disambungkan?").strong().size(14.0).color(Color32::from_rgb(16, 185, 129)));
+                                        ui.label(egui::RichText::new("1. Pemrosesan Pita Terpisah & Satukan di Mixer [Rekomendasi Utama]:\n   Karena Lunula Player hanya memiliki satu terminal Output DAC fisik, selalu gunakan modul 'Mixer' untuk menggabungkan kedua cabang sebelum menuju DAC:\n   - Tarik Pin 0 (LOW) ke modul efek bass (misal Tube Warmer untuk saturasi analog tebal) ➔ colokkan ke Mixer Pin A.\n   - Tarik Pin 1 (HIGH) ke modul efek treble (misal Stereo Widener untuk panggung 3D) ➔ colokkan ke Mixer Pin B.\n   - Sambungkan output Mixer ke App Resampler ➔ Output DAC. Kedua frekuensi berpadu utuh 0.00 dB flat!\n\n2. Makro Keseimbangan Nada (Tone Balance Shaper):\n   Colokkan Pin 0 (LOW) langsung ke Mixer Pin A, dan Pin 1 (HIGH) langsung ke Mixer Pin B.\n   - Slider crossfader Mixer kini berfungsi sebagai tuas pengatur keseimbangan instan: geser ke A untuk dominasi bass, geser ke B untuk dominasi treble, atau taruh di tengah (50/50) untuk sinyal datar asli.\n\n3. Solo Auditioning (Memantau Pita Frekuensi Tunggal):\n   Jika Anda hanya ingin mendengar nada rendah saja tanpa vokal/treble, tarik Pin 0 (LOW) langsung ke App Resampler / Output DAC (Pin 1 dibiarkan kosong). Sebaliknya, tarik Pin 1 (HIGH) jika Anda hanya ingin mengisolasi vokal dan treble.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("💡 Fitur 2 Pin Output Aktif (LOW & HIGH):").strong().size(12.5).color(Color32::from_rgb(147, 51, 234)));
+                                        ui.label(egui::RichText::new("Crossover memiliki 2 pin keluaran independen. Ingat bahwa Output DAC hanya menerima 1 kabel input, sehingga modul Mixer adalah pasangan ideal untuk menyatukan kembali kedua pin tersebut.").size(12.0).color(Color32::from_rgb(100, 116, 139)));
+                                    } else if filter_type == NodeType::HighPassFilter {
+                                        ui.label(egui::RichText::new("Di Mana High-Pass Filter Boleh Disambungkan?").strong().size(14.0).color(Color32::from_rgb(16, 185, 129)));
+                                        ui.label(egui::RichText::new("1. Rantai Awal Pembersihan (Antara RAM Buffer & App Resampler / Filter Modular) [Rekomendasi Utama]:\n   Membersihkan getaran sub-bass rumble langsung dari hasil decode mentah sebelum sinyal masuk ke efek saturasi atau resampler.\n\n2. Sebelum Tube Warmer atau Bass Guard:\n   Mencegah tabung saturasi mendistorsi akibat frekuensi sub-bass yang terlalu kuat, menghasilkan saturasi vokal yang jauh lebih bersih.\n\n3. Pada Jalur Paralel Pin B Mixer:\n   Hanya memproses treble pada jalur wet.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("💡 Presisi Biquad 64-bit:").strong().size(12.5).color(Color32::from_rgb(56, 189, 248)));
+                                        ui.label(egui::RichText::new("Perhitungan koefisien biquad dieksekusi dengan presisi ganda f64, menjamin kestabilan filter bahkan pada frekuensi potong serendah 20 Hz.").size(12.0).color(Color32::from_rgb(100, 116, 139)));
+                                    } else if filter_type == NodeType::BandPassFilter {
+                                        ui.label(egui::RichText::new("Di Mana Band-Pass Filter Boleh Disambungkan?").strong().size(14.0).color(Color32::from_rgb(16, 185, 129)));
+                                        ui.label(egui::RichText::new("1. Jalur Efek Paralel (Splitter ➔ BPF ➔ Mixer Pin B) [Rekomendasi Utama]:\n   Campurkan suara vokal/instrumen yang diisolasi BPF dengan suara asli lagu untuk menciptakan efek tebal berlapis tanpa merusak audio utama.\n\n2. Seri Setelah Equalizer:\n   Gunakan setelah EQ untuk menonjolkan solo instrumen tertentu secara spesifik.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("💡 Respon Bebas Resonansi Buruk:").strong().size(12.5).color(Color32::from_rgb(245, 158, 11)));
+                                        ui.label(egui::RichText::new("Gain puncak pada center frequency dipertahankan tepat pada 0.0 dB untuk mencegah clipping digital.").size(12.0).color(Color32::from_rgb(100, 116, 139)));
+                                    } else if filter_type == NodeType::Mixer {
                                         ui.label(egui::RichText::new("Di Mana Mixer Boleh Disambungkan?").strong().size(14.0).color(Color32::from_rgb(16, 185, 129)));
-                                        ui.label(egui::RichText::new("1. Gerbang Penggabung Akhir (Sebelum DAC / Resampler) [Rekomendasi Utama]:\n   Tarik cabang 1 langsung dari DSP ke Pin A (Dry), dan cabang 2 melalui Low-Pass Filter ke Pin B (Wet). Output Mixer disambungkan ke Output DAC.\n\n2. Di Antara Filter Modular (Sub-Bus Mixing):\n   Menggabungkan keluaran dua filter berbeda (misal LPF dan Tube Warmer) sebelum keduanya diteruskan ke Stereo Widener.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
+                                        ui.label(egui::RichText::new("1. Gerbang Penggabung Akhir (Sebelum App Resampler / DAC) [Rekomendasi Utama]:\n   Tarik cabang 1 langsung dari RAM Buffer / Splitter Pin A (Dry), dan cabang 2 melalui Filter Efek ke Pin B (Wet). Output Mixer disambungkan ke App Resampler atau Output DAC.\n\n2. Di Antara Filter Modular (Sub-Bus Mixing):\n   Menggabungkan keluaran dua filter berbeda (misal LPF dan Tube Warmer) sebelum keduanya diteruskan ke Stereo Widener.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
 
                                         ui.add_space(4.0);
                                         ui.label(egui::RichText::new("💡 Fleksibilitas Input:").strong().size(12.5).color(Color32::from_rgb(126, 34, 206)));
@@ -1350,7 +1747,7 @@ impl LunulaApp {
                                         ui.label(egui::RichText::new("Berbeda dari kartu biasa yang hanya mengizinkan 1 kabel keluar, Splitter mengizinkan 2 kabel aktif keluar sekaligus (Pin A dan Pin B).").size(12.0).color(Color32::from_rgb(100, 116, 139)));
                                     } else if filter_type == NodeType::TubeWarmer {
                                         ui.label(egui::RichText::new("Di Mana Tube Warmer Boleh Disambungkan?").strong().size(14.0).color(Color32::from_rgb(16, 185, 129)));
-                                        ui.label(egui::RichText::new("1. Sesudah DSP / Equalizer (Rekomendasi Utama Audiophile):\n   Biarkan EQ membentuk kurva frekuensi terlebih dahulu, lalu sinyal dilewatkan ke Tube Warmer agar saturasi harmonik memproses kurva nada yang sudah seimbang.\n\n2. Sebelum Stereo Widener:\n   Pasang sebelum Stereo Widener agar panggung suara 3D dapat menyebarkan kehangatan analog ke seluruh ruang stereo secara merata.\n\n3. Di Percabangan Paralel Mixer (Dry/Wet):\n   Gunakan Splitter dan Mixer untuk memisahkan jalur suara murni (Dry) dan suara tabung (Wet), lalu atur persentase campurannya.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
+                                        ui.label(egui::RichText::new("1. Setelah RAM Buffer atau Equalizer Modular (Rekomendasi Utama Audiophile):\n   Biarkan sinyal mengalir dari RAM Buffer atau EQ modular terlebih dahulu, lalu teruskan ke Tube Warmer agar saturasi harmonik analog memproses karakter nada yang sudah seimbang.\n\n2. Sebelum Stereo Widener:\n   Pasang sebelum Stereo Widener agar panggung suara 3D dapat menyebarkan kehangatan analog ke seluruh ruang stereo secara merata.\n\n3. Di Percabangan Paralel Mixer (Dry/Wet):\n   Gunakan Splitter dan Mixer untuk memisahkan jalur suara murni (Dry) dan suara tabung (Wet), lalu atur persentase campurannya.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
 
                                         ui.add_space(4.0);
                                         ui.label(egui::RichText::new("💡 Pemrosesan Presisi 64-bit:").strong().size(12.5).color(Color32::from_rgb(234, 88, 12)));
@@ -1362,9 +1759,16 @@ impl LunulaApp {
                                         ui.add_space(4.0);
                                         ui.label(egui::RichText::new("💡 Prasyarat Stereo:").strong().size(12.5).color(Color32::from_rgb(99, 102, 241)));
                                         ui.label(egui::RichText::new("Efek ini membutuhkan audio stereo (memiliki perbedaan kanal L dan R). Jika lagu adalah mono murni (L = R), modul otomatis meloloskan sinyal tanpa error.").size(12.0).color(Color32::from_rgb(100, 116, 139)));
+                                    } else if filter_type == NodeType::LowPassFilter {
+                                        ui.label(egui::RichText::new("Di Mana Low-Pass Filter Boleh Disambungkan?").strong().size(14.0).color(Color32::from_rgb(16, 185, 129)));
+                                        ui.label(egui::RichText::new("1. Antara RAM Buffer dan App Resampler (Rekomendasi Utama):\n   Memotong nada tinggi langsung dari hasil decode mentah sebelum sinyal masuk ke App Resampler atau Output DAC.\n\n2. Berurutan Sebelum Tube Warmer atau Efek Lain:\n   Pasang sebelum Tube Warmer agar saturasi analog memproses frekuensi bass hangat yang empuk dan halus tanpa desis treble.\n\n3. Di Percabangan Paralel Pin B Mixer (Dry/Wet):\n   Gunakan Splitter dan Mixer untuk mencampur suara asli tanpa filter (Pin A) dengan suara teredam LPF (Pin B).").size(12.0).color(Color32::from_rgb(51, 65, 85)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("💡 Jaminan Kemurnian:").strong().size(12.5).color(Color32::from_rgb(2, 132, 199)));
+                                        ui.label(egui::RichText::new("Semua sampel audio dalam RAM Buffer diproses dengan matematika 64-bit float biquad, sehingga penyisipan filter tidak menimbulkan noise lantai maupun distorsi bit.").size(12.0).color(Color32::from_rgb(100, 116, 139)));
                                     } else {
                                         ui.label(egui::RichText::new("Di Mana Sinyal Boleh Disambungkan?").strong().size(14.0).color(Color32::from_rgb(16, 185, 129)));
-                                        ui.label(egui::RichText::new("1. Antara RAM Buffer dan DSP Engine (Rekomendasi Utama):\n   Memotong nada tinggi langsung dari hasil decode mentah sebelum sinyal masuk ke 10-band equalizer.\n\n2. Sesudah DSP Engine (Sebelum App Resampler):\n   Menghaluskan puncak frekuensi jika equalizer melakukan boost treble berlebih.\n\n3. Berurutan (In-Series) Sebelum Efek Lain:\n   Pasang sebelum Tube Warmer atau Stereo Widener agar efek analog memproses sinyal yang sudah bersih.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
+                                        ui.label(egui::RichText::new("1. Antara RAM Buffer dan App Resampler (Rekomendasi Utama):\n   Memproses frekuensi atau modulasi audio langsung sebelum sinyal masuk ke tahap resample atau DAC hardware.\n\n2. Berurutan (In-Series) dengan Filter Lain:\n   Pasang berurutan dengan modul efek lainnya untuk meracik rantai mastering studio profesional.\n\n3. Di Percabangan Paralel Mixer:\n   Pasang pada salah satu pin Mixer untuk pemrosesan paralel.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
 
                                         ui.add_space(4.0);
                                         ui.label(egui::RichText::new("💡 Jaminan Kemurnian:").strong().size(12.5).color(Color32::from_rgb(2, 132, 199)));
@@ -1373,7 +1777,21 @@ impl LunulaApp {
                                 }
                                 2 => {
                                     // Slide 3 text
-                                    if filter_type == NodeType::Mixer {
+                                    if filter_type == NodeType::Crossover {
+                                        ui.label(egui::RichText::new("Posisi Terlarang & Kesalahan Routing Crossover").strong().size(14.0).color(Color32::from_rgb(239, 68, 68)));
+                                        ui.label(egui::RichText::new("1. 🚫 Dilarang Feedback Loop:\n   Jangan menarik kabel dari Pin 0 (LOW) atau Pin 1 (HIGH) kembali ke Pin Input Crossover itu sendiri.\n\n2. 🚫 Dilarang Memasang Crossover Setelah Output DAC:\n   Crossover LR4 adalah modul pemrosesan digital 64-bit di software, sehingga wajib berada sebelum konversi DAC fisik hardware.\n\n3. 🚫 Hindari Menghubungkan 2 Output Langsung ke DAC Tanpa Mixer:\n   Terminal Output DAC hanya memiliki 1 pin input. Untuk mendengarkan kedua rentang LOW dan HIGH secara bersamaan, selalu satukan keduanya menggunakan modul Mixer (Pin A & Pin B) sebelum menuju DAC.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("🛡️ Proteksi Auto-Mute LunulaPlayer:").strong().size(12.5).color(Color32::from_rgb(245, 158, 11)));
+                                        ui.label(egui::RichText::new("Jika loop terdeteksi atau kabel putus, sistem otomatis membisukan suara demi melindungi telinga dan transduser speaker Anda.").size(12.0).color(Color32::from_rgb(100, 116, 139)));
+                                    } else if filter_type == NodeType::HighPassFilter || filter_type == NodeType::BandPassFilter {
+                                        ui.label(egui::RichText::new("Posisi Terlarang & Kesalahan Routing Filter").strong().size(14.0).color(Color32::from_rgb(239, 68, 68)));
+                                        ui.label(egui::RichText::new("1. 🚫 Dilarang Sebelum File Source:\n   Filter membutuhkan aliran PCM terdekode, sehingga tidak bisa dipasang sebelum node File Source.\n\n2. 🚫 Dilarang Setelah Output DAC:\n   Output DAC mengirim voltase listrik analog nyata ke kabel headphone. Tidak ada modul efek software yang bisa ditaruh sesudahnya.\n\n3. 🚫 Hindari Loop Output-ke-Input:\n   Menyambungkan kabel keluaran filter kembali ke inputnya sendiri akan memicu distorsi perulangan feedback tak terkendali.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
+
+                                        ui.add_space(4.0);
+                                        ui.label(egui::RichText::new("🛡️ Proteksi Auto-Mute LunulaPlayer:").strong().size(12.5).color(Color32::from_rgb(245, 158, 11)));
+                                        ui.label(egui::RichText::new("Jika kabel terputus di tengah pemutaran, sistem secara otomatis membisukan suara (silent mute) untuk mencegah letupan DC offset.").size(12.0).color(Color32::from_rgb(100, 116, 139)));
+                                    } else if filter_type == NodeType::Mixer {
                                         ui.label(egui::RichText::new("Posisi Terlarang & Kesalahan Routing Mixer").strong().size(14.0).color(Color32::from_rgb(239, 68, 68)));
                                         ui.label(egui::RichText::new("1. 🚫 Dilarang Feedback Loop:\n   Jangan menarik kabel dari pin Output Mixer kembali ke pin Input A atau Input B milik Mixer itu sendiri. Hal ini memicu loop tak berujung yang berbahaya bagi speaker.\n\n2. 🚫 Dilarang Sebelum File Source / Sesudah DAC:\n   Mixer adalah pemroses sinyal digital 64-bit float di software, sehingga wajib berada di antara File Source (decoder) dan Output DAC fisik.\n\n3. 🚫 Duplikasi Jalur Identik:\n   Menyambungkan kabel yang sama persis ke Pin A dan Pin B tanpa filter hanya akan melipatgandakan volume tanpa memberikan variasi suara.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
 
@@ -1412,7 +1830,16 @@ impl LunulaApp {
                                 }
                                 _ => {
                                     // Slide 4 text
-                                    if filter_type == NodeType::Mixer {
+                                    if filter_type == NodeType::HighPassFilter {
+                                        ui.label(egui::RichText::new("Mengatur HPF, Slope, & Mode Audio").strong().size(14.0).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("• Slider Cutoff Real-Time (20 Hz s/d 2.0 kHz):\n  Tarik fader langsung di kartu kanvas atau di sidebar kanan. Pembaruan koefisien biquad f64 terjadi seketika tanpa jeda audio.\n\n• Tombol Pilihan Kemiringan Slope (dB/oktaf):\n  - 12dB: Pemotongan lembut natural, menjaga body nada rendah tetap ada.\n  - 24dB: Standar studio rekaman untuk isolasi vokal tajam.\n  - 48dB: Brickwall subsonic cut untuk perlindungan speaker bertenaga tinggi.\n\n• Kendali Resonansi Fringe Q:\n  Sesuaikan nilai Q (0.5 hingga 2.5). Nilai 0.707 memberikan respon Butterworth paling linier, sedangkan nilai di atas 1.0 menambahkan sedikit resonansi punchy di titik potong.\n\n• Perilaku pada Mode Bit-Perfect:\n  Saat beralih ke Bit-Perfect, High-Pass Filter otomatis DILEWATI (bypassed) demi kemurnian 1:1 stream bit audio mentah.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
+                                    } else if filter_type == NodeType::BandPassFilter {
+                                        ui.label(egui::RichText::new("Mengatur BPF, Bandwidth Q, & Mode Audio").strong().size(14.0).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("• Slider Center Frequency (50 Hz s/d 16 kHz):\n  Arahkan titik tengah filter ke instrumen atau vokal yang ingin Anda isolasi.\n\n• Slider Bandwidth Q (0.3 s/d 5.0):\n  - Q = 0.5 - 0.7: Pita lebar untuk pemanasan tonal halus.\n  - Q = 1.41: Standar isolasi 1 oktaf penuh.\n  - Q = 3.0 - 5.0: Resonansi tajam seperti filter formant instrumen analog atau efek radio.\n\n• Pilihan Slope 12dB / 24dB:\n  Memilih seberapa curam nada di luar pita frekuensi diredam.\n\n• Perilaku pada Mode Bit-Perfect:\n  Saat mode Bit-Perfect aktif, seluruh pemrosesan BPF di-bypass tanpa mengubah 1 bit pun data lagu.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
+                                    } else if filter_type == NodeType::Crossover {
+                                        ui.label(egui::RichText::new("Mengatur Titik Potong Crossover LR4 & Mode Audio").strong().size(14.0).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("• Slider Crossover Real-Time (80 Hz s/d 8.0 kHz):\n  Geser frekuensi titik potong Linkwitz-Riley secara live. Kedua cabang LOW dan HIGH otomatis terkomputasi sinkron secara internal tanpa 'zipper noise'.\n\n• Preset Crossover Populer:\n  - 80 Hz: Memisahkan dentuman sub-bass murni dari vokal/melodi.\n  - 500 Hz: Membagi rentang low body dengan artikulasi midrange vokal.\n  - 2.5 kHz: Memisahkan instrumen midrange dengan kemilau treble udara.\n\n• Menyatukan Sinyal ke Output DAC:\n  Agar kedua cabang LOW dan HIGH dapat didengarkan bersamaan di headphone/speaker melalui satu Output DAC, hubungkan Pin 0 ke Mixer Pin A dan Pin 1 ke Mixer Pin B, lalu teruskan output Mixer ke DAC.\n\n• Perilaku pada Mode Bit-Perfect:\n  Saat beralih ke Bit-Perfect, modul Crossover otomatis dilewati dan sinyal diteruskan 1:1 ke DAC.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
+                                    } else if filter_type == NodeType::Mixer {
                                         ui.label(egui::RichText::new("Mengatur Crossfader & Mode Audio").strong().size(14.0).color(Color32::from_rgb(15, 23, 42)));
                                         ui.label(egui::RichText::new("• Slider Crossfader Real-Time:\n  Tarik slider langsung di atas kartu kanvas atau di sidebar kanan dari 0% (Channel A murni) hingga 100% (Channel B murni). Nilai diperbarui seketika tanpa latency.\n\n• Posisi Slider Populer:\n  - 0% B: Suara asli tanpa efek (Dry murni).\n  - 30% - 50% B: Suara asli tetap dominan, dengan sentuhan hangat/muffled dari filter B.\n  - 50% / 50%: Campuran seimbang sempurna (Constant-Power Crossfade).\n  - 100% B: Suara efek total (Wet murni).\n\n• Mode Bit-Perfect:\n  Saat beralih ke Bit-Perfect, seluruh rantai pemrosesan termasuk Mixer dilewati (direct stream 1:1) ke DAC hardware.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
                                     } else if filter_type == NodeType::Splitter {
@@ -1438,13 +1865,16 @@ impl LunulaApp {
                                         ui.label(egui::RichText::new("• Slider Panorama (-100% Kiri s/d +100% Kanan):\n  Menggeser panggung suara dengan kurva daya konstan tanpa perubahan level akustik total.\n\n• Tombol Instan Center:\n  Klik tombol '● Center' di sidebar untuk mengembalikan posisi instrumen ke titik tengah 0.0 dB secara instan.\n\n• Mode Bit-Perfect:\n  Panning stereo dilewati murni saat mode Bit-Perfect diaktifkan.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
                                     } else if filter_type == NodeType::TubeWarmer {
                                         ui.label(egui::RichText::new("Mengatur Warmth Tabung Nixie & Mode Audio").strong().size(14.0).color(Color32::from_rgb(15, 23, 42)));
-                                        ui.label(egui::RichText::new("• Slider Warmth Real-Time (0% s/d 100%):\n  Tarik fader langsung di kartu kanvas atau di sidebar kanan. Nilai angka neon pada tabung Nixie akan berubah secara dinamis seketika tanpa jeda.\n\n• Tombol Cepat Preset Studio:\n  - 20% Mild: Sentuhan analog sangat tipis untuk jazz dan orkestra.\n  - 35% Triode: Karakter triode 12AX7 seimbang, vokal intim hangat.\n  - 50% Rich: Nuansa tape analog & piringan hitam klasik.\n  - 75% Hot: Saturasi tabung tebal untuk rock klasik atau synth vintage.\n\n• Perilaku pada Mode Bit-Perfect:\n  Saat beralih ke Bit-Perfect, seluruh filter DSP (termasuk Tube Warmer) otomatis DILEWATI (bypassed) demi integritas 1:1 data stream. Lampu tabung Nixie akan mati (dormant) sebagai tanda visual bypass.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
+                                        ui.label(egui::RichText::new("• Slider Warmth Real-Time (0% s/d 100%):\n  Tarik fader langsung di kartu kanvas atau di sidebar kanan. Nilai angka neon pada tabung Nixie akan berubah secara dinamis seketika tanpa jeda.\n\n• Tombol Cepat Preset Studio:\n  - 20% Mild: Sentuhan analog sangat tipis untuk jazz dan orkestra.\n  - 35% Triode: Karakter triode 12AX7 seimbang, vokal intim hangat.\n  - 50% Rich: Nuansa tape analog & piringan hitam klasik.\n  - 75% Hot: Saturasi tabung tebal untuk rock klasik atau synth vintage.\n\n• Perilaku pada Mode Bit-Perfect:\n  Saat beralih ke Bit-Perfect, seluruh filter modular (termasuk Tube Warmer) otomatis DILEWATI (bypassed) demi integritas 1:1 data stream. Lampu tabung Nixie akan mati (dormant) sebagai tanda visual bypass.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
                                     } else if filter_type == NodeType::StereoWidener {
                                         ui.label(egui::RichText::new("Mengatur Soundstage 3D & Mode Audio").strong().size(14.0).color(Color32::from_rgb(15, 23, 42)));
                                         ui.label(egui::RichText::new("• Slider Soundstage Real-Time (0% s/d +100%):\n  Sesuaikan dimensi panggung suara dari kartu kanvas maupun sidebar. Sinyal bertransisi mulus berkat parameter slewing anti-zipper.\n\n• Tombol Cepat Preset Psikoakustik:\n  - +15% Natural: Sangat direkomendasikan untuk IEM dan headphone rapat (closed-back).\n  - +35% Haas: Titik seimbang panggung suara audio rumahan (sweet spot).\n  - +60% Wide: Nuansa live concert aula besar untuk rekaman konser.\n  - +100% 3D: Panggung suara 3D maksimal untuk pengalaman sinematik imersif.\n\n• Perilaku pada Mode Bit-Perfect:\n  Stereo Widener otomatis dilewati saat beralih ke Bit-Perfect untuk menjaga struktur file master asli tanpa alterasi bit.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
+                                    } else if filter_type == NodeType::LowPassFilter {
+                                        ui.label(egui::RichText::new("Mengatur LPF, Slope, & Mode Audio").strong().size(14.0).color(Color32::from_rgb(15, 23, 42)));
+                                        ui.label(egui::RichText::new("• Geser Slider Cutoff Real-Time (100 Hz s/d 10 kHz):\n  Anda dapat menggeser slider cutoff langsung di atas kartu kanvas atau sidebar kanan seketika tanpa jeda audio.\n\n• Tombol Pilihan Kemiringan Slope (dB/oktaf):\n  - 12dB: Pemotongan lembut natural (Butterworth 2nd-order).\n  - 24dB: Pemotongan tajam standar studio (Linkwitz-Riley 4th-order).\n  - 48dB: Pemotongan brickwall curam untuk isolasi bass murni.\n\n• Kendali Resonansi Fringe Q:\n  Sesuaikan nilai Q (0.5 hingga 2.5) untuk menambah tonjolan resonansi punchy di titik cutoff.\n\n• Perilaku pada Mode Bit-Perfect:\n  Mode Bit-Perfect mewajibkan data lagu dikirim ke DAC murni 1:1 tanpa modifikasi 1 bit pun. Oleh karena itu, saat mode Bit-Perfect aktif, seluruh filter kustom otomatis DILEWATI (bypassed) melalui kawat direct stream hijau langsung.\n\n• Cara Mengaktifkan Efek:\n  Cukup tekan tombol toggle mode ke [Modular FX] / [DSP Active] di bilah atas kanvas. Seluruh filter modular yang tersambung akan seketika memproses suara.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
                                     } else {
                                         ui.label(egui::RichText::new("Mengatur Slider & Mode Audio").strong().size(14.0).color(Color32::from_rgb(15, 23, 42)));
-                                        ui.label(egui::RichText::new("• Geser Slider Cutoff:\n  Anda dapat menggeser slider langsung di atas kartu kanvas dari 100 Hz hingga 10 kHz. Perubahan frekuensi terjadi seketika tanpa jeda dan tanpa perlu me-rebuild graph sinyal.\n\n• Perilaku pada Mode Bit-Perfect:\n  Mode Bit-Perfect mewajibkan data lagu dikirim ke DAC murni 1:1 tanpa modifikasi 1 bit pun. Oleh karena itu, saat mode Bit-Perfect aktif, seluruh filter kustom otomatis DILEWATI (bypassed) melalui kawat jumper abu-abu langsung.\n\n• Cara Mengaktifkan Efek:\n  Cukup klik kartu DSP ENGINE pada kanvas atau tekan tombol toggle mode ke 'DSP Active'. Filter akan seketika kembali memproses suara.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
+                                        ui.label(egui::RichText::new("• Geser Slider & Parameter:\n  Anda dapat menggeser slider langsung di atas kartu kanvas atau sidebar kanan secara real-time tanpa jeda dan tanpa perlu me-rebuild graph sinyal.\n\n• Perilaku pada Mode Bit-Perfect:\n  Mode Bit-Perfect mewajibkan data lagu dikirim ke DAC murni 1:1 tanpa modifikasi 1 bit pun. Oleh karena itu, saat mode Bit-Perfect aktif, seluruh filter kustom otomatis DILEWATI (bypassed) melalui kawat direct stream langsung.\n\n• Cara Mengaktifkan Efek:\n  Cukup tekan tombol toggle mode ke [Modular FX] / [DSP Active] di bilah atas kanvas. Seluruh rantai filter modular yang Anda pasang akan seketika aktif memproses suara.").size(12.0).color(Color32::from_rgb(51, 65, 85)));
                                     }
                                 }
                             }

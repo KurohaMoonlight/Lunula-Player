@@ -5,7 +5,7 @@ pub mod pipeline;
 
 pub use biquad::{soft_limit, BiquadCoeffs, BiquadState};
 pub use effects::{
-    AnalogPreampEffect, BassGuardEffect, CompressorEffect, DynamicLoudnessEffect, GraphicEqEffect, LowPassFilterEffect, MixerEffect, OpticalLevelerEffect,
+    AnalogPreampEffect, BandPassFilterEffect, BassGuardEffect, CompressorEffect, CrossoverHighEffect, CrossoverLowEffect, DynamicLoudnessEffect, GraphicEqEffect, HighPassFilterEffect, LowPassFilterEffect, MixerEffect, OpticalLevelerEffect,
     ParametricBandConfig, ParametricEqEffect, PassthroughEffect, PresetEqEffect, SplitterEffect, SteppedAttenuatorEffect, StereoBalanceEffect, StereoWidenerEffect, TubeWarmerEffect,
     VolumeAttenuatorEffect, VolumeBoosterEffect, EQ_FREQUENCIES,
 };

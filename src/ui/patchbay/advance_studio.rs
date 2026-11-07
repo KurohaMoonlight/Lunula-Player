@@ -211,7 +211,10 @@ impl LunulaApp {
 
         match &node.node_type {
             NodeType::TubeWarmer => self.draw_tube_warmer_inspector(painter, rect, node_id, t),
-            NodeType::LowPassFilter => self.draw_lpf_inspector(painter, rect, node_id, t),
+            NodeType::LowPassFilter => self.draw_lpf_inspector(ui, painter, rect, node_id, t),
+            NodeType::HighPassFilter => self.draw_hpf_inspector(ui, painter, rect, node_id, t),
+            NodeType::BandPassFilter => self.draw_bpf_inspector(ui, painter, rect, node_id, t),
+            NodeType::Crossover => self.draw_crossover_inspector(ui, painter, rect, node_id, t),
             NodeType::SavedEqPreset(name) => self.draw_eq_preset_inspector(ui, painter, rect, name.as_str(), t),
             NodeType::Dsp => self.draw_main_dsp_inspector(painter, rect, t),
             NodeType::Mixer => self.draw_mixer_inspector(painter, rect, node_id, t),
@@ -326,34 +329,52 @@ impl LunulaApp {
         painter.text(c2_rect.min + Vec2::new(10.0, c2_rect.height() - 10.0), egui::Align2::LEFT_BOTTOM, metric_text, egui::FontId::monospace(9.0), Color32::from_rgb(52, 211, 153));
     }
 
-    /// Circuit inspector for Low Pass Filter: Cutoff curve & phase delay
-    fn draw_lpf_inspector(&self, painter: &egui::Painter, rect: Rect, _node_id: usize, _t: f32) {
-        let left_w = (rect.width() * 0.60).clamp(300.0, 600.0);
+    /// Circuit inspector for Low Pass Filter: Cutoff curve & slope/fringe controls
+    fn draw_lpf_inspector(&mut self, ui: &mut egui::Ui, painter: &egui::Painter, rect: Rect, node_id: usize, _t: f32) {
+        let left_w = (rect.width() * 0.52).clamp(280.0, 560.0);
         let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(left_w - 15.0, rect.height() - 20.0));
         let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + left_w + 5.0, rect.min.y + 10.0), Vec2::new(rect.width() - left_w - 15.0, rect.height() - 20.0));
 
-        // Cutoff magnitude curve
+        let Some(node) = self.nodes.iter().find(|n| n.id == node_id).cloned() else { return; };
+        let current_cutoff = if node.param_val > 20.0 { node.param_val } else { 800.0 };
+        let current_slope = if node.sub2.contains("48dB") { 48 } else if node.sub2.contains("24dB") { 24 } else { 12 };
+        let current_fringe = if let Some(idx) = node.sub2.find("Q ") {
+            node.sub2[idx + 2..].split_whitespace().next().and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.707)
+        } else {
+            0.707
+        };
+
+        let accent_col = Color32::from_rgb(52, 211, 153);
+
+        // Column 1: Cutoff magnitude curve
         painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
         painter.rect_stroke(c1_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
 
-        painter.text(c1_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, "📉 LOW-PASS 2-POLE MAGNITUDE ROLL-OFF", egui::FontId::proportional(10.5), Color32::from_rgb(52, 211, 153));
+        let slope_lbl = match current_slope { 48 => "-48 dB/oct (8-Pole)", 24 => "-24 dB/oct (4-Pole)", _ => "-12 dB/oct (2-Pole)" };
+        painter.text(c1_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, format!("📉 LOW-PASS ROLL-OFF ({})", slope_lbl), egui::FontId::proportional(10.5), accent_col);
 
         let g_left = c1_rect.min.x + 36.0;
         let g_right = c1_rect.max.x - 12.0;
         let g_top = c1_rect.min.y + 28.0;
-        let g_bottom = c1_rect.max.y - 18.0;
+        let g_bottom = c1_rect.max.y - 24.0;
         let g_w = g_right - g_left;
         let g_h = g_bottom - g_top;
 
-        let cutoff_frac = 0.50;
-        let cutoff_x = g_left + g_w * cutoff_frac;
+        // dB Grid Reference lines
+        painter.line_segment([Pos2::new(g_left, g_top + 14.0), Pos2::new(g_right, g_top + 14.0)], Stroke::new(0.8, Color32::from_rgba_premultiplied(148, 163, 184, 45)));
+        painter.text(Pos2::new(g_left - 4.0, g_top + 14.0), egui::Align2::RIGHT_CENTER, "0 dB", egui::FontId::monospace(8.0), Color32::from_rgb(148, 163, 184));
+        painter.line_segment([Pos2::new(g_left, g_top + 14.0 + g_h * 0.4), Pos2::new(g_right, g_top + 14.0 + g_h * 0.4)], Stroke::new(0.8, Color32::from_rgba_premultiplied(51, 65, 85, 45)));
+        painter.text(Pos2::new(g_left - 4.0, g_top + 14.0 + g_h * 0.4), egui::Align2::RIGHT_CENTER, "-12 dB", egui::FontId::monospace(8.0), Color32::from_rgb(100, 116, 139));
+
+        let norm_cutoff = ((current_cutoff / 20.0).log10() / (1000.0_f32).log10()).clamp(0.05, 0.95);
+        let cutoff_x = g_left + g_w * norm_cutoff;
 
         // Vertical dashed cutoff line
         let mut cy_walk = g_top + 4.0;
         while cy_walk < g_bottom {
             painter.line_segment(
                 [Pos2::new(cutoff_x, cy_walk), Pos2::new(cutoff_x, (cy_walk + 4.0).min(g_bottom))],
-                Stroke::new(1.0, Color32::from_rgb(52, 211, 153)),
+                Stroke::new(1.0, accent_col),
             );
             cy_walk += 7.0;
         }
@@ -364,53 +385,692 @@ impl LunulaApp {
         painter.text(
             Pos2::new((cutoff_x + g_right) * 0.5, g_top + 10.0),
             egui::Align2::CENTER_CENTER,
-            "WILAYAH TERPOTONG (-12dB/oct)",
+            format!("TERPOTONG (-{}dB/oct)", current_slope),
             egui::FontId::proportional(8.0),
             Color32::from_rgba_premultiplied(248, 113, 113, 180),
         );
 
         let steps = 60;
         let mut pts = Vec::with_capacity(steps + 1);
+        let slope_power = match current_slope { 48 => 3.2, 24 => 2.3, _ => 1.5 };
+        let resonance_bump = ((current_fringe - 0.707).max(0.0) * 12.0).min(18.0);
+
         for s in 0..=steps {
             let frac = s as f32 / steps as f32;
             let x = g_left + frac * g_w;
-            let y = if frac <= cutoff_frac {
-                g_top + 14.0
+            let y = if frac <= norm_cutoff {
+                let dist = (norm_cutoff - frac) / norm_cutoff.max(0.01);
+                let bump = if dist < 0.25 { (1.0 - dist / 0.25) * resonance_bump } else { 0.0 };
+                (g_top + 14.0) - bump
             } else {
-                let over = (frac - cutoff_frac) / (1.0 - cutoff_frac);
-                (g_top + 14.0) + over.powf(1.6) * (g_h - 22.0)
+                let over = (frac - norm_cutoff) / (1.0 - norm_cutoff).max(0.01);
+                (g_top + 14.0) + over.powf(slope_power) * (g_h - 22.0)
             };
-            pts.push(Pos2::new(x, y));
+            pts.push(Pos2::new(x, y.min(g_bottom)));
         }
 
         painter.add(egui::Shape::line(pts.clone(), Stroke::new(3.0, Color32::from_rgba_premultiplied(52, 211, 153, 80))));
-        painter.add(egui::Shape::line(pts, Stroke::new(2.0, Color32::from_rgb(52, 211, 153))));
+        painter.add(egui::Shape::line(pts, Stroke::new(2.0, accent_col)));
 
-        // Cutoff knee point
+        // Cutoff knee point with prominent luminous badge
         let knee_p = Pos2::new(cutoff_x, g_top + 14.0);
-        painter.circle_filled(knee_p, 4.0, Color32::WHITE);
-        painter.circle_stroke(knee_p, 6.0, Stroke::new(1.2, Color32::from_rgb(52, 211, 153)));
-        painter.text(knee_p - Vec2::new(0.0, 10.0), egui::Align2::CENTER_BOTTOM, "fc: 800 Hz (-3dB)", egui::FontId::monospace(8.5), Color32::WHITE);
+        painter.circle_filled(knee_p, 4.5, Color32::WHITE);
+        painter.circle_stroke(knee_p, 6.5, Stroke::new(1.5, accent_col));
+        let freq_str = if current_cutoff >= 1000.0 { format!("{:.1} kHz", current_cutoff / 1000.0) } else { format!("{:.0} Hz", current_cutoff) };
+        let knee_badge_rect = Rect::from_center_size(Pos2::new(knee_p.x, knee_p.y - 14.0), Vec2::new(94.0, 18.0));
+        painter.rect_filled(knee_badge_rect, 4.0, Color32::from_rgb(15, 23, 42));
+        painter.rect_stroke(knee_badge_rect, 4.0, Stroke::new(1.2, accent_col), egui::StrokeKind::Outside);
+        painter.text(knee_badge_rect.center(), egui::Align2::CENTER_CENTER, format!("fc: {} (-3.0dB)", freq_str), egui::FontId::proportional(10.0), Color32::WHITE);
 
-        // Column 2: Filter Specifications
+        // High-Contrast Telemetry HUD Bar at bottom of Column 1
+        let hud_rect = Rect::from_min_max(Pos2::new(c1_rect.min.x + 8.0, c1_rect.max.y - 25.0), Pos2::new(c1_rect.max.x - 8.0, c1_rect.max.y - 3.0));
+        painter.rect_filled(hud_rect, 4.0, Color32::from_rgb(15, 23, 42));
+        painter.rect_stroke(hud_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(51, 65, 85)), egui::StrokeKind::Inside);
+        let q_note = if current_fringe > 1.0 { format!("(Peak +{:.1}dB)", (current_fringe - 1.0) * 4.0) } else { "(Butterworth Flat)".to_string() };
+        painter.text(
+            hud_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            format!("📡 Cutoff: {}   •   📐 Slope: -{} dB/oct   •   ⚡ Q: {:.2} {}   •   🛡️ Atenuasi @ 1-Oct: -{}.0 dB", freq_str, current_slope, current_fringe, q_note, current_slope),
+            egui::FontId::proportional(10.5),
+            Color32::from_rgb(52, 211, 153),
+        );
+
+        // Column 2: Interactive Controls
         painter.rect_filled(c2_rect, 6.0, Color32::from_rgb(12, 17, 29));
         painter.rect_stroke(c2_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
 
-        painter.text(c2_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, "FILTER PARAMETERS", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
+        let controls_rect = Rect::from_min_max(Pos2::new(c2_rect.min.x + 10.0, c2_rect.min.y + 10.0), Pos2::new(c2_rect.max.x - 10.0, c2_rect.max.y - 6.0));
+        let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(controls_rect));
 
-        let specs = [
-            ("Topologi:", "2nd-Order Biquad DF2T"),
-            ("Kemiringan Slope:", "-12 dB / Oktaf"),
-            ("Q-Factor:", "0.707 (Butterworth Flat)"),
-            ("Pergeseran Fasa:", "-90° pada 800 Hz"),
-            ("Delay Transien:", "0.31 ms (Linear Transition)"),
-        ];
+        let mut new_cutoff = current_cutoff;
+        let mut new_slope = current_slope;
+        let mut new_fringe = current_fringe;
 
-        let start_y = c2_rect.min.y + 28.0;
-        for (i, (lbl, val)) in specs.iter().enumerate() {
-            let py = start_y + i as f32 * 17.0;
-            painter.text(Pos2::new(c2_rect.min.x + 10.0, py), egui::Align2::LEFT_TOP, *lbl, egui::FontId::proportional(9.0), Color32::from_rgb(148, 163, 184));
-            painter.text(Pos2::new(c2_rect.max.x - 10.0, py), egui::Align2::RIGHT_TOP, *val, egui::FontId::monospace(9.0), Color32::WHITE);
+        child_ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("CUTOFF FREKUENSI:").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
+            ui.label(egui::RichText::new(&freq_str).strong().size(13.5).color(accent_col));
+            ui.label(egui::RichText::new(format!("• Slope: -{} dB/oct", current_slope)).strong().size(11.0).color(Color32::WHITE));
+        });
+
+        let mut log_val = (new_cutoff / 20.0).log10();
+        let log_slider = egui::Slider::new(&mut log_val, 0.0..=3.0).show_value(false);
+        if child_ui.add_sized(Vec2::new(controls_rect.width(), 16.0), log_slider).changed() {
+            new_cutoff = (20.0 * 10.0_f32.powf(log_val)).clamp(20.0, 20000.0);
+        }
+
+        child_ui.horizontal(|ui| {
+            let presets = [("300 Hz", 300.0), ("800 Hz", 800.0), ("2.5 kHz", 2500.0), ("8.0 kHz", 8000.0)];
+            for (name, val) in presets {
+                let is_sel = (new_cutoff - val).abs() < 20.0;
+                let bg = if is_sel { accent_col } else { Color32::from_rgb(30, 41, 59) };
+                let text_col = if is_sel { Color32::from_rgb(15, 23, 42) } else { Color32::from_rgb(241, 245, 249) };
+                let stroke_col = if is_sel { Color32::WHITE } else { Color32::from_rgb(100, 116, 139) };
+                let btn = egui::Button::new(egui::RichText::new(name).size(10.5).strong().color(text_col))
+                    .fill(bg)
+                    .stroke(Stroke::new(1.2, stroke_col))
+                    .corner_radius(4.0);
+                if ui.add(btn).clicked() {
+                    new_cutoff = val;
+                }
+            }
+        });
+
+        child_ui.add_space(5.0);
+        child_ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Kemiringan Slope:").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
+            for &sl in &[12, 24, 48] {
+                let lbl = format!("-{} dB/oct", sl);
+                let is_sel = new_slope == sl;
+                let bg = if is_sel { accent_col } else { Color32::from_rgb(30, 41, 59) };
+                let text_col = if is_sel { Color32::from_rgb(15, 23, 42) } else { Color32::from_rgb(241, 245, 249) };
+                let stroke_col = if is_sel { Color32::WHITE } else { Color32::from_rgb(100, 116, 139) };
+                let btn = egui::Button::new(egui::RichText::new(lbl).size(10.5).strong().color(text_col))
+                    .fill(bg)
+                    .stroke(Stroke::new(1.2, stroke_col))
+                    .corner_radius(4.0);
+                if ui.add(btn).clicked() {
+                    new_slope = sl;
+                }
+            }
+        });
+
+        child_ui.add_space(5.0);
+        child_ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Fringe Q (Resonansi):").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
+            let q_desc = if new_fringe > 1.2 { "(Peak Punchy)" } else if new_fringe >= 0.70 { "(Butterworth)" } else { "(Gentle)" };
+            ui.label(egui::RichText::new(format!("{:.2} {}", new_fringe, q_desc)).strong().size(11.0).color(accent_col));
+        });
+        let q_slider = egui::Slider::new(&mut new_fringe, 0.20..=4.00).show_value(false);
+        child_ui.add_sized(Vec2::new(controls_rect.width(), 16.0), q_slider);
+
+        // Apply parameter updates
+        let cutoff_changed = (new_cutoff - current_cutoff).abs() > 1.0;
+        let slope_changed = new_slope != current_slope;
+        let fringe_changed = (new_fringe - current_fringe).abs() > 0.02;
+
+        if cutoff_changed || slope_changed || fringe_changed {
+            if let Some(n) = self.nodes.iter_mut().find(|n| n.id == node_id) {
+                n.param_val = new_cutoff;
+                n.sub1 = if new_cutoff >= 1000.0 { format!("Cutoff {:.1} kHz", new_cutoff / 1000.0) } else { format!("Cutoff {:.0} Hz", new_cutoff) };
+                n.sub2 = format!("Slope {}dB • Q {:.2}", new_slope, new_fringe);
+            }
+            if let Some(ref engine) = self.audio_engine {
+                if cutoff_changed { engine.set_node_param(node_id as u32, 0, new_cutoff); }
+                if slope_changed { engine.set_node_param(node_id as u32, 1, new_slope as f32); }
+                if fringe_changed { engine.set_node_param(node_id as u32, 2, new_fringe); }
+            }
+        }
+    }
+
+    /// Circuit inspector for High Pass Filter: Low-cut curve & slope/fringe controls
+    fn draw_hpf_inspector(&mut self, ui: &mut egui::Ui, painter: &egui::Painter, rect: Rect, node_id: usize, _t: f32) {
+        let left_w = (rect.width() * 0.52).clamp(280.0, 560.0);
+        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(left_w - 15.0, rect.height() - 20.0));
+        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + left_w + 5.0, rect.min.y + 10.0), Vec2::new(rect.width() - left_w - 15.0, rect.height() - 20.0));
+
+        let Some(node) = self.nodes.iter().find(|n| n.id == node_id).cloned() else { return; };
+        let current_cutoff = if node.param_val > 10.0 { node.param_val } else { 80.0 };
+        let current_slope = if node.sub2.contains("48dB") { 48 } else if node.sub2.contains("24dB") { 24 } else { 12 };
+        let current_fringe = if let Some(idx) = node.sub2.find("Q ") {
+            node.sub2[idx + 2..].split_whitespace().next().and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.707)
+        } else {
+            0.707
+        };
+
+        let accent_col = Color32::from_rgb(56, 189, 248);
+
+        // Column 1: High-Pass Magnitude Curve
+        painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
+        painter.rect_stroke(c1_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
+
+        let slope_lbl = match current_slope { 48 => "+48 dB/oct (8-Pole)", 24 => "+24 dB/oct (4-Pole)", _ => "+12 dB/oct (2-Pole)" };
+        painter.text(c1_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, format!("🏔️ HIGH-PASS ROLL-OFF ({})", slope_lbl), egui::FontId::proportional(10.5), accent_col);
+
+        let g_left = c1_rect.min.x + 36.0;
+        let g_right = c1_rect.max.x - 12.0;
+        let g_top = c1_rect.min.y + 28.0;
+        let g_bottom = c1_rect.max.y - 24.0;
+        let g_w = g_right - g_left;
+        let g_h = g_bottom - g_top;
+
+        // dB Grid Reference lines
+        painter.line_segment([Pos2::new(g_left, g_top + 14.0), Pos2::new(g_right, g_top + 14.0)], Stroke::new(0.8, Color32::from_rgba_premultiplied(148, 163, 184, 45)));
+        painter.text(Pos2::new(g_left - 4.0, g_top + 14.0), egui::Align2::RIGHT_CENTER, "0 dB", egui::FontId::monospace(8.0), Color32::from_rgb(148, 163, 184));
+        painter.line_segment([Pos2::new(g_left, g_top + 14.0 + g_h * 0.4), Pos2::new(g_right, g_top + 14.0 + g_h * 0.4)], Stroke::new(0.8, Color32::from_rgba_premultiplied(51, 65, 85, 45)));
+        painter.text(Pos2::new(g_left - 4.0, g_top + 14.0 + g_h * 0.4), egui::Align2::RIGHT_CENTER, "-12 dB", egui::FontId::monospace(8.0), Color32::from_rgb(100, 116, 139));
+
+        let norm_cutoff = ((current_cutoff / 20.0).log10() / (1000.0_f32).log10()).clamp(0.05, 0.95);
+        let cutoff_x = g_left + g_w * norm_cutoff;
+
+        // Vertical dashed cutoff line
+        let mut cy_walk = g_top + 4.0;
+        while cy_walk < g_bottom {
+            painter.line_segment(
+                [Pos2::new(cutoff_x, cy_walk), Pos2::new(cutoff_x, (cy_walk + 4.0).min(g_bottom))],
+                Stroke::new(1.0, accent_col),
+            );
+            cy_walk += 7.0;
+        }
+
+        // Shaded Sub-bass cut region (left side of cutoff)
+        let stopband_rect = Rect::from_min_max(Pos2::new(g_left, g_top), Pos2::new(cutoff_x, g_bottom));
+        painter.rect_filled(stopband_rect, 0.0, Color32::from_rgba_premultiplied(239, 68, 68, 16));
+        painter.text(
+            Pos2::new((g_left + cutoff_x) * 0.5, g_top + 10.0),
+            egui::Align2::CENTER_CENTER,
+            format!("SUB-BASS CUT ({}dB/oct)", current_slope),
+            egui::FontId::proportional(8.0),
+            Color32::from_rgba_premultiplied(248, 113, 113, 180),
+        );
+
+        let steps = 60;
+        let mut pts = Vec::with_capacity(steps + 1);
+        let slope_power = match current_slope { 48 => 3.2, 24 => 2.3, _ => 1.5 };
+        let resonance_bump = ((current_fringe - 0.707).max(0.0) * 12.0).min(18.0);
+
+        for s in 0..=steps {
+            let frac = s as f32 / steps as f32;
+            let x = g_left + frac * g_w;
+            let y = if frac >= norm_cutoff {
+                let dist = (frac - norm_cutoff) / (1.0 - norm_cutoff).max(0.01);
+                let bump = if dist < 0.25 { (1.0 - dist / 0.25) * resonance_bump } else { 0.0 };
+                (g_top + 14.0) - bump
+            } else {
+                let under = (norm_cutoff - frac) / norm_cutoff.max(0.01);
+                (g_top + 14.0) + under.powf(slope_power) * (g_h - 22.0)
+            };
+            pts.push(Pos2::new(x, y.min(g_bottom)));
+        }
+
+        painter.add(egui::Shape::line(pts.clone(), Stroke::new(3.0, Color32::from_rgba_premultiplied(56, 189, 248, 80))));
+        painter.add(egui::Shape::line(pts, Stroke::new(2.0, accent_col)));
+
+        // Cutoff knee point with prominent luminous badge
+        let knee_p = Pos2::new(cutoff_x, g_top + 14.0);
+        painter.circle_filled(knee_p, 4.5, Color32::WHITE);
+        painter.circle_stroke(knee_p, 6.5, Stroke::new(1.5, accent_col));
+        let freq_str = if current_cutoff >= 1000.0 { format!("{:.1} kHz", current_cutoff / 1000.0) } else { format!("{:.0} Hz", current_cutoff) };
+        let knee_badge_rect = Rect::from_center_size(Pos2::new(knee_p.x, knee_p.y - 14.0), Vec2::new(94.0, 18.0));
+        painter.rect_filled(knee_badge_rect, 4.0, Color32::from_rgb(15, 23, 42));
+        painter.rect_stroke(knee_badge_rect, 4.0, Stroke::new(1.2, accent_col), egui::StrokeKind::Outside);
+        painter.text(knee_badge_rect.center(), egui::Align2::CENTER_CENTER, format!("fc: {} (-3.0dB)", freq_str), egui::FontId::proportional(10.0), Color32::WHITE);
+
+        // High-Contrast Telemetry HUD Bar at bottom of Column 1
+        let hud_rect = Rect::from_min_max(Pos2::new(c1_rect.min.x + 8.0, c1_rect.max.y - 25.0), Pos2::new(c1_rect.max.x - 8.0, c1_rect.max.y - 3.0));
+        painter.rect_filled(hud_rect, 4.0, Color32::from_rgb(15, 23, 42));
+        painter.rect_stroke(hud_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(51, 65, 85)), egui::StrokeKind::Inside);
+        let q_note = if current_fringe > 1.0 { format!("(Peak +{:.1}dB)", (current_fringe - 1.0) * 4.0) } else { "(Sub-Sonic Clean)".to_string() };
+        painter.text(
+            hud_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            format!("📡 Cutoff: {}   •   📐 Slope: +{} dB/oct   •   ⚡ Q: {:.2} {}   •   🛡️ Reduksi @ 1/2-Oct: -{}.0 dB", freq_str, current_slope, current_fringe, q_note, current_slope),
+            egui::FontId::proportional(10.5),
+            Color32::from_rgb(56, 189, 248),
+        );
+
+        // Column 2: Controls
+        painter.rect_filled(c2_rect, 6.0, Color32::from_rgb(12, 17, 29));
+        painter.rect_stroke(c2_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
+
+        let controls_rect = Rect::from_min_max(Pos2::new(c2_rect.min.x + 10.0, c2_rect.min.y + 10.0), Pos2::new(c2_rect.max.x - 10.0, c2_rect.max.y - 6.0));
+        let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(controls_rect));
+
+        let mut new_cutoff = current_cutoff;
+        let mut new_slope = current_slope;
+        let mut new_fringe = current_fringe;
+
+        child_ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("CUTOFF SUB-BASS:").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
+            ui.label(egui::RichText::new(&freq_str).strong().size(13.5).color(accent_col));
+            ui.label(egui::RichText::new(format!("• Slope: +{} dB/oct", current_slope)).strong().size(11.0).color(Color32::WHITE));
+        });
+
+        let mut log_val = (new_cutoff / 20.0).log10();
+        let log_slider = egui::Slider::new(&mut log_val, 0.0..=3.0).show_value(false);
+        if child_ui.add_sized(Vec2::new(controls_rect.width(), 16.0), log_slider).changed() {
+            new_cutoff = (20.0 * 10.0_f32.powf(log_val)).clamp(20.0, 20000.0);
+        }
+
+        child_ui.horizontal(|ui| {
+            let presets = [("40 Hz", 40.0), ("80 Hz (Vocal)", 80.0), ("160 Hz", 160.0), ("500 Hz", 500.0)];
+            for (name, val) in presets {
+                let is_sel = (new_cutoff - val).abs() < 5.0;
+                let bg = if is_sel { accent_col } else { Color32::from_rgb(30, 41, 59) };
+                let text_col = if is_sel { Color32::from_rgb(15, 23, 42) } else { Color32::from_rgb(241, 245, 249) };
+                let stroke_col = if is_sel { Color32::WHITE } else { Color32::from_rgb(100, 116, 139) };
+                let btn = egui::Button::new(egui::RichText::new(name).size(10.5).strong().color(text_col))
+                    .fill(bg)
+                    .stroke(Stroke::new(1.2, stroke_col))
+                    .corner_radius(4.0);
+                if ui.add(btn).clicked() {
+                    new_cutoff = val;
+                }
+            }
+        });
+
+        child_ui.add_space(5.0);
+        child_ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Kemiringan Slope:").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
+            for &sl in &[12, 24, 48] {
+                let lbl = format!("+{} dB/oct", sl);
+                let is_sel = new_slope == sl;
+                let bg = if is_sel { accent_col } else { Color32::from_rgb(30, 41, 59) };
+                let text_col = if is_sel { Color32::from_rgb(15, 23, 42) } else { Color32::from_rgb(241, 245, 249) };
+                let stroke_col = if is_sel { Color32::WHITE } else { Color32::from_rgb(100, 116, 139) };
+                let btn = egui::Button::new(egui::RichText::new(lbl).size(10.5).strong().color(text_col))
+                    .fill(bg)
+                    .stroke(Stroke::new(1.2, stroke_col))
+                    .corner_radius(4.0);
+                if ui.add(btn).clicked() {
+                    new_slope = sl;
+                }
+            }
+        });
+
+        child_ui.add_space(5.0);
+        child_ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Fringe Q (Resonansi):").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
+            let q_desc = if new_fringe > 1.2 { "(Peak Punchy)" } else if new_fringe >= 0.70 { "(Butterworth)" } else { "(Sub-Sonic Clean)" };
+            ui.label(egui::RichText::new(format!("{:.2} {}", new_fringe, q_desc)).strong().size(11.0).color(accent_col));
+        });
+        let q_slider = egui::Slider::new(&mut new_fringe, 0.20..=4.00).show_value(false);
+        child_ui.add_sized(Vec2::new(controls_rect.width(), 16.0), q_slider);
+
+        let cutoff_changed = (new_cutoff - current_cutoff).abs() > 1.0;
+        let slope_changed = new_slope != current_slope;
+        let fringe_changed = (new_fringe - current_fringe).abs() > 0.02;
+
+        if cutoff_changed || slope_changed || fringe_changed {
+            if let Some(n) = self.nodes.iter_mut().find(|n| n.id == node_id) {
+                n.param_val = new_cutoff;
+                n.sub1 = if new_cutoff >= 1000.0 { format!("Cutoff {:.1} kHz", new_cutoff / 1000.0) } else { format!("Cutoff {:.0} Hz", new_cutoff) };
+                n.sub2 = format!("Slope {}dB • Q {:.2}", new_slope, new_fringe);
+            }
+            if let Some(ref engine) = self.audio_engine {
+                if cutoff_changed { engine.set_node_param(node_id as u32, 0, new_cutoff); }
+                if slope_changed { engine.set_node_param(node_id as u32, 1, new_slope as f32); }
+                if fringe_changed { engine.set_node_param(node_id as u32, 2, new_fringe); }
+            }
+        }
+    }
+
+    /// Circuit inspector for Band Pass Filter: Peak band curve & bandwidth/slope controls
+    fn draw_bpf_inspector(&mut self, ui: &mut egui::Ui, painter: &egui::Painter, rect: Rect, node_id: usize, _t: f32) {
+        let left_w = (rect.width() * 0.52).clamp(280.0, 560.0);
+        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(left_w - 15.0, rect.height() - 20.0));
+        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + left_w + 5.0, rect.min.y + 10.0), Vec2::new(rect.width() - left_w - 15.0, rect.height() - 20.0));
+
+        let Some(node) = self.nodes.iter().find(|n| n.id == node_id).cloned() else { return; };
+        let current_center = if node.param_val > 20.0 { node.param_val } else { 1000.0 };
+        let current_slope = if node.sub2.contains("24dB") { 24 } else { 12 };
+        let current_fringe = if let Some(idx) = node.sub2.find("Q ") {
+            node.sub2[idx + 2..].split_whitespace().next().and_then(|s| s.parse::<f32>().ok()).unwrap_or(1.414)
+        } else {
+            1.414
+        };
+
+        let accent_col = Color32::from_rgb(245, 158, 11);
+
+        // Column 1: Band-Pass Bell Curve
+        painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
+        painter.rect_stroke(c1_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
+
+        let slope_lbl = if current_slope == 24 { "4-Pole (24 dB/oct)" } else { "2-Pole (12 dB/oct)" };
+        painter.text(c1_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, format!("🎯 BAND-PASS (0 dB PEAK GAIN • {})", slope_lbl), egui::FontId::proportional(10.5), accent_col);
+
+        let g_left = c1_rect.min.x + 36.0;
+        let g_right = c1_rect.max.x - 12.0;
+        let g_top = c1_rect.min.y + 28.0;
+        let g_bottom = c1_rect.max.y - 24.0;
+        let g_w = g_right - g_left;
+        let g_h = g_bottom - g_top;
+
+        // dB Grid Reference lines
+        painter.line_segment([Pos2::new(g_left, g_top + 14.0), Pos2::new(g_right, g_top + 14.0)], Stroke::new(0.8, Color32::from_rgba_premultiplied(148, 163, 184, 45)));
+        painter.text(Pos2::new(g_left - 4.0, g_top + 14.0), egui::Align2::RIGHT_CENTER, "0 dB", egui::FontId::monospace(8.0), Color32::from_rgb(148, 163, 184));
+        painter.line_segment([Pos2::new(g_left, g_top + 14.0 + g_h * 0.4), Pos2::new(g_right, g_top + 14.0 + g_h * 0.4)], Stroke::new(0.8, Color32::from_rgba_premultiplied(51, 65, 85, 45)));
+        painter.text(Pos2::new(g_left - 4.0, g_top + 14.0 + g_h * 0.4), egui::Align2::RIGHT_CENTER, "-12 dB", egui::FontId::monospace(8.0), Color32::from_rgb(100, 116, 139));
+
+        let norm_center = ((current_center / 20.0).log10() / (1000.0_f32).log10()).clamp(0.05, 0.95);
+        let center_x = g_left + g_w * norm_center;
+
+        // Vertical dashed center line
+        let mut cy_walk = g_top + 4.0;
+        while cy_walk < g_bottom {
+            painter.line_segment(
+                [Pos2::new(center_x, cy_walk), Pos2::new(center_x, (cy_walk + 4.0).min(g_bottom))],
+                Stroke::new(1.0, accent_col),
+            );
+            cy_walk += 7.0;
+        }
+
+        let steps = 60;
+        let mut pts = Vec::with_capacity(steps + 1);
+        let bw = (0.22 / current_fringe.max(0.2)).clamp(0.03, 0.50);
+
+        for s in 0..=steps {
+            let frac = s as f32 / steps as f32;
+            let x = g_left + frac * g_w;
+            let dist = ((frac - norm_center) / bw).abs();
+            let y = (g_top + 14.0) + (1.0 - (-dist * dist).exp()) * (g_h - 22.0);
+            pts.push(Pos2::new(x, y.min(g_bottom)));
+        }
+
+        painter.add(egui::Shape::line(pts.clone(), Stroke::new(3.0, Color32::from_rgba_premultiplied(245, 158, 11, 80))));
+        painter.add(egui::Shape::line(pts, Stroke::new(2.0, accent_col)));
+
+        // Center peak point with prominent luminous badge
+        let peak_p = Pos2::new(center_x, g_top + 14.0);
+        painter.circle_filled(peak_p, 4.5, Color32::WHITE);
+        painter.circle_stroke(peak_p, 6.5, Stroke::new(1.5, accent_col));
+        let freq_str = if current_center >= 1000.0 { format!("{:.1} kHz", current_center / 1000.0) } else { format!("{:.0} Hz", current_center) };
+        let peak_badge_rect = Rect::from_center_size(Pos2::new(peak_p.x, peak_p.y - 14.0), Vec2::new(94.0, 18.0));
+        painter.rect_filled(peak_badge_rect, 4.0, Color32::from_rgb(15, 23, 42));
+        painter.rect_stroke(peak_badge_rect, 4.0, Stroke::new(1.2, accent_col), egui::StrokeKind::Outside);
+        painter.text(peak_badge_rect.center(), egui::Align2::CENTER_CENTER, format!("f0: {} (0.0 dB)", freq_str), egui::FontId::proportional(10.0), Color32::WHITE);
+
+        // High-Contrast Telemetry HUD Bar at bottom of Column 1
+        let hud_rect = Rect::from_min_max(Pos2::new(c1_rect.min.x + 8.0, c1_rect.max.y - 25.0), Pos2::new(c1_rect.max.x - 8.0, c1_rect.max.y - 3.0));
+        painter.rect_filled(hud_rect, 4.0, Color32::from_rgb(15, 23, 42));
+        painter.rect_stroke(hud_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(51, 65, 85)), egui::StrokeKind::Inside);
+        let bw_oct = 1.0 / current_fringe.max(0.1);
+        painter.text(
+            hud_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            format!("📡 Pusat: {}   •   📐 Kemiringan: ±{} dB/oct   •   ⚡ Q: {:.2} (BW: {:.2} Oct)   •   🛡️ 0.0 dB Normal", freq_str, current_slope, current_fringe, bw_oct),
+            egui::FontId::proportional(10.5),
+            Color32::from_rgb(251, 191, 36),
+        );
+
+        // Column 2: Controls
+        painter.rect_filled(c2_rect, 6.0, Color32::from_rgb(12, 17, 29));
+        painter.rect_stroke(c2_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
+
+        let controls_rect = Rect::from_min_max(Pos2::new(c2_rect.min.x + 10.0, c2_rect.min.y + 10.0), Pos2::new(c2_rect.max.x - 10.0, c2_rect.max.y - 6.0));
+        let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(controls_rect));
+
+        let mut new_center = current_center;
+        let mut new_slope = current_slope;
+        let mut new_fringe = current_fringe;
+
+        child_ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("FREKUENSI PUSAT (f0):").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
+            ui.label(egui::RichText::new(&freq_str).strong().size(13.5).color(accent_col));
+            ui.label(egui::RichText::new(format!("• Slope: ±{} dB/oct", current_slope)).strong().size(11.0).color(Color32::WHITE));
+        });
+
+        let mut log_val = (new_center / 20.0).log10();
+        let log_slider = egui::Slider::new(&mut log_val, 0.0..=3.0).show_value(false);
+        if child_ui.add_sized(Vec2::new(controls_rect.width(), 16.0), log_slider).changed() {
+            new_center = (20.0 * 10.0_f32.powf(log_val)).clamp(20.0, 20000.0);
+        }
+
+        child_ui.horizontal(|ui| {
+            let presets = [("300 Hz", 300.0), ("1.0 kHz (Vocal)", 1000.0), ("3.0 kHz", 3000.0), ("8.0 kHz", 8000.0)];
+            for (name, val) in presets {
+                let is_sel = (new_center - val).abs() < 25.0;
+                let bg = if is_sel { accent_col } else { Color32::from_rgb(30, 41, 59) };
+                let text_col = if is_sel { Color32::from_rgb(15, 23, 42) } else { Color32::from_rgb(241, 245, 249) };
+                let stroke_col = if is_sel { Color32::WHITE } else { Color32::from_rgb(100, 116, 139) };
+                let btn = egui::Button::new(egui::RichText::new(name).size(10.5).strong().color(text_col))
+                    .fill(bg)
+                    .stroke(Stroke::new(1.2, stroke_col))
+                    .corner_radius(4.0);
+                if ui.add(btn).clicked() {
+                    new_center = val;
+                }
+            }
+        });
+
+        child_ui.add_space(5.0);
+        child_ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Kemiringan Slope:").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
+            for &sl in &[12, 24] {
+                let lbl = format!("±{} dB/oct", sl);
+                let is_sel = new_slope == sl;
+                let bg = if is_sel { accent_col } else { Color32::from_rgb(30, 41, 59) };
+                let text_col = if is_sel { Color32::from_rgb(15, 23, 42) } else { Color32::from_rgb(241, 245, 249) };
+                let stroke_col = if is_sel { Color32::WHITE } else { Color32::from_rgb(100, 116, 139) };
+                let btn = egui::Button::new(egui::RichText::new(lbl).size(10.5).strong().color(text_col))
+                    .fill(bg)
+                    .stroke(Stroke::new(1.2, stroke_col))
+                    .corner_radius(4.0);
+                if ui.add(btn).clicked() {
+                    new_slope = sl;
+                }
+            }
+        });
+
+        child_ui.add_space(5.0);
+        child_ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Fringe Q / Bandwidth:").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
+            let bw_val = 1.0 / new_fringe.max(0.1);
+            ui.label(egui::RichText::new(format!("{:.2} (BW: {:.2} Oct)", new_fringe, bw_val)).strong().size(11.0).color(accent_col));
+        });
+        let q_slider = egui::Slider::new(&mut new_fringe, 0.20..=10.00).show_value(false);
+        child_ui.add_sized(Vec2::new(controls_rect.width(), 16.0), q_slider);
+
+        let center_changed = (new_center - current_center).abs() > 1.0;
+        let slope_changed = new_slope != current_slope;
+        let fringe_changed = (new_fringe - current_fringe).abs() > 0.05;
+
+        if center_changed || slope_changed || fringe_changed {
+            if let Some(n) = self.nodes.iter_mut().find(|n| n.id == node_id) {
+                n.param_val = new_center;
+                n.sub1 = if new_center >= 1000.0 { format!("Center {:.1} kHz", new_center / 1000.0) } else { format!("Center {:.0} Hz", new_center) };
+                n.sub2 = format!("Slope {}dB • Q {:.2}", new_slope, new_fringe);
+            }
+            if let Some(ref engine) = self.audio_engine {
+                if center_changed { engine.set_node_param(node_id as u32, 0, new_center); }
+                if slope_changed { engine.set_node_param(node_id as u32, 1, new_slope as f32); }
+                if fringe_changed { engine.set_node_param(node_id as u32, 2, new_fringe); }
+            }
+        }
+    }
+
+    /// Circuit inspector for 2-Way Linkwitz-Riley Crossover: Dual LP/HP transfer curves crossing at -6 dB
+    fn draw_crossover_inspector(&mut self, ui: &mut egui::Ui, painter: &egui::Painter, rect: Rect, node_id: usize, _t: f32) {
+        let left_w = (rect.width() * 0.52).clamp(280.0, 560.0);
+        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(left_w - 15.0, rect.height() - 20.0));
+        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + left_w + 5.0, rect.min.y + 10.0), Vec2::new(rect.width() - left_w - 15.0, rect.height() - 20.0));
+
+        let Some(node) = self.nodes.iter().find(|n| n.id == node_id).cloned() else { return; };
+        let current_xover = if node.param_val > 20.0 { node.param_val } else { 500.0 };
+        let is_inverted = node.sub2.contains("Invert");
+
+        let accent_col = Color32::from_rgb(168, 85, 247);
+
+        // Column 1: Dual Crossover Curves (LR4 -24 dB/oct)
+        painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
+        painter.rect_stroke(c1_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
+
+        painter.text(c1_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, "✂️ LINKWITZ-RILEY LR4 CROSSOVER (-24 dB/oct)", egui::FontId::proportional(10.5), accent_col);
+
+        let g_left = c1_rect.min.x + 36.0;
+        let g_right = c1_rect.max.x - 12.0;
+        let g_top = c1_rect.min.y + 28.0;
+        let g_bottom = c1_rect.max.y - 24.0;
+        let g_w = g_right - g_left;
+        let g_h = g_bottom - g_top;
+
+        // Flat 0 dB Summation Line
+        painter.line_segment(
+            [Pos2::new(g_left, g_top + 8.0), Pos2::new(g_right, g_top + 8.0)],
+            Stroke::new(1.2, Color32::from_rgba_premultiplied(168, 85, 247, 100)),
+        );
+        painter.text(Pos2::new(g_right - 4.0, g_top + 4.0), egui::Align2::RIGHT_BOTTOM, "Sum: 0 dB Flat", egui::FontId::monospace(8.0), accent_col);
+
+        // -6 dB Crossover Line
+        painter.line_segment([Pos2::new(g_left, g_top + 20.0), Pos2::new(g_right, g_top + 20.0)], Stroke::new(0.8, Color32::from_rgba_premultiplied(100, 116, 139, 45)));
+        painter.text(Pos2::new(g_left - 4.0, g_top + 20.0), egui::Align2::RIGHT_CENTER, "-6 dB", egui::FontId::monospace(8.0), Color32::from_rgb(148, 163, 184));
+
+        let norm_xover = ((current_xover / 20.0).log10() / (1000.0_f32).log10()).clamp(0.05, 0.95);
+        let xover_x = g_left + g_w * norm_xover;
+
+        // Vertical dashed crossover line
+        let mut cy_walk = g_top + 4.0;
+        while cy_walk < g_bottom {
+            painter.line_segment(
+                [Pos2::new(xover_x, cy_walk), Pos2::new(xover_x, (cy_walk + 4.0).min(g_bottom))],
+                Stroke::new(1.0, accent_col),
+            );
+            cy_walk += 7.0;
+        }
+
+        let steps = 60;
+        let mut low_pts = Vec::with_capacity(steps + 1);
+        let mut high_pts = Vec::with_capacity(steps + 1);
+
+        for s in 0..=steps {
+            let frac = s as f32 / steps as f32;
+            let x = g_left + frac * g_w;
+
+            // Low-pass branch
+            let y_low = if frac <= norm_xover {
+                let over = (frac / norm_xover).clamp(0.0, 1.0);
+                (g_top + 8.0) + over.powf(2.5) * 12.0
+            } else {
+                let over = (frac - norm_xover) / (1.0 - norm_xover).max(0.01);
+                (g_top + 20.0) + over.powf(2.3) * (g_h - 28.0)
+            };
+            low_pts.push(Pos2::new(x, y_low.min(g_bottom)));
+
+            // High-pass branch
+            let y_high = if frac >= norm_xover {
+                let over = ((1.0 - frac) / (1.0 - norm_xover)).clamp(0.0, 1.0);
+                (g_top + 8.0) + over.powf(2.5) * 12.0
+            } else {
+                let under = (norm_xover - frac) / norm_xover.max(0.01);
+                (g_top + 20.0) + under.powf(2.3) * (g_h - 28.0)
+            };
+            high_pts.push(Pos2::new(x, y_high.min(g_bottom)));
+        }
+
+        // Draw Low-pass (green) and High-pass (cyan)
+        painter.add(egui::Shape::line(low_pts, Stroke::new(2.0, Color32::from_rgb(52, 211, 153))));
+        painter.add(egui::Shape::line(high_pts, Stroke::new(2.0, Color32::from_rgb(56, 189, 248))));
+
+        // Crossover Point (-6 dB intersection)
+        let x_point = Pos2::new(xover_x, g_top + 20.0);
+        painter.circle_filled(x_point, 4.0, Color32::WHITE);
+        painter.circle_stroke(x_point, 6.0, Stroke::new(1.2, accent_col));
+        let freq_str = if current_xover >= 1000.0 { format!("{:.1} kHz", current_xover / 1000.0) } else { format!("{:.0} Hz", current_xover) };
+        painter.text(x_point - Vec2::new(0.0, 10.0), egui::Align2::CENTER_BOTTOM, format!("X-Over: {} (-6dB)", freq_str), egui::FontId::monospace(8.5), Color32::WHITE);
+
+        // Telemetry HUD Bar at bottom of Column 1
+        let hud_rect = Rect::from_min_max(Pos2::new(c1_rect.min.x + 8.0, c1_rect.max.y - 19.0), Pos2::new(c1_rect.max.x - 8.0, c1_rect.max.y - 3.0));
+        painter.rect_filled(hud_rect, 3.0, Color32::from_rgb(6, 9, 16));
+        painter.rect_stroke(hud_rect, 3.0, Stroke::new(0.8, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
+        let phase_txt = if is_inverted { "180° Invert (Koreksi Polaritas)" } else { "0° Net (In-Phase 360° Alignment)" };
+        painter.text(
+            hud_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            format!("📡 Titik X-Over: {} (-6dB)   •   📐 Slope: LR4 24 dB/oct   •   ⚡ Fasa: {}   •   Sum: 0.0 dB", freq_str, phase_txt),
+            egui::FontId::monospace(8.5),
+            Color32::from_rgb(192, 132, 252),
+        );
+
+        // Column 2: Controls
+        painter.rect_filled(c2_rect, 6.0, Color32::from_rgb(12, 17, 29));
+        painter.rect_stroke(c2_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
+
+        let controls_rect = Rect::from_min_max(Pos2::new(c2_rect.min.x + 10.0, c2_rect.min.y + 10.0), Pos2::new(c2_rect.max.x - 10.0, c2_rect.max.y - 6.0));
+        let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(controls_rect));
+
+        let mut new_xover = current_xover;
+        let mut new_invert = is_inverted;
+
+        child_ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("FREKUENSI CROSSOVER:").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
+            ui.label(egui::RichText::new(&freq_str).strong().size(13.5).color(accent_col));
+            ui.label(egui::RichText::new("• LR4 24 dB/oct").strong().size(11.0).color(Color32::WHITE));
+        });
+
+        let mut log_val = (new_xover / 20.0).log10();
+        let log_slider = egui::Slider::new(&mut log_val, 0.4..=2.6).show_value(false); // 50 Hz to 8000 Hz
+        if child_ui.add_sized(Vec2::new(controls_rect.width(), 16.0), log_slider).changed() {
+            new_xover = (20.0 * 10.0_f32.powf(log_val)).clamp(50.0, 8000.0);
+        }
+
+        child_ui.horizontal(|ui| {
+            let presets = [("80 Hz Sub", 80.0), ("300 Hz Bass", 300.0), ("500 Hz Mid", 500.0), ("2.5 kHz Treble", 2500.0)];
+            for (name, val) in presets {
+                let is_sel = (new_xover - val).abs() < 20.0;
+                let bg = if is_sel { accent_col } else { Color32::from_rgb(30, 41, 59) };
+                let text_col = if is_sel { Color32::from_rgb(15, 23, 42) } else { Color32::from_rgb(241, 245, 249) };
+                let stroke_col = if is_sel { Color32::WHITE } else { Color32::from_rgb(100, 116, 139) };
+                let btn = egui::Button::new(egui::RichText::new(name).size(10.5).strong().color(text_col))
+                    .fill(bg)
+                    .stroke(Stroke::new(1.2, stroke_col))
+                    .corner_radius(4.0);
+                if ui.add(btn).clicked() {
+                    new_xover = val;
+                }
+            }
+        });
+
+        child_ui.add_space(5.0);
+        child_ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Fasa High-Pass Branch:").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
+            let is_norm_sel = !new_invert;
+            let bg_norm = if is_norm_sel { accent_col } else { Color32::from_rgb(30, 41, 59) };
+            let txt_norm = if is_norm_sel { Color32::from_rgb(15, 23, 42) } else { Color32::from_rgb(241, 245, 249) };
+            let btn_norm = egui::Button::new(egui::RichText::new("Normal (0° In-Phase)").size(10.0).strong().color(txt_norm))
+                .fill(bg_norm)
+                .stroke(Stroke::new(1.2, if is_norm_sel { Color32::WHITE } else { Color32::from_rgb(100, 116, 139) }))
+                .corner_radius(4.0);
+            if ui.add(btn_norm).clicked() {
+                new_invert = false;
+            }
+
+            let is_inv_sel = new_invert;
+            let bg_inv = if is_inv_sel { Color32::from_rgb(244, 63, 94) } else { Color32::from_rgb(30, 41, 59) };
+            let txt_inv = if is_inv_sel { Color32::WHITE } else { Color32::from_rgb(241, 245, 249) };
+            let btn_inv = egui::Button::new(egui::RichText::new("Invert (180° Anti-Phase)").size(10.0).strong().color(txt_inv))
+                .fill(bg_inv)
+                .stroke(Stroke::new(1.2, if is_inv_sel { Color32::WHITE } else { Color32::from_rgb(100, 116, 139) }))
+                .corner_radius(4.0);
+            if ui.add(btn_inv).clicked() {
+                new_invert = true;
+            }
+        });
+
+        child_ui.add_space(4.0);
+        child_ui.label(egui::RichText::new("📐 Linkwitz-Riley 4th Order (LR4):\n• Output Pin 0 = LOW (-24 dB/oct)\n• Output Pin 1 = HIGH (-24 dB/oct)\n• Sempurna flat (0 dB) saat digabungkan di Mixer").size(8.5).color(Color32::from_rgb(148, 163, 184)));
+
+        let xover_changed = (new_xover - current_xover).abs() > 1.0;
+        let invert_changed = new_invert != is_inverted;
+
+        if xover_changed || invert_changed {
+            if let Some(n) = self.nodes.iter_mut().find(|n| n.id == node_id) {
+                n.param_val = new_xover;
+                n.sub1 = if new_xover >= 1000.0 { format!("X-Over {:.1} kHz", new_xover / 1000.0) } else { format!("X-Over {:.0} Hz", new_xover) };
+                n.sub2 = if new_invert { "LR4 (24dB) • Invert".to_string() } else { "LR4 (24 dB/oct)".to_string() };
+            }
+            if let Some(ref engine) = self.audio_engine {
+                if xover_changed { engine.set_node_param(node_id as u32, 0, new_xover); }
+                if invert_changed { engine.set_node_param(node_id as u32, 2, if new_invert { 1.0 } else { 0.0 }); }
+            }
         }
     }
 

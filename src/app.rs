@@ -266,16 +266,6 @@ impl LunulaApp {
                 param_val: 0.0,
             },
             ModularNode {
-                id: 3,
-                node_type: NodeType::Dsp,
-                title: "DSP ENGINE".to_string(),
-                sub1: "BYPASSED (Direct Wire)".to_string(),
-                sub2: "0.0 dB Pure Master".to_string(),
-                pos: Pos2::new(405.0, 215.0),
-                is_removable: false,
-                param_val: 0.0,
-            },
-            ModularNode {
                 id: 4,
                 node_type: NodeType::Driver,
                 title: "APP RESAMPLER".to_string(),
@@ -297,7 +287,7 @@ impl LunulaApp {
             },
         ];
 
-        // Default chain connections: in Bit-Perfect (Option B), cable directly jumps 2 -> 4 bypassing 3
+        // Default clean chain: 1 (File Source) -> 2 (RAM Buffer) -> 4 (Resampler) -> 5 (Output DAC)
         let initial_connections = vec![
             CableConnection::new(1, 2),
             CableConnection::new(2, 4),
@@ -547,6 +537,13 @@ impl LunulaApp {
                 } else if let Some(first) = app.playlist.first() {
                     app.current_track = first.clone();
                 }
+                app.current_lyrics = app.current_track.file_path.as_ref().and_then(|p| {
+                    crate::lyrics::Lyrics::load_for_track_smart(
+                        std::path::Path::new(p),
+                        &app.current_track.title,
+                        &app.current_track.artist,
+                    )
+                });
             }
             if !state.custom_playlists.is_empty() {
                 app.custom_playlists = state.custom_playlists;
@@ -860,7 +857,11 @@ impl LunulaApp {
         });
         self.current_cover_texture = None;
         self.current_lyrics = self.current_track.file_path.as_ref().and_then(|p| {
-            crate::lyrics::Lyrics::load_for_track(std::path::Path::new(p))
+            crate::lyrics::Lyrics::load_for_track_smart(
+                std::path::Path::new(p),
+                &self.current_track.title,
+                &self.current_track.artist,
+            )
         });
         self.lyrics_offset_trim_sec = 0.0;
 
@@ -888,7 +889,11 @@ impl LunulaApp {
         });
         self.current_cover_texture = None; // Reset so next frame builds the new texture
         self.current_lyrics = self.current_track.file_path.as_ref().and_then(|p| {
-            crate::lyrics::Lyrics::load_for_track(std::path::Path::new(p))
+            crate::lyrics::Lyrics::load_for_track_smart(
+                std::path::Path::new(p),
+                &self.current_track.title,
+                &self.current_track.artist,
+            )
         });
         self.lyrics_offset_trim_sec = 0.0;
 
@@ -1584,9 +1589,12 @@ impl LunulaApp {
         use std::collections::{HashMap, VecDeque};
         use crate::models::NodeType;
         use crate::audio::{
-            AnalogPreampEffect, BassGuardEffect, CompressorEffect, DynamicLoudnessEffect, Effect, LowPassFilterEffect, MixerEffect, OpticalLevelerEffect,
-            PassthroughEffect, PresetEqEffect, SplitterEffect, SteppedAttenuatorEffect, StereoBalanceEffect, StereoWidenerEffect,
-            TubeWarmerEffect, VolumeAttenuatorEffect, VolumeBoosterEffect,
+            AnalogPreampEffect, BandPassFilterEffect, BassGuardEffect, CompressorEffect,
+            CrossoverHighEffect, CrossoverLowEffect, DynamicLoudnessEffect, Effect,
+            HighPassFilterEffect, LowPassFilterEffect, MixerEffect, OpticalLevelerEffect,
+            PassthroughEffect, PresetEqEffect, SplitterEffect, SteppedAttenuatorEffect,
+            StereoBalanceEffect, StereoWidenerEffect, TubeWarmerEffect, VolumeAttenuatorEffect,
+            VolumeBoosterEffect,
         };
 
         let chain_eval = self.evaluate_signal_chain();
@@ -1673,8 +1681,38 @@ impl LunulaApp {
                         Box::new(VolumeAttenuatorEffect::new(-6.02))
                     }
                     NodeType::LowPassFilter => {
-                        let cutoff = if node.param_val > 50.0 { node.param_val as f64 } else { 800.0 };
-                        Box::new(LowPassFilterEffect::new(cutoff, sample_rate))
+                        let cutoff = if node.param_val > 20.0 { node.param_val as f64 } else { 800.0 };
+                        let slope = if node.sub2.contains("48dB") { 48 } else if node.sub2.contains("24dB") { 24 } else { 12 };
+                        let fringe = if let Some(idx) = node.sub2.find("Q ") {
+                            node.sub2[idx + 2..].split_whitespace().next().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.7071)
+                        } else {
+                            0.7071
+                        };
+                        Box::new(LowPassFilterEffect::with_slope_and_fringe(cutoff, slope, fringe, sample_rate))
+                    }
+                    NodeType::HighPassFilter => {
+                        let cutoff = if node.param_val > 10.0 { node.param_val as f64 } else { 80.0 };
+                        let slope = if node.sub2.contains("48dB") { 48 } else if node.sub2.contains("24dB") { 24 } else { 12 };
+                        let fringe = if let Some(idx) = node.sub2.find("Q ") {
+                            node.sub2[idx + 2..].split_whitespace().next().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.7071)
+                        } else {
+                            0.7071
+                        };
+                        Box::new(HighPassFilterEffect::with_slope_and_fringe(cutoff, slope, fringe, sample_rate))
+                    }
+                    NodeType::BandPassFilter => {
+                        let center = if node.param_val > 20.0 { node.param_val as f64 } else { 1000.0 };
+                        let slope = if node.sub2.contains("24dB") { 24 } else { 12 };
+                        let fringe = if let Some(idx) = node.sub2.find("Q ") {
+                            node.sub2[idx + 2..].split_whitespace().next().and_then(|s| s.parse::<f64>().ok()).unwrap_or(1.414)
+                        } else {
+                            1.414
+                        };
+                        Box::new(BandPassFilterEffect::with_slope_and_fringe(center, slope, fringe, sample_rate))
+                    }
+                    NodeType::Crossover => {
+                        let xover = if node.param_val > 20.0 { node.param_val as f64 } else { 500.0 };
+                        Box::new(CrossoverLowEffect::new(xover, sample_rate))
                     }
                     NodeType::Mixer => {
                         let mix = if (0.0..=1.0).contains(&node.param_val) { node.param_val } else { 0.5 };
@@ -1752,6 +1790,22 @@ impl LunulaApp {
                     effect,
                 });
                 topological_order.push(id as u32);
+
+                if node.node_type == NodeType::Crossover {
+                    let has_high_conn = self.connections.iter().any(|c| c.from_node == id && c.from_port == 1 && chain_eval.flowing_cables.contains(c));
+                    if has_high_conn {
+                        let high_node_id = (id as u32) + 50_000;
+                        let xover = if node.param_val > 20.0 { node.param_val as f64 } else { 500.0 };
+                        let invert = node.sub2.contains("Invert");
+                        let high_effect: Box<dyn Effect> = Box::new(CrossoverHighEffect::new(xover, invert, sample_rate));
+                        nodes.push(crate::audio::GraphNode {
+                            id: high_node_id,
+                            name: format!("{} (High)", node.title),
+                            effect: high_effect,
+                        });
+                        topological_order.push(high_node_id);
+                    }
+                }
             }
         }
 
@@ -1759,12 +1813,45 @@ impl LunulaApp {
         let mut edges: Vec<crate::audio::GraphEdge> = Vec::new();
         for conn in &self.connections {
             if chain_eval.flowing_cables.contains(conn) {
+                let from_node = if conn.from_port == 1 {
+                    if let Some(n) = self.nodes.iter().find(|n| n.id == conn.from_node) {
+                        if n.node_type == NodeType::Crossover {
+                            (conn.from_node as u32) + 50_000
+                        } else {
+                            conn.from_node as u32
+                        }
+                    } else {
+                        conn.from_node as u32
+                    }
+                } else {
+                    conn.from_node as u32
+                };
+
                 edges.push(crate::audio::GraphEdge::with_ports(
-                    conn.from_node as u32,
+                    from_node,
                     conn.from_port,
                     conn.to_node as u32,
                     conn.to_port,
                 ));
+            }
+        }
+
+        // For any crossover with high connection, connect incoming parent of crossover to the virtual high node as well
+        for &id in &ordered_node_ids {
+            if let Some(node) = self.nodes.iter().find(|n| n.id == id) {
+                if node.node_type == NodeType::Crossover {
+                    let has_high = self.connections.iter().any(|c| c.from_node == id && c.from_port == 1 && chain_eval.flowing_cables.contains(c));
+                    if has_high {
+                        if let Some(parent_edge) = self.connections.iter().find(|c| c.to_node == id && chain_eval.flowing_cables.contains(c)) {
+                            edges.push(crate::audio::GraphEdge::with_ports(
+                                parent_edge.from_node as u32,
+                                parent_edge.from_port,
+                                (id as u32) + 50_000,
+                                0,
+                            ));
+                        }
+                    }
+                }
             }
         }
 
@@ -2590,11 +2677,33 @@ impl eframe::App for LunulaApp {
                                         }
                                     });
 
-                                let dsp_btn = ui.selectable_label(self.chain_mode == ChainMode::DspActive, egui::RichText::new("DSP Active").size(12.5).strong());
+                                let flowing_fx: Vec<&str> = {
+                                    let eval = self.evaluate_signal_chain();
+                                    self.nodes.iter()
+                                        .filter(|n| n.node_type.is_dsp_or_effect() && eval.flowing_nodes.contains(&n.id))
+                                        .map(|n| n.title.as_str())
+                                        .collect()
+                                };
+                                let dsp_label = if flowing_fx.is_empty() {
+                                    "Modular FX (Standby)".to_string()
+                                } else if flowing_fx.len() == 1 {
+                                    format!("Modular: {} (Aktif)", flowing_fx[0])
+                                } else {
+                                    format!("Modular FX ({} Aktif)", flowing_fx.len())
+                                };
+
+                                let dsp_btn = ui.selectable_label(self.chain_mode == ChainMode::DspActive, egui::RichText::new(&dsp_label).size(12.5).strong());
+                                let dsp_tooltip = if flowing_fx.is_empty() {
+                                    "Mode Pemrosesan Modular 64-bit.\nSaat ini tidak ada modul efek tersambung di rantai sinyal (Passthrough 1:1 murni).".to_string()
+                                } else {
+                                    format!("Mode Pemrosesan Modular 64-bit aktif.\nModul tersambung:\n{}", flowing_fx.iter().map(|t| format!(" • {}", t)).collect::<Vec<_>>().join("\n"))
+                                };
+                                let dsp_btn = dsp_btn.on_hover_text(dsp_tooltip);
                                 if dsp_btn.clicked() {
                                     self.set_chain_mode(ChainMode::DspActive);
                                 }
-                                let bp_btn = ui.selectable_label(self.chain_mode == ChainMode::BitPerfect, egui::RichText::new("Bit-Perfect").size(12.5).strong());
+                                let bp_btn = ui.selectable_label(self.chain_mode == ChainMode::BitPerfect, egui::RichText::new("Bit-Perfect").size(12.5).strong())
+                                    .on_hover_text("Mode Transparan Bit-Perfect: Melewati seluruh modul efek langsung ke DAC 1:1.");
                                 if bp_btn.clicked() {
                                     self.set_chain_mode(ChainMode::BitPerfect);
                                 }
@@ -2791,14 +2900,13 @@ mod tests {
     }
 
     #[test]
-    fn test_eq_not_in_chain_produces_no_eq_effect_even_with_node3_dsp_engine() {
+    fn test_eq_not_in_chain_produces_no_eq_effect_in_clean_direct_chain() {
         let mut app = LunulaApp::default();
         app.chain_mode = ChainMode::DspActive;
-        // Connect 1 -> 2 -> 3 -> 4 -> 5 (DSP ENGINE is in path, but NO EQ preset card)
+        // Clean default direct chain: 1 -> 2 -> 4 -> 5 (NO EQ preset card)
         app.connections = vec![
             CableConnection::new(1, 2),
-            CableConnection::new(2, 3),
-            CableConnection::new(3, 4),
+            CableConnection::new(2, 4),
             CableConnection::new(4, 5),
         ];
         app.invalidate_chain_cache();
@@ -3107,11 +3215,10 @@ mod tests {
             param_val: 400.0,
         });
 
-        // Wire 1 -> 2 -> 3 -> 6 (LPF) -> 4 -> 5
+        // Wire 1 (Source) -> 2 (Buffer) -> 6 (LPF) -> 4 (Resampler) -> 5 (DAC)
         app.connections = vec![
             CableConnection::new(1, 2),
-            CableConnection::new(2, 3),
-            CableConnection::new(3, 6),
+            CableConnection::new(2, 6),
             CableConnection::new(6, 4),
             CableConnection::new(4, 5),
         ];

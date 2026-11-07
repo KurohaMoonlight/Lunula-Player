@@ -109,7 +109,7 @@ impl GraphExecutor {
 
     pub fn set_node_param(&mut self, node_id: u32, param_id: u32, value: f32) {
         for step in &mut self.steps {
-            if step.node_id == node_id {
+            if step.node_id == node_id || step.node_id == node_id + 50_000 {
                 step.effect.set_param(param_id, value);
                 if param_id == 0 {
                     if let StepInput::Mixer { ref mut mix_ratio, .. } = step.input {
@@ -118,8 +118,10 @@ impl GraphExecutor {
                 }
             }
         }
-        if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == node_id) {
-            node.effect.set_param(param_id, value);
+        for node in &mut self.graph.nodes {
+            if node.id == node_id || node.id == node_id + 50_000 {
+                node.effect.set_param(param_id, value);
+            }
         }
     }
 

@@ -37,7 +37,7 @@ impl LunulaApp {
         let mut switch_to_tutorial: Option<NodeType> = None;
         let mut open_eq_popup_pos: Option<Pos2> = None;
 
-        let palette_defs: [FilterPaletteDef; 14] = [
+        let palette_defs: [FilterPaletteDef; 17] = [
             // 1. Tonal & EQ
             FilterPaletteDef {
                 node_type: NodeType::LowPassFilter,
@@ -49,6 +49,32 @@ impl LunulaApp {
                 accent_color: Color32::from_rgb(14, 165, 233),
                 bg_accent: Color32::from_rgb(240, 249, 255),
                 keywords: &["lpf", "lowpass", "treble", "cut", "potong", "muffled", "underwater", "lembut", "filter"],
+                is_eq_preset: false,
+                is_coming_soon: false,
+            },
+            FilterPaletteDef {
+                node_type: NodeType::HighPassFilter,
+                category: FilterCategory::Tonal,
+                icon: "🏔️",
+                title: "High-Pass Filter",
+                subtitle: "Pemotong sub-bass & gemuruh rendah",
+                friendly_desc: "Menghilangkan frekuensi sub-bass yang terlalu berdengung atau tidak terdengar agar vokal dan instrumen terdengar lebih jernih dan fokus.",
+                accent_color: Color32::from_rgb(56, 189, 248),
+                bg_accent: Color32::from_rgb(240, 249, 255),
+                keywords: &["hpf", "highpass", "bass cut", "rumble", "low cut", "jernih", "vocal", "filter"],
+                is_eq_preset: false,
+                is_coming_soon: false,
+            },
+            FilterPaletteDef {
+                node_type: NodeType::BandPassFilter,
+                category: FilterCategory::Tonal,
+                icon: "🎯",
+                title: "Band-Pass Filter",
+                subtitle: "Isolasi pita frekuensi vokal / instrumen",
+                friendly_desc: "Hanya meloloskan frekuensi pada rentang tertentu di sekitar frekuensi pusat dan meredam nada di luar rentang tersebut.",
+                accent_color: Color32::from_rgb(245, 158, 11),
+                bg_accent: Color32::from_rgb(254, 243, 199),
+                keywords: &["bpf", "bandpass", "band", "vocal", "isolasi", "telepon", "radio", "filter"],
                 is_eq_preset: false,
                 is_coming_soon: false,
             },
@@ -226,6 +252,19 @@ impl LunulaApp {
                 accent_color: Color32::from_rgb(13, 148, 136),
                 bg_accent: Color32::from_rgb(240, 253, 250),
                 keywords: &["mixer", "mix", "gabung", "crossfade", "summing", "a", "b", "blend", "kombinasi"],
+                is_eq_preset: false,
+                is_coming_soon: false,
+            },
+            FilterPaletteDef {
+                node_type: NodeType::Crossover,
+                category: FilterCategory::Routing,
+                icon: "✂️",
+                title: "2-Way LR4 Crossover",
+                subtitle: "Pemisah frekuensi Low & High (24dB/oct)",
+                friendly_desc: "Membagi audio menjadi jalur Low (Pin 0) dan High (Pin 1) dengan filter Linkwitz-Riley 4th order yang menyatu flat 0 dB tanpa celah.",
+                accent_color: Color32::from_rgb(168, 85, 247),
+                bg_accent: Color32::from_rgb(250, 245, 255),
+                keywords: &["crossover", "xover", "lr4", "linkwitz", "riley", "low", "high", "subwoofer", "split"],
                 is_eq_preset: false,
                 is_coming_soon: false,
             },
