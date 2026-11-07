@@ -10,7 +10,7 @@ use crate::audio::dsp::DspPipeline;
 use crate::audio::output::AudioOutput;
 use crate::audio::resampler::StereoResampler;
 pub use crate::audio::types::calculate_effective_volume;
-use crate::audio::types::{AudioCommand, AudioEvent, ChainMode, DspCommand, PlaybackState, SignalChainGraph, SignalPathReport};
+use crate::audio::types::{AudioCommand, AudioEvent, ChainMode, DspCommand, PlaybackState, ResamplerSettings, SignalChainGraph, SignalPathReport};
 use crate::audio::visualizer::{VisualizerRingBuffer, FFT_SIZE};
 use rtrb::Producer;
 
@@ -64,6 +64,14 @@ impl AudioEngineController {
 
     pub fn play<P: Into<PathBuf>>(&self, path: P) {
         let _ = self.cmd_tx.send(AudioCommand::Play(path.into()));
+    }
+
+    pub fn queue_next<P: Into<PathBuf>>(&self, path: P) {
+        let _ = self.cmd_tx.send(AudioCommand::QueueNext(path.into()));
+    }
+
+    pub fn clear_next(&self) {
+        let _ = self.cmd_tx.send(AudioCommand::ClearNext);
     }
 
     pub fn pause(&self) {
@@ -159,6 +167,22 @@ impl AudioEngineController {
     pub fn get_visualizer_samples(&self, dest: &mut [f32; FFT_SIZE]) {
         self.shared_visualizer.get_latest_samples(dest);
     }
+
+    pub fn get_visualizer_stereo_samples(&self, dest_l: &mut [f32; FFT_SIZE], dest_r: &mut [f32; FFT_SIZE]) {
+        self.shared_visualizer.get_latest_stereo(dest_l, dest_r);
+    }
+
+    pub fn get_gain_reduction(&self) -> f32 {
+        self.shared_visualizer.get_gain_reduction()
+    }
+
+    pub fn set_resampler_settings(&self, settings: ResamplerSettings) {
+        let _ = self.cmd_tx.send(AudioCommand::SetResamplerSettings(settings));
+    }
+
+    pub fn set_crossfade_secs(&self, secs: f32) {
+        let _ = self.cmd_tx.send(AudioCommand::SetCrossfadeSecs(secs));
+    }
 }
 
 fn desired_device_rate(chain_mode: ChainMode, track_rate: u32) -> u32 {
@@ -247,12 +271,17 @@ fn run_audio_worker(
     shared_visualizer: Arc<VisualizerRingBuffer>,
 ) {
     let mut decoder: Option<AudioDecoder> = None;
+    let mut next_decoder: Option<AudioDecoder> = None;
+    let mut next_track_path: Option<PathBuf> = None;
     let mut output: Option<AudioOutput> = None;
     let mut producer: Option<Producer<f32>> = None;
     let mut dsp = DspPipeline::new(44100.0);
     let mut resampler = StereoResampler::new(44100, 44100);
     let mut chain_mode = ChainMode::BitPerfect;
     let mut current_stream_mode: Option<ChainMode> = None;
+    let mut crossfade_secs: f32 = 0.0;
+    let mut fade_in_remaining_samples: usize = 0;
+    let mut fade_in_total_samples: usize = 0;
     let mut state = PlaybackState::Stopped;
     let mut selected_device: Option<String> = None;
     let is_dsp_active = Arc::new(AtomicBool::new(false));
@@ -293,6 +322,10 @@ fn run_audio_worker(
             for cmd in pending {
                 match cmd {
                     AudioCommand::Play(path) => {
+                        next_decoder = None;
+                        next_track_path = None;
+                        fade_in_remaining_samples = 0;
+                        fade_in_total_samples = 0;
                         match AudioDecoder::open(&path) {
                             Ok(dec) => {
                                 let track_sample_rate = dec.sample_rate();
@@ -409,6 +442,29 @@ fn run_audio_worker(
                             }
                         }
                     }
+                    AudioCommand::QueueNext(path) => {
+                        match AudioDecoder::open(&path) {
+                            Ok(dec) => {
+                                next_decoder = Some(dec);
+                                next_track_path = Some(path);
+                            }
+                            Err(e) => {
+                                eprintln!("[Gapless Prebuffer] Gagal membuka next track: {}", e);
+                                next_decoder = None;
+                                next_track_path = None;
+                            }
+                        }
+                    }
+                    AudioCommand::ClearNext => {
+                        next_decoder = None;
+                        next_track_path = None;
+                    }
+                    AudioCommand::SetResamplerSettings(settings) => {
+                        resampler.set_settings(settings);
+                    }
+                    AudioCommand::SetCrossfadeSecs(secs) => {
+                        crossfade_secs = secs.max(0.0);
+                    }
                     AudioCommand::Pause => {
                         if state == PlaybackState::Playing {
                             if let Some(out) = &output {
@@ -471,8 +527,12 @@ fn run_audio_worker(
                             let _ = out.flush();
                         }
                         decoder = None;
+                        next_decoder = None;
+                        next_track_path = None;
                         raw_pos = 0;
                         raw_len = 0;
+                        fade_in_remaining_samples = 0;
+                        fade_in_total_samples = 0;
                         state = PlaybackState::Stopped;
                         shared_state.store(0, Ordering::Relaxed);
                         shared_position_ms.store(0, Ordering::Relaxed);
@@ -485,6 +545,8 @@ fn run_audio_worker(
                                 Ok(actual_pos) => {
                                     raw_pos = 0;
                                     raw_len = 0;
+                                    fade_in_remaining_samples = 0;
+                                    fade_in_total_samples = 0;
 
                                     if let Some(out) = &output {
                                         if !out.flush() {
@@ -711,9 +773,32 @@ fn run_audio_worker(
                                 }
                             }
                             if raw_pos < raw_len {
-                                let l = raw_chunk[raw_pos];
-                                let r = raw_chunk[raw_pos + 1];
+                                let mut l = raw_chunk[raw_pos];
+                                let mut r = raw_chunk[raw_pos + 1];
                                 raw_pos += 2;
+
+                                if crossfade_secs > 0.0 && chain_mode != ChainMode::BitPerfect {
+                                    let dur = dec.duration();
+                                    if dur > crossfade_secs {
+                                        let cur = dec.current_time();
+                                        let rem = (dur - cur).max(0.0);
+                                        if rem <= crossfade_secs {
+                                            let frac = (rem / crossfade_secs).clamp(0.0, 1.0);
+                                            let gain = (frac * std::f32::consts::FRAC_PI_2).sin();
+                                            l *= gain;
+                                            r *= gain;
+                                        }
+                                    }
+                                }
+
+                                if fade_in_remaining_samples > 0 && chain_mode != ChainMode::BitPerfect {
+                                    let progress = 1.0 - (fade_in_remaining_samples as f32 / fade_in_total_samples.max(1) as f32);
+                                    let gain = (progress * std::f32::consts::FRAC_PI_2).sin();
+                                    l *= gain;
+                                    r *= gain;
+                                    fade_in_remaining_samples = fade_in_remaining_samples.saturating_sub(2);
+                                }
+
                                 Some((l, r))
                             } else {
                                 None
@@ -748,6 +833,105 @@ fn run_audio_worker(
                     shared_position_ms.store((played_pos * 1000.0) as u32, Ordering::Relaxed);
 
                     if generated_frames == 0 && raw_pos >= raw_len {
+                        if let Some(next_dec) = next_decoder.take() {
+                            let next_path = next_track_path.take();
+                            let next_sr = next_dec.sample_rate();
+                            let next_bd = next_dec.bits_per_sample();
+                            let next_dur = next_dec.duration();
+                            let cur_sr = dec.sample_rate();
+                            let cur_bd = dec.bits_per_sample();
+
+                            let device_rate = output.as_ref().map(|o| o.sample_rate()).unwrap_or(44100);
+                            let needs_recreate = if chain_mode == ChainMode::BitPerfect && output.as_ref().map_or(false, |o| o.is_exclusive()) {
+                                next_sr != cur_sr || next_bd != cur_bd
+                            } else {
+                                false
+                            };
+
+                            if !needs_recreate {
+                                // Zero-flush gapless audio handoff: ring buffer continues smoothly
+                                if next_sr != cur_sr {
+                                    resampler.reset(next_sr, device_rate);
+                                }
+                                decoder = Some(next_dec);
+                                raw_pos = 0;
+                                raw_len = 0;
+                                if crossfade_secs > 0.0 && chain_mode != ChainMode::BitPerfect {
+                                    fade_in_total_samples = (crossfade_secs * next_sr as f32) as usize * 2;
+                                    fade_in_remaining_samples = fade_in_total_samples;
+                                } else {
+                                    fade_in_remaining_samples = 0;
+                                    fade_in_total_samples = 0;
+                                }
+                                if let Some(out) = &output {
+                                    let report = create_signal_path_report(out, next_sr, next_bd, chain_mode);
+                                    shared_bit_perfect.store(report.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
+                                    is_dsp_active.store(report.is_dsp_active, Ordering::Relaxed);
+                                    let _ = event_tx.send(AudioEvent::SignalPath(report));
+                                }
+                                let _ = event_tx.send(AudioEvent::TrackTransitioned {
+                                    path: next_path,
+                                    duration: next_dur,
+                                    sample_rate: next_sr,
+                                });
+                                continue;
+                            } else {
+                                // Bit-perfect rate change: wait until ring buffer drains completely before recreating stream
+                                if prod.slots() == prod.buffer().capacity() {
+                                    decoder = Some(next_dec);
+                                    raw_pos = 0;
+                                    raw_len = 0;
+                                    let desired_rate = desired_device_rate(chain_mode, next_sr);
+                                    match AudioOutput::new(
+                                        selected_device.as_deref(),
+                                        desired_rate,
+                                        next_bd,
+                                        chain_mode,
+                                        96000,
+                                        Arc::clone(&shared_volume),
+                                        Arc::clone(&shared_visualizer),
+                                        Arc::clone(&shared_bit_perfect),
+                                        Arc::clone(&shared_muted),
+                                        Arc::clone(&is_dsp_active),
+                                        event_tx.clone(),
+                                    ) {
+                                        Ok((new_out, new_prod)) => {
+                                            sync_output_dsp(&new_out, desired_rate, last_bypass, last_limiter, &last_graph, &last_eq_bands);
+                                            new_out.resume();
+                                            let dev_sr = new_out.sample_rate();
+                                            resampler.reset(next_sr, dev_sr);
+                                            dsp.set_sample_rate(dev_sr as f32);
+                                            let report = create_signal_path_report(&new_out, next_sr, next_bd, chain_mode);
+                                            shared_bit_perfect.store(report.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
+                                            is_dsp_active.store(report.is_dsp_active, Ordering::Relaxed);
+                                            let _ = event_tx.send(AudioEvent::SignalPath(report));
+                                            let _ = event_tx.send(AudioEvent::TrackTransitioned {
+                                                path: next_path,
+                                                duration: next_dur,
+                                                sample_rate: next_sr,
+                                            });
+                                            output = Some(new_out);
+                                            producer = Some(new_prod);
+                                            current_stream_mode = Some(chain_mode);
+                                            continue;
+                                        }
+                                        Err(err) => {
+                                            let _ = event_tx.send(AudioEvent::Error(format!("Gagal re-clocking perangkat audio: {}", err)));
+                                            state = PlaybackState::Stopped;
+                                            shared_state.store(0, Ordering::Relaxed);
+                                            let _ = event_tx.send(AudioEvent::StateChanged(PlaybackState::Stopped));
+                                            continue;
+                                        }
+                                    }
+                                } else {
+                                    next_decoder = Some(next_dec);
+                                    next_track_path = next_path;
+                                    thread::sleep(Duration::from_millis(10));
+                                    continue;
+                                }
+                            }
+                        }
+
                         // EOF reached and waiting for the entire ring buffer to be drained by the hardware
                         if prod.slots() == prod.buffer().capacity() {
                             state = PlaybackState::Stopped;

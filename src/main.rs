@@ -61,6 +61,17 @@ fn main() -> eframe::Result {
                     .or_default()
                     .insert(0, "segoe_ui".to_owned());
             }
+            if let Ok(font_data) = std::fs::read("C:\\Windows\\Fonts\\seguiemj.ttf") {
+                fonts.font_data.insert(
+                    "segoe_ui_emoji".to_owned(),
+                    std::sync::Arc::new(egui::FontData::from_owned(font_data)),
+                );
+                fonts
+                    .families
+                    .entry(egui::FontFamily::Proportional)
+                    .or_default()
+                    .push("segoe_ui_emoji".to_owned());
+            }
             if let Ok(font_data) = std::fs::read("C:\\Windows\\Fonts\\malgun.ttf") {
                 fonts.font_data.insert(
                     "malgun".to_owned(),

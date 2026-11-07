@@ -248,11 +248,24 @@ impl CpalBackend {
         let volume_cb = Arc::clone(&shared_volume);
         let visualizer_cb = Arc::clone(&visualizer);
         let channels_count = config.channels as usize;
+        let dev_name = device.name().unwrap_or_else(|_| "Audio Device".to_string());
         let err_tx = event_tx.clone();
-        let err_fn = move |err| {
+        let err_fn = move |err: cpal::StreamError| {
             eprintln!("Audio stream error: {}", err);
             if let Some(ref tx) = err_tx {
-                let _ = tx.send(crate::audio::types::AudioEvent::Error(format!("CPAL error: {}", err)));
+                let err_str = err.to_string();
+                let err_lower = err_str.to_lowercase();
+                let is_disconnect = err_lower.contains("device")
+                    || err_lower.contains("invalidat")
+                    || err_lower.contains("disconnect");
+                if is_disconnect {
+                    let _ = tx.send(crate::audio::types::AudioEvent::DeviceDisconnected {
+                        device_name: dev_name.clone(),
+                        error: err_str,
+                    });
+                } else {
+                    let _ = tx.send(crate::audio::types::AudioEvent::Error(format!("CPAL error: {}", err_str)));
+                }
             }
         };
         let stream_rate = config.sample_rate.0 as f32;
@@ -388,7 +401,7 @@ impl CpalBackend {
             return;
         }
 
-        if is_paused.load(Ordering::Relaxed) {
+        if is_paused.load(Ordering::Relaxed) || !dsp.is_chain_complete() {
             data.fill(0.0);
             for _ in 0..(data.len() / channels.max(1)) {
                 visualizer.push_sample(0.0);
@@ -408,7 +421,7 @@ impl CpalBackend {
             if popped_len < data.len() {
                 data[popped_len..].fill(0.0);
             }
-            if vol <= 0.0001 {
+            if vol <= 0.0001 || !dsp.is_chain_complete() {
                 data.fill(0.0);
                 for _ in 0..(data.len() / 2) {
                     visualizer.push_sample(0.0);
@@ -417,6 +430,9 @@ impl CpalBackend {
             }
             if !is_bp {
                 dsp.process_interleaved(data);
+                visualizer.set_gain_reduction(dsp.get_max_gain_reduction());
+            } else {
+                visualizer.set_gain_reduction(0.0);
             }
             if (vol - 1.0).abs() > 0.0001 {
                 for s in data.iter_mut() {
@@ -424,26 +440,26 @@ impl CpalBackend {
                 }
             }
             for frame in data.chunks_exact(2) {
-                visualizer.push_sample((frame[0] + frame[1]) * 0.5);
+                visualizer.push_stereo(frame[0], frame[1]);
             }
         } else if channels == 1 {
             for out in data.iter_mut() {
                 let l = consumer.pop().unwrap_or(0.0);
                 let r = consumer.pop().unwrap_or(0.0);
-                if vol <= 0.0001 {
+                if vol <= 0.0001 || !dsp.is_chain_complete() {
                     *out = 0.0;
                     visualizer.push_sample(0.0);
                 } else {
                     let s = ((l + r) * 0.5) * vol;
                     *out = s;
-                    visualizer.push_sample(s);
+                    visualizer.push_stereo(s, s);
                 }
             }
         } else {
             for frame in data.chunks_mut(channels) {
                 let l = consumer.pop().unwrap_or(0.0);
                 let r = if frame.len() > 1 { consumer.pop().unwrap_or(0.0) } else { l };
-                if vol <= 0.0001 {
+                if vol <= 0.0001 || !dsp.is_chain_complete() {
                     frame.fill(0.0);
                     visualizer.push_sample(0.0);
                 } else {
@@ -454,7 +470,7 @@ impl CpalBackend {
                     for ch in 2..frame.len() {
                         frame[ch] = 0.0;
                     }
-                    visualizer.push_sample((l + r) * 0.5 * vol);
+                    visualizer.push_stereo(l * vol, r * vol);
                 }
             }
         }
@@ -488,7 +504,7 @@ impl CpalBackend {
             return;
         }
 
-        if is_paused.load(Ordering::Relaxed) {
+        if is_paused.load(Ordering::Relaxed) || !dsp.is_chain_complete() {
             data.fill(0);
             for _ in 0..(data.len() / channels.max(1)) {
                 visualizer.push_sample(0.0);
@@ -514,7 +530,7 @@ impl CpalBackend {
                 if popped_len < needed {
                     temp_buf[popped_len..needed].fill(0.0);
                 }
-                if vol <= 0.0001 {
+                if vol <= 0.0001 || !dsp.is_chain_complete() {
                     frame_chunk.fill(0);
                     for _ in 0..(needed / 2) {
                         visualizer.push_sample(0.0);
@@ -523,32 +539,35 @@ impl CpalBackend {
                 }
                 if !is_bp {
                     dsp.process_interleaved(&mut temp_buf[..needed]);
+                    visualizer.set_gain_reduction(dsp.get_max_gain_reduction());
+                } else {
+                    visualizer.set_gain_reduction(0.0);
                 }
                 for (dst, &src) in frame_chunk.iter_mut().zip(&temp_buf[..needed]) {
                     *dst = to_i32(src * vol);
                 }
                 for pair in temp_buf[..needed].chunks_exact(2) {
-                    visualizer.push_sample((pair[0] + pair[1]) * 0.5 * vol);
+                    visualizer.push_stereo(pair[0] * vol, pair[1] * vol);
                 }
             }
         } else if channels == 1 {
             for out in data.iter_mut() {
                 let l = consumer.pop().unwrap_or(0.0);
                 let r = consumer.pop().unwrap_or(0.0);
-                if vol <= 0.0001 {
+                if vol <= 0.0001 || !dsp.is_chain_complete() {
                     *out = 0;
                     visualizer.push_sample(0.0);
                 } else {
                     let s = ((l + r) * 0.5) * vol;
                     *out = to_i32(s);
-                    visualizer.push_sample(s);
+                    visualizer.push_stereo(s, s);
                 }
             }
         } else {
             for frame in data.chunks_mut(channels) {
                 let l = consumer.pop().unwrap_or(0.0);
                 let r = if frame.len() > 1 { consumer.pop().unwrap_or(0.0) } else { l };
-                if vol <= 0.0001 {
+                if vol <= 0.0001 || !dsp.is_chain_complete() {
                     frame.fill(0);
                     visualizer.push_sample(0.0);
                 } else {
@@ -559,7 +578,7 @@ impl CpalBackend {
                     for ch in 2..frame.len() {
                         frame[ch] = 0;
                     }
-                    visualizer.push_sample((l + r) * 0.5 * vol);
+                    visualizer.push_stereo(l * vol, r * vol);
                 }
             }
         }
@@ -593,7 +612,7 @@ impl CpalBackend {
             return;
         }
 
-        if is_paused.load(Ordering::Relaxed) {
+        if is_paused.load(Ordering::Relaxed) || !dsp.is_chain_complete() {
             data.fill(0);
             for _ in 0..(data.len() / channels.max(1)) {
                 visualizer.push_sample(0.0);
@@ -623,7 +642,7 @@ impl CpalBackend {
                 if popped_len < needed {
                     temp_buf[popped_len..needed].fill(0.0);
                 }
-                if vol <= 0.0001 {
+                if vol <= 0.0001 || !dsp.is_chain_complete() {
                     frame_chunk.fill(0);
                     for _ in 0..(needed / 2) {
                         visualizer.push_sample(0.0);
@@ -632,32 +651,35 @@ impl CpalBackend {
                 }
                 if !is_bp {
                     dsp.process_interleaved(&mut temp_buf[..needed]);
+                    visualizer.set_gain_reduction(dsp.get_max_gain_reduction());
+                } else {
+                    visualizer.set_gain_reduction(0.0);
                 }
                 for (dst, &src) in frame_chunk.iter_mut().zip(&temp_buf[..needed]) {
                     *dst = to_i16(src * vol, dither_state);
                 }
                 for pair in temp_buf[..needed].chunks_exact(2) {
-                    visualizer.push_sample((pair[0] + pair[1]) * 0.5 * vol);
+                    visualizer.push_stereo(pair[0] * vol, pair[1] * vol);
                 }
             }
         } else if channels == 1 {
             for out in data.iter_mut() {
                 let l = consumer.pop().unwrap_or(0.0);
                 let r = consumer.pop().unwrap_or(0.0);
-                if vol <= 0.0001 {
+                if vol <= 0.0001 || !dsp.is_chain_complete() {
                     *out = 0;
                     visualizer.push_sample(0.0);
                 } else {
                     let s = ((l + r) * 0.5) * vol;
                     *out = to_i16(s, dither_state);
-                    visualizer.push_sample(s);
+                    visualizer.push_stereo(s, s);
                 }
             }
         } else {
             for frame in data.chunks_mut(channels) {
                 let l = consumer.pop().unwrap_or(0.0);
                 let r = if frame.len() > 1 { consumer.pop().unwrap_or(0.0) } else { l };
-                if vol <= 0.0001 {
+                if vol <= 0.0001 || !dsp.is_chain_complete() {
                     frame.fill(0);
                     visualizer.push_sample(0.0);
                 } else {
@@ -668,7 +690,7 @@ impl CpalBackend {
                     for ch in 2..frame.len() {
                         frame[ch] = 0;
                     }
-                    visualizer.push_sample((l + r) * 0.5 * vol);
+                    visualizer.push_stereo(l * vol, r * vol);
                 }
             }
         }

@@ -26,6 +26,186 @@ impl Default for ChainMode {
     }
 }
 
+/// Sinc interpolation quality / length preset for Rubato SRC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SincQuality {
+    /// 64-point Sinc convolution: ultra low CPU and lowest latency.
+    Fast,
+    /// 128-point Sinc convolution: standard audiophile transparency (Default).
+    Studio,
+    /// 256-point Sinc convolution: extreme mathematical reconstruction precision.
+    Extreme,
+}
+
+impl Default for SincQuality {
+    fn default() -> Self {
+        Self::Studio
+    }
+}
+
+impl SincQuality {
+    pub fn sinc_len(&self) -> usize {
+        match self {
+            SincQuality::Fast => 64,
+            SincQuality::Studio => 128,
+            SincQuality::Extreme => 256,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            SincQuality::Fast => "Fast (64-pt)",
+            SincQuality::Studio => "Studio (128-pt)",
+            SincQuality::Extreme => "Extreme (256-pt)",
+        }
+    }
+
+    pub fn short_name(&self) -> &'static str {
+        match self {
+            SincQuality::Fast => "64-pt",
+            SincQuality::Studio => "128-pt",
+            SincQuality::Extreme => "256-pt",
+        }
+    }
+
+    pub fn desc(&self) -> &'static str {
+        match self {
+            SincQuality::Fast => "64-point Sinc • Efisien & Latensi Rendah",
+            SincQuality::Studio => "128-point Sinc • Standar Studio Audiophile",
+            SincQuality::Extreme => "256-point Sinc • Presisi Rekonstruksi Ekstrim",
+        }
+    }
+}
+
+/// Anti-aliasing roll-off / cutoff frequency profile for Rubato SRC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RollOffProfile {
+    /// 0.95 cutoff: transparent, crisp, and analytical (Default).
+    Sharp,
+    /// 0.90 cutoff: relaxed roll-off, warm tone, silky highs.
+    Smooth,
+    /// 0.98 cutoff: maximal Nyquist bandwidth preservation.
+    Nyquist,
+}
+
+impl Default for RollOffProfile {
+    fn default() -> Self {
+        Self::Sharp
+    }
+}
+
+impl RollOffProfile {
+    pub fn cutoff(&self) -> f32 {
+        match self {
+            RollOffProfile::Sharp => 0.95,
+            RollOffProfile::Smooth => 0.90,
+            RollOffProfile::Nyquist => 0.98,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            RollOffProfile::Sharp => "Sharp (0.95)",
+            RollOffProfile::Smooth => "Smooth (0.90)",
+            RollOffProfile::Nyquist => "Nyquist (0.98)",
+        }
+    }
+
+    pub fn short_name(&self) -> &'static str {
+        match self {
+            RollOffProfile::Sharp => "Sharp",
+            RollOffProfile::Smooth => "Smooth",
+            RollOffProfile::Nyquist => "Nyquist",
+        }
+    }
+
+    pub fn desc(&self) -> &'static str {
+        match self {
+            RollOffProfile::Sharp => "0.95 Nyquist Cutoff • Jernih, Analitis & Zero Aliasing",
+            RollOffProfile::Smooth => "0.90 Nyquist Cutoff • Lembut, Hangat & Rileks",
+            RollOffProfile::Nyquist => "0.98 Nyquist Cutoff • Preservasi Frekuensi Maksimal",
+        }
+    }
+}
+
+/// Configuration settings for the audiophile Rubato Sinc resampler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ResamplerSettings {
+    pub quality: SincQuality,
+    pub profile: RollOffProfile,
+}
+
+/// Strongly-typed identifier for all DSP effects and routing blocks in the signal chain.
+/// Replaces fragile string name comparisons in the execution engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum EffectType {
+    GraphicEq,
+    ParametricEq,
+    TubeWarmer,
+    StereoWidener,
+    BassGuard,
+    VolumeAttenuator,
+    VolumeBooster,
+    AnalogPreamp,
+    DynamicLoudness,
+    SteppedAttenuator,
+    OpticalLeveler,
+    StereoBalance,
+    LowPassFilter,
+    Mixer,
+    Passthrough,
+    Splitter,
+    Compressor,
+    Convolution,
+    Custom,
+}
+
+impl EffectType {
+    /// Returns true if this node is purely a routing block (wire passthrough or splitter bus)
+    /// without active spectral/dynamic alteration.
+    #[inline]
+    pub fn is_routing_only(&self) -> bool {
+        matches!(self, EffectType::Passthrough | EffectType::Splitter)
+    }
+
+    /// Returns true if this node performs summing or crossfading of multiple inputs.
+    #[inline]
+    pub fn is_mixer(&self) -> bool {
+        matches!(self, EffectType::Mixer)
+    }
+
+    /// Returns true if this node is an equalizer (Graphic or Parametric).
+    #[inline]
+    pub fn is_eq(&self) -> bool {
+        matches!(self, EffectType::GraphicEq | EffectType::ParametricEq)
+    }
+
+    /// Human-readable default display name for this effect type.
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            EffectType::GraphicEq => "10-Band Graphic EQ",
+            EffectType::ParametricEq => "Parametric Equalizer",
+            EffectType::TubeWarmer => "Vacuum Tube Warmer",
+            EffectType::StereoWidener => "Stereo Soundstage Widener",
+            EffectType::BassGuard => "Subsonic Bass Guard",
+            EffectType::VolumeAttenuator => "Volume Attenuator",
+            EffectType::VolumeBooster => "Clean Headroom Booster",
+            EffectType::AnalogPreamp => "Class-A Analog Preamp",
+            EffectType::DynamicLoudness => "Dynamic Loudness Contour",
+            EffectType::SteppedAttenuator => "Stepped Attenuator",
+            EffectType::OpticalLeveler => "Optical Peak Leveler",
+            EffectType::StereoBalance => "Stereo Balance Control",
+            EffectType::LowPassFilter => "Low-Pass Filter (6dB/oct)",
+            EffectType::Mixer => "Mixer (2-In Summer / Crossfader)",
+            EffectType::Passthrough => "Passthrough (Wire)",
+            EffectType::Splitter => "Splitter / Y-Branch Bus",
+            EffectType::Compressor => "Studio Dynamic Compressor",
+            EffectType::Convolution => "Convolution / FIR Engine",
+            EffectType::Custom => "Custom DSP Effect",
+        }
+    }
+}
+
 /// Trait for modular audio DSP effects that can be inserted into the signal graph.
 pub trait Effect: Send + std::fmt::Debug {
     /// Process a contiguous block of left and right samples (SIMD auto-vectorizable).
@@ -42,9 +222,17 @@ pub trait Effect: Send + std::fmt::Debug {
     fn reset(&mut self);
     fn set_sample_rate(&mut self, sample_rate: f32);
     fn name(&self) -> &str;
+    /// Strongly-typed identifier for this effect.
+    fn effect_type(&self) -> EffectType {
+        EffectType::Custom
+    }
     fn set_param(&mut self, _param_id: u32, _val: f32) {}
     fn mix_ratio(&self) -> Option<f32> {
         None
+    }
+    /// Returns current gain reduction in decibels (e.g. 0.0 to 30.0 dB for compressors/limiters)
+    fn gain_reduction_db(&self) -> f32 {
+        0.0
     }
     fn clone_box(&self) -> Box<dyn Effect>;
 }
@@ -169,6 +357,8 @@ impl Default for SignalChainGraph {
 #[derive(Debug, Clone)]
 pub enum AudioCommand {
     Play(PathBuf),
+    QueueNext(PathBuf),
+    ClearNext,
     Pause,
     Resume,
     Restart,
@@ -186,6 +376,10 @@ pub enum AudioCommand {
     SetOutputDevice(Option<String>),
     /// Dynamic modular signal chain graph compiled from patchbay canvas
     SetSignalChainGraph(SignalChainGraph),
+    /// Customize Sinc resampler quality and roll-off profile
+    SetResamplerSettings(ResamplerSettings),
+    /// Set Crossfade duration in seconds (0.0 = pure gapless, >0.0 = smooth overlap)
+    SetCrossfadeSecs(f32),
 }
 
 /// Real-time non-blocking command delivered to audio callback DSP executor
@@ -259,6 +453,8 @@ pub fn calculate_effective_volume(
         0.0
     } else if is_bit_perfect {
         1.0
+    } else if software_volume <= 0.0001 {
+        0.0
     } else {
         software_volume
     }
@@ -288,10 +484,19 @@ pub enum AudioEvent {
         sample_rate: u32,
         channels: u16,
     },
+    TrackTransitioned {
+        path: Option<PathBuf>,
+        duration: f32,
+        sample_rate: u32,
+    },
     Position(f32),
     StateChanged(PlaybackState),
     TrackEnded,
     Error(String),
+    DeviceDisconnected {
+        device_name: String,
+        error: String,
+    },
     /// Engine reports the actual signal path after Play or mode change.
     SignalPath(SignalPathReport),
 }

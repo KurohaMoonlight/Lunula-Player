@@ -50,6 +50,10 @@ impl DspPipeline {
         self.executor.reset_states();
     }
 
+    pub fn get_max_gain_reduction(&self) -> f32 {
+        self.executor.get_max_gain_reduction()
+    }
+
     #[inline(always)]
     pub fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
         self.executor.process_block(left, right);

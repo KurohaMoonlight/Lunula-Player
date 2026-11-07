@@ -1,5 +1,5 @@
 use super::biquad::{soft_limit, BiquadCoeffs, BiquadState};
-use crate::audio::types::Effect;
+use crate::audio::types::{Effect, EffectType};
 
 // 10-Band Graphic EQ Frequencies matching LunulaPlayer
 pub const EQ_FREQUENCIES: [f64; 10] = [
@@ -125,6 +125,10 @@ impl Effect for GraphicEqEffect {
         "10-Band Graphic EQ"
     }
 
+    fn effect_type(&self) -> EffectType {
+        EffectType::GraphicEq
+    }
+
     fn set_param(&mut self, param_id: u32, val: f32) {
         let idx = param_id as usize;
         if idx < 10 {
@@ -203,6 +207,9 @@ impl Effect for TubeWarmerEffect {
     fn name(&self) -> &str {
         "Tube Warmer (Triode Saturation)"
     }
+    fn effect_type(&self) -> EffectType {
+        EffectType::TubeWarmer
+    }
     fn set_param(&mut self, param_id: u32, val: f32) {
         if param_id == 0 {
             self.drive = val.clamp(0.0, 100.0);
@@ -254,6 +261,9 @@ impl Effect for StereoWidenerEffect {
     fn set_sample_rate(&mut self, _sample_rate: f32) {}
     fn name(&self) -> &str {
         "Stereo Widener (Haas 3D)"
+    }
+    fn effect_type(&self) -> EffectType {
+        EffectType::StereoWidener
     }
     fn set_param(&mut self, param_id: u32, val: f32) {
         if param_id == 0 {
@@ -324,6 +334,10 @@ impl Effect for BassGuardEffect {
         "Bass Guard (24Hz Sub-Sonic Filter)"
     }
 
+    fn effect_type(&self) -> EffectType {
+        EffectType::BassGuard
+    }
+
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
     }
@@ -354,6 +368,9 @@ impl Effect for VolumeAttenuatorEffect {
     fn set_sample_rate(&mut self, _sample_rate: f32) {}
     fn name(&self) -> &str {
         "Volume Attenuator (-6dB Pad)"
+    }
+    fn effect_type(&self) -> EffectType {
+        EffectType::VolumeAttenuator
     }
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
@@ -408,6 +425,9 @@ impl Effect for VolumeBoosterEffect {
     fn set_sample_rate(&mut self, _sample_rate: f32) {}
     fn name(&self) -> &str {
         "Pure Volume Booster (0 to +24dB)"
+    }
+    fn effect_type(&self) -> EffectType {
+        EffectType::VolumeBooster
     }
     fn set_param(&mut self, param_id: u32, val: f32) {
         if param_id == 0 {
@@ -477,6 +497,9 @@ impl Effect for AnalogPreampEffect {
     fn set_sample_rate(&mut self, _sample_rate: f32) {}
     fn name(&self) -> &str {
         "Analog Preamp & Trim (-24 to +12dB)"
+    }
+    fn effect_type(&self) -> EffectType {
+        EffectType::AnalogPreamp
     }
     fn set_param(&mut self, param_id: u32, val: f32) {
         if param_id == 0 {
@@ -577,6 +600,10 @@ impl Effect for DynamicLoudnessEffect {
         "Dynamic Loudness (Fletcher-Munson ISO 226)"
     }
 
+    fn effect_type(&self) -> EffectType {
+        EffectType::DynamicLoudness
+    }
+
     fn set_param(&mut self, param_id: u32, val: f32) {
         if param_id == 0 {
             self.depth = val.clamp(0.0, 100.0);
@@ -649,6 +676,9 @@ impl Effect for SteppedAttenuatorEffect {
     fn set_sample_rate(&mut self, _sample_rate: f32) {}
     fn name(&self) -> &str {
         "Stepped Attenuator (-60 to 0dB)"
+    }
+    fn effect_type(&self) -> EffectType {
+        EffectType::SteppedAttenuator
     }
     fn set_param(&mut self, param_id: u32, val: f32) {
         if param_id == 0 {
@@ -758,10 +788,18 @@ impl Effect for OpticalLevelerEffect {
         "Studio Optical Leveler (LA-2A Night Dynamic Control)"
     }
 
+    fn effect_type(&self) -> EffectType {
+        EffectType::OpticalLeveler
+    }
+
     fn set_param(&mut self, param_id: u32, val: f32) {
         if param_id == 0 {
             self.target_drive = val.clamp(0.0, 100.0);
         }
+    }
+
+    fn gain_reduction_db(&self) -> f32 {
+        self.gain_reduction_db
     }
 
     fn clone_box(&self) -> Box<dyn Effect> {
@@ -820,6 +858,9 @@ impl Effect for StereoBalanceEffect {
     fn set_sample_rate(&mut self, _sample_rate: f32) {}
     fn name(&self) -> &str {
         "Stereo Balance & Trim"
+    }
+    fn effect_type(&self) -> EffectType {
+        EffectType::StereoBalance
     }
     fn set_param(&mut self, param_id: u32, val: f32) {
         if param_id == 0 {
@@ -900,6 +941,10 @@ impl Effect for LowPassFilterEffect {
         "Low-Pass Filter"
     }
 
+    fn effect_type(&self) -> EffectType {
+        EffectType::LowPassFilter
+    }
+
     fn set_param(&mut self, param_id: u32, val: f32) {
         if param_id == 0 && val >= 20.0 {
             self.cutoff_hz = (val as f64).clamp(50.0, 20000.0);
@@ -933,6 +978,9 @@ impl Effect for MixerEffect {
     fn name(&self) -> &str {
         "Mixer / Summing Bus"
     }
+    fn effect_type(&self) -> EffectType {
+        EffectType::Mixer
+    }
     fn set_param(&mut self, param_id: u32, val: f32) {
         if param_id == 0 {
             self.mix = val.clamp(0.0, 1.0);
@@ -963,6 +1011,9 @@ impl Effect for PassthroughEffect {
     fn name(&self) -> &str {
         "Passthrough (Wire)"
     }
+    fn effect_type(&self) -> EffectType {
+        EffectType::Passthrough
+    }
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
     }
@@ -986,6 +1037,9 @@ impl Effect for SplitterEffect {
     fn set_sample_rate(&mut self, _sample_rate: f32) {}
     fn name(&self) -> &str {
         "Splitter / Y-Branch Bus"
+    }
+    fn effect_type(&self) -> EffectType {
+        EffectType::Splitter
     }
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
@@ -1131,6 +1185,10 @@ impl Effect for ParametricEqEffect {
         &self.name
     }
 
+    fn effect_type(&self) -> EffectType {
+        EffectType::ParametricEq
+    }
+
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
     }
@@ -1138,4 +1196,119 @@ impl Effect for ParametricEqEffect {
 
 /// Backwards compatibility alias for PresetEqEffect
 pub type PresetEqEffect = ParametricEqEffect;
+
+/// Studio Dynamic Range Compressor Effect
+/// Transparently controls signal dynamics with adjustable threshold, ratio, attack, release, and makeup gain.
+#[derive(Clone, Debug)]
+pub struct CompressorEffect {
+    pub threshold_db: f32,   // -48.0 to 0.0 dBFS
+    pub ratio: f32,          // 1.0 to 20.0
+    pub attack_ms: f32,      // 0.5 to 100.0 ms
+    pub release_ms: f32,     // 10.0 to 1000.0 ms
+    pub makeup_gain_db: f32, // 0.0 to 24.0 dB
+    envelope: f32,
+    pub gain_reduction_db: f32,
+    sample_rate: f32,
+}
+
+impl CompressorEffect {
+    pub fn new(threshold_db: f32, ratio: f32, attack_ms: f32, release_ms: f32, makeup_gain_db: f32, sample_rate: f32) -> Self {
+        Self {
+            threshold_db: threshold_db.clamp(-60.0, 0.0),
+            ratio: ratio.clamp(1.0, 30.0),
+            attack_ms: attack_ms.clamp(0.1, 200.0),
+            release_ms: release_ms.clamp(5.0, 2000.0),
+            makeup_gain_db: makeup_gain_db.clamp(0.0, 24.0),
+            envelope: 0.0,
+            gain_reduction_db: 0.0,
+            sample_rate: sample_rate.max(8000.0),
+        }
+    }
+}
+
+impl Default for CompressorEffect {
+    fn default() -> Self {
+        Self::new(-16.0, 4.0, 10.0, 120.0, 2.0, 44100.0)
+    }
+}
+
+impl Effect for CompressorEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        if self.ratio <= 1.01 && self.makeup_gain_db.abs() < 0.01 {
+            self.gain_reduction_db = 0.0;
+            return; // Bypass
+        }
+
+        let thresh_lin = 10.0_f32.powf(self.threshold_db / 20.0);
+        let makeup_lin = 10.0_f32.powf(self.makeup_gain_db / 20.0);
+        let att_coeff = (-1.0 / ((self.attack_ms * 0.001) * self.sample_rate)).exp();
+        let rel_coeff = (-1.0 / ((self.release_ms * 0.001) * self.sample_rate)).exp();
+
+        let mut max_gr = 0.0f32;
+
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let peak = l.abs().max(r.abs());
+
+            if peak > self.envelope {
+                self.envelope = peak + att_coeff * (self.envelope - peak);
+            } else {
+                self.envelope = peak + rel_coeff * (self.envelope - peak);
+            }
+
+            let env_safe = self.envelope.max(1e-6);
+            let gain = if env_safe > thresh_lin {
+                let over_db = 20.0 * (env_safe / thresh_lin).log10();
+                let compressed_over_db = over_db / self.ratio;
+                let gr_db = over_db - compressed_over_db;
+                if gr_db > max_gr {
+                    max_gr = gr_db;
+                }
+                10.0_f32.powf(-gr_db / 20.0) * makeup_lin
+            } else {
+                makeup_lin
+            };
+
+            *l = (*l * gain).clamp(-1.0, 1.0);
+            *r = (*r * gain).clamp(-1.0, 1.0);
+        }
+
+        self.gain_reduction_db = max_gr;
+    }
+
+    fn reset(&mut self) {
+        self.envelope = 0.0;
+        self.gain_reduction_db = 0.0;
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        self.sample_rate = sample_rate.max(8000.0);
+    }
+
+    fn set_param(&mut self, param_id: u32, value: f32) {
+        match param_id {
+            0 => self.threshold_db = value.clamp(-60.0, 0.0),
+            1 => self.ratio = value.clamp(1.0, 30.0),
+            2 => self.attack_ms = value.clamp(0.1, 200.0),
+            3 => self.release_ms = value.clamp(5.0, 2000.0),
+            4 => self.makeup_gain_db = value.clamp(0.0, 24.0),
+            _ => {}
+        }
+    }
+
+    fn name(&self) -> &str {
+        "Studio Compressor"
+    }
+
+    fn effect_type(&self) -> EffectType {
+        EffectType::Compressor
+    }
+
+    fn gain_reduction_db(&self) -> f32 {
+        self.gain_reduction_db
+    }
+
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+}
 

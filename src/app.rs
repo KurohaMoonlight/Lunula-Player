@@ -1,5 +1,5 @@
 use eframe::egui;
-use egui::{Color32, Pos2, Stroke, Vec2};
+use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 use std::time::Instant;
 use crate::models::{
     AppTab, CableConnection, ChainMode, CustomPlaylist, DitherMode,
@@ -67,10 +67,54 @@ pub struct LunulaApp {
     pub filter_tutorial_step: usize,
     pub dragging_slider_node: Option<usize>,
 
+    // Game-Like Onboarding Quest
+    pub has_completed_onboarding: bool,
+    pub is_onboarding_quest_active: bool,
+    pub onboarding_quest_step: crate::models::OnboardingQuestStep,
+    pub quest_rect_signal_chain_tab: Option<Rect>,
+    pub quest_rect_dsp_mode_btn: Option<Rect>,
+    pub quest_rect_tube_warmer_btn: Option<Rect>,
+    pub quest_rect_cable_mute_target: Option<Rect>,
+
+    // Roadmap 2: 90% Screen Interactive Theater & Flying Mascot Guide
+    pub show_interactive_theater: bool,
+    pub theater_slide: usize,
+    pub theater_turn: usize,
+    pub theater_turn_timer: f32,
+    pub theater_is_playing: bool,
+    pub theater_dsp_active: bool,
+    pub theater_split_sum_active: bool,
+    pub theater_s3_selected_filter: usize,
+    pub theater_s3_order_swapped: bool,
+    pub theater_s3_loop_simulated: bool,
+    pub theater_s4_repeat_mode: usize,
+    pub theater_s4_shuffled: bool,
+    pub theater_s4_queue_open: bool,
+    pub theater_s4_seek_time: f32,
+    pub theater_s4_wave_mode: usize,
+    pub theater_s5_category: usize,
+    pub theater_s5_simulated_scan: bool,
+    pub theater_s5_selected_action: usize,
+
     // Global Output Stage (Separated from EQ preset)
     pub eq_limiter_enabled: bool,
     pub eq_dither_mode: DitherMode,
     pub eq_clip_count: u32,
+    pub resampler_settings: crate::audio::types::ResamplerSettings,
+
+    // ReplayGain & Gapless settings
+    pub replay_gain_mode: crate::models::ReplayGainMode,
+    pub replay_gain_preamp_db: f32,
+    pub replay_gain_clip_prevention: crate::models::ReplayGainClipPrevention,
+    pub is_gapless_enabled: bool,
+    pub effective_replay_gain_db: f32,
+    pub effective_replay_gain_linear: f32,
+    pub crossfade_secs: f32,
+
+    // Hot-unplug device handling
+    pub was_interrupted_by_unplug: bool,
+    pub unplug_device_name: Option<String>,
+    pub unplug_notification_timer: f32,
 
     // Track data
     pub current_track: Track,
@@ -108,6 +152,16 @@ pub struct LunulaApp {
     pub fft_analyzer: crate::audio::FftAnalyzer,
     pub spectrum_bars: [f32; 48],
     pub live_pcm_waveform: [f32; 48],
+    pub live_stereo_l: [f32; 1024],
+    pub live_stereo_r: [f32; 1024],
+    pub live_phase_correlation: f32,
+    pub live_integrated_lufs: f32,
+    pub live_true_peak_db: f32,
+    pub live_dynamic_range: f32,
+    pub live_gain_reduction_db: f32,
+    pub live_isp_clip_detected: bool,
+    pub live_isp_clip_count: u32,
+    pub live_isp_max_over_db: f32,
     pub dac_meter_l: f32,
     pub dac_meter_r: f32,
     pub dac_peak_hold_l: f32,
@@ -132,6 +186,26 @@ pub struct LunulaApp {
     pub cached_album_map: std::cell::RefCell<Option<std::collections::BTreeMap<String, Vec<usize>>>>,
     pub cached_artist_map: std::cell::RefCell<Option<std::collections::BTreeMap<String, Vec<usize>>>>,
     pub eq_curve_cache: std::cell::RefCell<Option<(u64, Vec<Pos2>)>>,
+    pub smtc_bridge: Option<crate::ui::smtc::SmtcBridge>,
+
+    // Synchronized lyrics (LRC)
+    pub current_lyrics: Option<crate::lyrics::Lyrics>,
+    pub lyrics_offset_trim_sec: f32,
+
+    // AutoEq Import Feedback
+    pub autoeq_import_status: Option<(String, bool)>,
+
+    // Tag Editor Modal
+    pub show_tag_editor: bool,
+    pub tag_editor_track_idx: Option<usize>,
+    pub tag_editor_path: Option<String>,
+    pub tag_editor_title: String,
+    pub tag_editor_artist: String,
+    pub tag_editor_album: String,
+    pub tag_editor_year: String,
+    pub tag_editor_genre: String,
+    pub tag_editor_track_num: String,
+    pub tag_editor_status: Option<(String, bool)>,
 }
 
 pub struct CoverLoadResult {
@@ -177,7 +251,7 @@ impl LunulaApp {
                 title: "FILE SOURCE".to_string(),
                 sub1: "FLAC 24-bit".to_string(),
                 sub2: "96.0 kHz".to_string(),
-                pos: Pos2::new(20.0, 48.0),
+                pos: Pos2::new(30.0, 60.0),
                 is_removable: false,
                 param_val: 0.0,
             },
@@ -187,7 +261,7 @@ impl LunulaApp {
                 title: "RAM BUFFER".to_string(),
                 sub1: "RingBuffer".to_string(),
                 sub2: "100% Loaded".to_string(),
-                pos: Pos2::new(176.0, 48.0),
+                pos: Pos2::new(280.0, 60.0),
                 is_removable: false,
                 param_val: 0.0,
             },
@@ -197,7 +271,7 @@ impl LunulaApp {
                 title: "DSP ENGINE".to_string(),
                 sub1: "BYPASSED (Direct Wire)".to_string(),
                 sub2: "0.0 dB Pure Master".to_string(),
-                pos: Pos2::new(332.0, 48.0),
+                pos: Pos2::new(405.0, 215.0),
                 is_removable: false,
                 param_val: 0.0,
             },
@@ -207,7 +281,7 @@ impl LunulaApp {
                 title: "APP RESAMPLER".to_string(),
                 sub1: "System Audio Endpoint".to_string(),
                 sub2: "Rubato Sinc SRC • 48.0 kHz".to_string(),
-                pos: Pos2::new(488.0, 48.0),
+                pos: Pos2::new(530.0, 60.0),
                 is_removable: false,
                 param_val: 0.0,
             },
@@ -217,7 +291,7 @@ impl LunulaApp {
                 title: "OUTPUT DAC".to_string(),
                 sub1: "Audio Endpoint".to_string(),
                 sub2: "Native Sample Rate".to_string(),
-                pos: Pos2::new(644.0, 48.0),
+                pos: Pos2::new(780.0, 60.0),
                 is_removable: false,
                 param_val: 0.0,
             },
@@ -309,9 +383,47 @@ impl LunulaApp {
             filter_tutorial_step: 0,
             dragging_slider_node: None,
 
+            has_completed_onboarding: false,
+            is_onboarding_quest_active: false,
+            onboarding_quest_step: crate::models::OnboardingQuestStep::Welcome,
+            quest_rect_signal_chain_tab: None,
+            quest_rect_dsp_mode_btn: None,
+            quest_rect_tube_warmer_btn: None,
+            quest_rect_cable_mute_target: None,
+
+            show_interactive_theater: true,
+            theater_slide: 0,
+            theater_turn: 0,
+            theater_turn_timer: 0.0,
+            theater_is_playing: true,
+            theater_dsp_active: false,
+            theater_split_sum_active: false,
+            theater_s3_selected_filter: 0,
+            theater_s3_order_swapped: false,
+            theater_s3_loop_simulated: false,
+            theater_s4_repeat_mode: 0,
+            theater_s4_shuffled: false,
+            theater_s4_queue_open: false,
+            theater_s4_seek_time: 14.0,
+            theater_s4_wave_mode: 0,
+            theater_s5_category: 0,
+            theater_s5_simulated_scan: false,
+            theater_s5_selected_action: 0,
+
             eq_limiter_enabled: false,
             eq_dither_mode: DitherMode::None,
             eq_clip_count: 0,
+            resampler_settings: crate::audio::types::ResamplerSettings::default(),
+            replay_gain_mode: crate::models::ReplayGainMode::default(),
+            replay_gain_preamp_db: 0.0,
+            replay_gain_clip_prevention: crate::models::ReplayGainClipPrevention::default(),
+            is_gapless_enabled: true,
+            effective_replay_gain_db: 0.0,
+            effective_replay_gain_linear: 1.0,
+            crossfade_secs: 0.0,
+            was_interrupted_by_unplug: false,
+            unplug_device_name: None,
+            unplug_notification_timer: 0.0,
 
             current_track: Track {
                 title: "Belum Ada Lagu Diputar".to_string(),
@@ -329,6 +441,9 @@ impl LunulaApp {
                 file_size_mb: 0.0,
                 bitrate_kbps: None,
                 is_favorite: false,
+                replay_gain: crate::models::ReplayGainData::default(),
+                cue_offset_sec: None,
+                cue_duration_sec: None,
             },
             playlist: Vec::new(),
             search_query: String::new(),
@@ -372,6 +487,16 @@ impl LunulaApp {
             fft_analyzer: crate::audio::FftAnalyzer::new(48000.0),
             spectrum_bars: [0.0; 48],
             live_pcm_waveform: [0.0; 48],
+            live_stereo_l: [0.0; 1024],
+            live_stereo_r: [0.0; 1024],
+            live_phase_correlation: 1.0,
+            live_integrated_lufs: -70.0,
+            live_true_peak_db: -96.0,
+            live_dynamic_range: 0.0,
+            live_gain_reduction_db: 0.0,
+            live_isp_clip_detected: false,
+            live_isp_clip_count: 0,
+            live_isp_max_over_db: 0.0,
             dac_meter_l: 0.0,
             dac_meter_r: 0.0,
             dac_peak_hold_l: 0.0,
@@ -395,6 +520,22 @@ impl LunulaApp {
             cached_album_map: std::cell::RefCell::new(None),
             cached_artist_map: std::cell::RefCell::new(None),
             eq_curve_cache: std::cell::RefCell::new(None),
+            smtc_bridge: crate::ui::smtc::SmtcBridge::new(),
+
+            current_lyrics: None,
+            lyrics_offset_trim_sec: 0.0,
+            autoeq_import_status: None,
+
+            show_tag_editor: false,
+            tag_editor_track_idx: None,
+            tag_editor_path: None,
+            tag_editor_title: String::new(),
+            tag_editor_artist: String::new(),
+            tag_editor_album: String::new(),
+            tag_editor_year: String::new(),
+            tag_editor_genre: String::new(),
+            tag_editor_track_num: String::new(),
+            tag_editor_status: None,
         };
 
         if let Some(state) = Self::load_library_state() {
@@ -441,8 +582,36 @@ impl LunulaApp {
             if let Some(dith) = state.eq_dither_mode {
                 app.eq_dither_mode = dith;
             }
-            app.set_chain_mode(state.chain_mode);
+            if let Some(q) = state.resampler_quality {
+                app.resampler_settings.quality = q;
+            }
+            if let Some(p) = state.resampler_profile {
+                app.resampler_settings.profile = p;
+            }
+            if let Some(rgm) = state.replay_gain_mode {
+                app.replay_gain_mode = rgm;
+            }
+            if let Some(pre) = state.replay_gain_preamp_db {
+                app.replay_gain_preamp_db = pre;
+            }
+            if let Some(cp) = state.replay_gain_clip_prevention {
+                app.replay_gain_clip_prevention = cp;
+            }
+            if let Some(cf) = state.crossfade_secs {
+                app.crossfade_secs = cf;
+            }
+            app.has_completed_onboarding = state.has_completed_onboarding.unwrap_or(false);
+            if !app.has_completed_onboarding {
+                app.is_onboarding_quest_active = true;
+                app.set_chain_mode(ChainMode::BitPerfect);
+            } else {
+                app.set_chain_mode(state.chain_mode);
+            }
         } else {
+            // First time application is ever launched!
+            app.has_completed_onboarding = false;
+            app.is_onboarding_quest_active = true;
+            app.set_chain_mode(ChainMode::BitPerfect);
             app.eq_bands[0] = 3.0;
             app.eq_bands[1] = 1.5;
             app.eq_bands[8] = 1.0;
@@ -459,10 +628,13 @@ impl LunulaApp {
                 engine.set_output_device(Some(dev.clone()));
             }
             engine.set_volume(if app.is_muted { 0.0 } else { app.volume });
+            engine.set_chain_mode(app.chain_mode);
             engine.set_eq_bypass(app.eq_bypass);
             for (idx, &gain) in app.eq_bands.iter().enumerate() {
                 engine.set_eq_band(idx, gain);
             }
+            engine.set_resampler_settings(app.resampler_settings);
+            engine.set_crossfade_secs(app.crossfade_secs);
         }
 
         app.sync_signal_chain_to_engine();
@@ -479,6 +651,234 @@ impl LunulaApp {
         self.sync_signal_chain_to_engine();
     }
 
+    pub fn set_crossfade_secs(&mut self, secs: f32) {
+        self.crossfade_secs = secs.clamp(0.0, 12.0);
+        if let Some(ref engine) = self.audio_engine {
+            engine.set_crossfade_secs(self.crossfade_secs);
+        }
+        self.save_library_state();
+    }
+
+    pub fn calculate_effective_replay_gain(&self, track: &Track) -> (f32, f32) {
+        use crate::models::{ReplayGainClipPrevention, ReplayGainMode};
+        if self.replay_gain_mode == ReplayGainMode::Disabled {
+            return (0.0, 1.0);
+        }
+
+        let rg = &track.replay_gain;
+        let (base_gain, peak_opt) = match self.replay_gain_mode {
+            ReplayGainMode::Track => (rg.track_gain_db.unwrap_or(0.0), rg.track_peak),
+            ReplayGainMode::Album => (
+                rg.album_gain_db.or(rg.track_gain_db).unwrap_or(0.0),
+                rg.album_peak.or(rg.track_peak),
+            ),
+            ReplayGainMode::Auto => {
+                let is_album_context = self.repeat_mode == RepeatMode::Album || self.selected_album_filter.is_some();
+                if is_album_context {
+                    (
+                        rg.album_gain_db.or(rg.track_gain_db).unwrap_or(0.0),
+                        rg.album_peak.or(rg.track_peak),
+                    )
+                } else {
+                    (
+                        rg.track_gain_db.or(rg.album_gain_db).unwrap_or(0.0),
+                        rg.track_peak.or(rg.album_peak),
+                    )
+                }
+            }
+            ReplayGainMode::Disabled => (0.0, None),
+        };
+
+        let raw_gain = base_gain + self.replay_gain_preamp_db;
+
+        let effective_gain_db = match self.replay_gain_clip_prevention {
+            ReplayGainClipPrevention::PreventByPeak => {
+                let peak = peak_opt.unwrap_or(1.0);
+                if peak > 0.0 {
+                    let max_gain_db = -20.0 * peak.log10();
+                    if raw_gain > max_gain_db {
+                        max_gain_db
+                    } else {
+                        raw_gain
+                    }
+                } else {
+                    raw_gain.min(0.0)
+                }
+            }
+            ReplayGainClipPrevention::Limiter => raw_gain,
+            ReplayGainClipPrevention::None => raw_gain,
+        };
+
+        let linear = 10.0_f32.powf(effective_gain_db / 20.0).clamp(0.0, 4.0);
+        (effective_gain_db, linear)
+    }
+
+    pub fn update_effective_replay_gain(&mut self) {
+        let (db, lin) = self.calculate_effective_replay_gain(&self.current_track);
+        self.effective_replay_gain_db = db;
+        self.effective_replay_gain_linear = lin;
+
+        if self.replay_gain_clip_prevention == crate::models::ReplayGainClipPrevention::Limiter && db > 0.0 {
+            self.eq_limiter_enabled = true;
+        }
+    }
+
+    pub fn sync_smtc_state(&mut self) {
+        if let Some(ref mut smtc) = self.smtc_bridge {
+            let title = &self.current_track.title;
+            let artist = &self.current_track.artist;
+            let album = &self.current_track.album;
+            let dur = self.current_track.duration;
+            let cover_url = self.current_track.file_path.as_deref();
+            smtc.update_metadata(title, artist, album, dur, cover_url);
+            smtc.update_playback_state(self.is_playing, self.current_time);
+        }
+    }
+
+    pub fn peek_next_track(&self) -> Option<Track> {
+        if self.repeat_mode == RepeatMode::One {
+            return Some(self.current_track.clone());
+        }
+
+        if !self.play_queue.is_empty() {
+            let next_queue_idx = if self.is_shuffled {
+                let pool: Vec<usize> = if self.play_queue.len() > 1 {
+                    (0..self.play_queue.len()).filter(|&i| Some(i) != self.queue_cursor).collect()
+                } else {
+                    vec![0]
+                };
+                if pool.is_empty() { 0 } else { pool[0] }
+            } else {
+                match self.queue_cursor {
+                    Some(cur) => cur + 1,
+                    None => 0,
+                }
+            };
+
+            if next_queue_idx < self.play_queue.len() {
+                return Some(self.play_queue[next_queue_idx].clone());
+            } else if self.repeat_mode == RepeatMode::All || self.repeat_mode == RepeatMode::Album {
+                return Some(self.play_queue[0].clone());
+            } else {
+                return None;
+            }
+        }
+
+        if self.playlist.is_empty() {
+            return None;
+        }
+
+        let candidate_indices: Vec<usize> = match self.repeat_mode {
+            RepeatMode::Album => {
+                let cur_album = self.current_track.album.trim().to_lowercase();
+                let matched: Vec<usize> = self.playlist.iter().enumerate()
+                    .filter(|(_, t)| !t.album.trim().is_empty() && t.album.trim().to_lowercase() == cur_album)
+                    .map(|(i, _)| i)
+                    .collect();
+                if matched.is_empty() {
+                    (0..self.playlist.len()).collect()
+                } else {
+                    matched
+                }
+            }
+            _ => (0..self.playlist.len()).collect(),
+        };
+
+        if candidate_indices.is_empty() {
+            return None;
+        }
+
+        if self.is_shuffled {
+            let cur_global_idx = self.playlist.iter().position(|t| {
+                t.title == self.current_track.title && t.artist == self.current_track.artist
+            });
+            let pool: Vec<usize> = if candidate_indices.len() > 1 {
+                candidate_indices.into_iter().filter(|&i| Some(i) != cur_global_idx).collect()
+            } else {
+                candidate_indices
+            };
+            if pool.is_empty() {
+                None
+            } else {
+                Some(self.playlist[pool[0]].clone())
+            }
+        } else {
+            let cur_pos = candidate_indices.iter().position(|&idx| {
+                let t = &self.playlist[idx];
+                t.title == self.current_track.title && t.artist == self.current_track.artist
+            });
+
+            match cur_pos {
+                Some(pos) => {
+                    let next_pos = pos + 1;
+                    if next_pos < candidate_indices.len() {
+                        let global_idx = candidate_indices[next_pos];
+                        Some(self.playlist[global_idx].clone())
+                    } else {
+                        match self.repeat_mode {
+                            RepeatMode::Off => None,
+                            RepeatMode::All | RepeatMode::Album | RepeatMode::One => {
+                                let global_idx = candidate_indices[0];
+                                Some(self.playlist[global_idx].clone())
+                            }
+                        }
+                    }
+                }
+                None => candidate_indices.first().map(|&idx| self.playlist[idx].clone()),
+            }
+        }
+    }
+
+    pub fn on_gapless_transition(&mut self, path: Option<std::path::PathBuf>, duration: f32, sample_rate: u32) {
+        let next_track_opt = if let Some(p) = &path {
+            let p_str = p.to_string_lossy().to_string();
+            if let Some(pos) = self.play_queue.iter().position(|t| t.file_path.as_deref() == Some(&p_str)) {
+                self.queue_cursor = Some(pos);
+                Some(self.play_queue[pos].clone())
+            } else if let Some(t) = self.playlist.iter().find(|t| t.file_path.as_deref() == Some(&p_str)) {
+                Some(t.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if let Some(mut next_t) = next_track_opt {
+            if duration > 0.0 {
+                next_t.duration = duration;
+            }
+            if sample_rate > 0 {
+                next_t.sample_rate = sample_rate;
+            }
+            self.current_track = next_t;
+        }
+        self.current_time = 0.0;
+        self.is_playing = true;
+        self.current_cover_bytes = self.current_track.file_path.as_ref().and_then(|p| {
+            crate::scanner::extract_album_art(p)
+        });
+        self.current_cover_texture = None;
+        self.current_lyrics = self.current_track.file_path.as_ref().and_then(|p| {
+            crate::lyrics::Lyrics::load_for_track(std::path::Path::new(p))
+        });
+        self.lyrics_offset_trim_sec = 0.0;
+
+        self.update_effective_replay_gain();
+        self.sync_smtc_state();
+
+        if self.is_gapless_enabled {
+            if let Some(next) = self.peek_next_track() {
+                if let Some(ref next_p) = next.file_path {
+                    if let Some(ref engine) = self.audio_engine {
+                        engine.queue_next(std::path::PathBuf::from(next_p));
+                    }
+                }
+            }
+        }
+        self.save_library_state();
+    }
+
     pub fn play_track(&mut self, track: Track) {
         self.current_track = track;
         self.current_time = 0.0;
@@ -487,14 +887,41 @@ impl LunulaApp {
             crate::scanner::extract_album_art(p)
         });
         self.current_cover_texture = None; // Reset so next frame builds the new texture
+        self.current_lyrics = self.current_track.file_path.as_ref().and_then(|p| {
+            crate::lyrics::Lyrics::load_for_track(std::path::Path::new(p))
+        });
+        self.lyrics_offset_trim_sec = 0.0;
+
+        self.update_effective_replay_gain();
+        self.sync_smtc_state();
 
         if let Some(ref path_str) = self.current_track.file_path {
             if let Some(ref engine) = self.audio_engine {
                 engine.set_chain_mode(self.chain_mode);
                 engine.play(std::path::PathBuf::from(path_str));
-                engine.set_volume(if self.is_muted { 0.0 } else { self.volume });
+                if let Some(cue_offset) = self.current_track.cue_offset_sec {
+                    if cue_offset > 0.01 {
+                        engine.seek(cue_offset);
+                    }
+                }
+                let eff_vol = if self.is_muted {
+                    0.0
+                } else if self.chain_mode == ChainMode::BitPerfect {
+                    self.volume
+                } else {
+                    (self.volume * self.effective_replay_gain_linear).clamp(0.0, 2.0)
+                };
+                engine.set_volume(eff_vol);
                 for (idx, &gain) in self.eq_bands.iter().enumerate() {
                     engine.set_eq_band(idx, gain);
+                }
+
+                if self.is_gapless_enabled {
+                    if let Some(next) = self.peek_next_track() {
+                        if let Some(ref next_p) = next.file_path {
+                            engine.queue_next(std::path::PathBuf::from(next_p));
+                        }
+                    }
                 }
             }
             self.sync_signal_chain_to_engine();
@@ -515,10 +942,18 @@ impl LunulaApp {
                     engine.resume();
                 } else if let Some(ref path_str) = self.current_track.file_path {
                     engine.play(std::path::PathBuf::from(path_str));
-                    engine.set_volume(if self.is_muted { 0.0 } else { self.volume });
+                    let eff_vol = if self.is_muted {
+                        0.0
+                    } else if self.chain_mode == ChainMode::BitPerfect {
+                        self.volume
+                    } else {
+                        (self.volume * self.effective_replay_gain_linear).clamp(0.0, 2.0)
+                    };
+                    engine.set_volume(eff_vol);
                 }
             }
         }
+        self.sync_smtc_state();
     }
 
     pub fn advance_track(&mut self, is_manual_skip: bool) {
@@ -776,14 +1211,24 @@ impl LunulaApp {
         self.save_library_state();
     }
 
-    pub fn seek_relative(&mut self, delta_seconds: f32) {
+    pub fn seek_to(&mut self, target_seconds: f32) {
         if self.current_track.duration > 0.0 {
-            let target = (self.current_time + delta_seconds).clamp(0.0, self.current_track.duration);
+            let target = target_seconds.clamp(0.0, self.current_track.duration);
             self.current_time = target;
             if let Some(ref engine) = self.audio_engine {
-                engine.seek(target);
+                let actual = if let Some(offset) = self.current_track.cue_offset_sec {
+                    offset + target
+                } else {
+                    target
+                };
+                engine.seek(actual);
             }
+            self.sync_smtc_state();
         }
+    }
+
+    pub fn seek_relative(&mut self, delta_seconds: f32) {
+        self.seek_to(self.current_time + delta_seconds);
     }
 
     pub fn set_app_volume(&mut self, vol: f32) {
@@ -838,7 +1283,7 @@ impl LunulaApp {
                     if report.is_exclusive {
                         node.sub2 = format!("Direct Bitstream • {:.1} kHz", report.device_rate as f32 / 1000.0);
                     } else if report.is_resampling {
-                        node.sub2 = format!("Rubato Sinc SRC • {:.1} kHz", report.device_rate as f32 / 1000.0);
+                        node.sub2 = format!("Rubato Sinc {} ({}) • {:.1} kHz", self.resampler_settings.quality.short_name(), self.resampler_settings.profile.short_name(), report.device_rate as f32 / 1000.0);
                     } else {
                         node.sub2 = format!("1:1 Native Rate • {:.1} kHz", report.device_rate as f32 / 1000.0);
                     }
@@ -851,6 +1296,18 @@ impl LunulaApp {
                 _ => {}
             }
         }
+    }
+
+    pub fn set_resampler_settings(&mut self, settings: crate::audio::types::ResamplerSettings) {
+        self.resampler_settings = settings;
+        if let Some(ref engine) = self.audio_engine {
+            engine.set_resampler_settings(settings);
+        }
+        if let Some(node) = self.nodes.iter_mut().find(|n| n.id == 4) {
+            let rate_str = self.signal_path_report.as_ref().map_or("48.0 kHz".to_string(), |r| format!("{:.1} kHz", r.device_rate as f32 / 1000.0));
+            node.sub2 = format!("Rubato Sinc {} ({}) • {}", settings.quality.short_name(), settings.profile.short_name(), rate_str);
+        }
+        self.save_library_state();
     }
 
     pub fn set_chain_mode(&mut self, mode: ChainMode) {
@@ -912,10 +1369,10 @@ impl LunulaApp {
                                 n.sub2 = "1:1 Native Rate (Bit-Perfect)".to_string();
                             }
                             ChainMode::DspActive => {
-                                n.sub2 = "Rubato Sinc SRC • 48.0 kHz".to_string();
+                                n.sub2 = format!("Rubato Sinc {} ({}) • 48.0 kHz", self.resampler_settings.quality.short_name(), self.resampler_settings.profile.short_name());
                             }
                             ChainMode::OsResampled => {
-                                n.sub2 = "Resample to 48.0 kHz".to_string();
+                                n.sub2 = format!("Resample {} ({}) to 48.0 kHz", self.resampler_settings.quality.short_name(), self.resampler_settings.profile.short_name());
                             }
                         }
                     }
@@ -934,6 +1391,7 @@ impl LunulaApp {
 
         if let Some(ref engine) = self.audio_engine {
             engine.set_chain_mode(mode);
+            engine.set_eq_bypass(self.eq_bypass);
         }
 
         self.invalidate_chain_cache();
@@ -1126,7 +1584,7 @@ impl LunulaApp {
         use std::collections::{HashMap, VecDeque};
         use crate::models::NodeType;
         use crate::audio::{
-            AnalogPreampEffect, BassGuardEffect, DynamicLoudnessEffect, Effect, LowPassFilterEffect, MixerEffect, OpticalLevelerEffect,
+            AnalogPreampEffect, BassGuardEffect, CompressorEffect, DynamicLoudnessEffect, Effect, LowPassFilterEffect, MixerEffect, OpticalLevelerEffect,
             PassthroughEffect, PresetEqEffect, SplitterEffect, SteppedAttenuatorEffect, StereoBalanceEffect, StereoWidenerEffect,
             TubeWarmerEffect, VolumeAttenuatorEffect, VolumeBoosterEffect,
         };
@@ -1276,6 +1734,10 @@ impl LunulaApp {
                         let bal = if (-100.0..=100.0).contains(&node.param_val) { node.param_val } else { 0.0 };
                         Box::new(StereoBalanceEffect::new(bal))
                     }
+                    NodeType::Compressor => {
+                        let thresh = if (-48.0..=0.0).contains(&node.param_val) { node.param_val } else { -16.0 };
+                        Box::new(CompressorEffect::new(thresh, 4.0, 10.0, 120.0, 2.0, sample_rate as f32))
+                    }
                     _ => {
                         Box::new(PassthroughEffect)
                     }
@@ -1307,7 +1769,7 @@ impl LunulaApp {
         }
 
         crate::audio::SignalChainGraph {
-            is_complete: true,
+            is_complete: chain_eval.is_complete,
             nodes,
             edges,
             topological_order,
@@ -1391,30 +1853,131 @@ impl eframe::App for LunulaApp {
             ctx.request_repaint();
         }
 
+        // Windows SMTC & Hardware Media Keys handling
+        let smtc_events: Vec<souvlaki::MediaControlEvent> = if let Some(ref smtc) = self.smtc_bridge {
+            let mut evs = Vec::new();
+            while let Ok(event) = smtc.event_receiver().try_recv() {
+                evs.push(event);
+            }
+            evs
+        } else {
+            Vec::new()
+        };
+
+        for event in smtc_events {
+            match event {
+                souvlaki::MediaControlEvent::Play => {
+                    if !self.is_playing {
+                        self.toggle_playback();
+                    }
+                }
+                souvlaki::MediaControlEvent::Pause => {
+                    if self.is_playing {
+                        self.toggle_playback();
+                    }
+                }
+                souvlaki::MediaControlEvent::Toggle => {
+                    self.toggle_playback();
+                }
+                souvlaki::MediaControlEvent::Next => {
+                    self.play_next_track();
+                }
+                souvlaki::MediaControlEvent::Previous => {
+                    self.play_prev_track();
+                }
+                souvlaki::MediaControlEvent::Stop => {
+                    self.is_playing = false;
+                    if let Some(ref engine) = self.audio_engine {
+                        engine.stop();
+                    }
+                    self.sync_smtc_state();
+                }
+                souvlaki::MediaControlEvent::SetPosition(pos) => {
+                    let secs = pos.0.as_secs_f32();
+                    self.current_time = secs;
+                    if let Some(ref engine) = self.audio_engine {
+                        engine.seek(secs);
+                    }
+                    self.sync_smtc_state();
+                }
+                _ => {}
+            }
+        }
+
+        // Hot-Unplug Protection & Auto-Resume Detection
+        if self.was_interrupted_by_unplug {
+            if self.unplug_notification_timer > 0.0 {
+                self.unplug_notification_timer = (self.unplug_notification_timer - ctx.input(|i| i.stable_dt)).max(0.0);
+            }
+            let devs = crate::audio::backend::enumerate_output_devices();
+            let is_restored = match &self.unplug_device_name {
+                Some(name) => devs.iter().any(|d| &d.name == name),
+                None => !devs.is_empty(),
+            };
+            if is_restored {
+                eprintln!("[Hot-Plug] Perangkat audio tersambung kembali. Melanjutkan playback otomatis...");
+                self.was_interrupted_by_unplug = false;
+                self.unplug_device_name = None;
+                self.is_playing = true;
+                if let Some(ref engine) = self.audio_engine {
+                    if let Some(ref path_str) = self.current_track.file_path {
+                        engine.play(std::path::PathBuf::from(path_str));
+                        let seek_pos = self.current_time;
+                        if seek_pos > 0.5 {
+                            engine.seek(seek_pos);
+                        }
+                    }
+                }
+                self.sync_smtc_state();
+            }
+        }
+
         // Synchronize with real Audio Engine
         let mut track_ended = false;
         let mut new_duration = None;
         let mut new_signal_path = None;
 
-        if let Some(ref engine) = self.audio_engine {
+        let engine_events: Vec<crate::audio::AudioEvent> = if let Some(ref engine) = self.audio_engine {
+            let mut evs = Vec::new();
             while let Some(event) = engine.try_recv_event() {
-                match event {
-                    crate::audio::AudioEvent::TrackEnded => {
-                        track_ended = true;
-                    }
-                    crate::audio::AudioEvent::TrackStarted { duration, .. } => {
-                        if duration > 0.0 {
-                            new_duration = Some(duration);
-                        }
-                    }
-                    crate::audio::AudioEvent::SignalPath(report) => {
-                        new_signal_path = Some(report);
-                    }
-                    crate::audio::AudioEvent::Error(err) => {
-                        eprintln!("[Audio Engine Error] {}", err);
-                    }
-                    _ => {}
+                evs.push(event);
+            }
+            evs
+        } else {
+            Vec::new()
+        };
+
+        for event in engine_events {
+            match event {
+                crate::audio::AudioEvent::TrackEnded => {
+                    track_ended = true;
                 }
+                crate::audio::AudioEvent::TrackTransitioned { path, duration, sample_rate } => {
+                    self.on_gapless_transition(path, duration, sample_rate);
+                }
+                crate::audio::AudioEvent::DeviceDisconnected { device_name, error } => {
+                    eprintln!("[Audio Device Disconnected] {}: {}", device_name, error);
+                    self.is_playing = false;
+                    self.was_interrupted_by_unplug = true;
+                    self.unplug_device_name = Some(device_name);
+                    self.unplug_notification_timer = 6.0;
+                    if let Some(ref engine) = self.audio_engine {
+                        engine.pause();
+                    }
+                    self.sync_smtc_state();
+                }
+                crate::audio::AudioEvent::TrackStarted { duration, .. } => {
+                    if duration > 0.0 {
+                        new_duration = Some(duration);
+                    }
+                }
+                crate::audio::AudioEvent::SignalPath(report) => {
+                    new_signal_path = Some(report);
+                }
+                crate::audio::AudioEvent::Error(err) => {
+                    eprintln!("[Audio Engine Error] {}", err);
+                }
+                _ => {}
             }
         }
 
@@ -1437,19 +2000,46 @@ impl eframe::App for LunulaApp {
 
         // Audio Engine volume interlock: silence hardware output when signal chain is severed
         if let Some(ref engine) = self.audio_engine {
-            if !is_chain_ok {
-                engine.set_volume(0.0);
+            let should_mute = self.is_muted || !is_chain_ok;
+            engine.set_muted(should_mute);
+            let eff_vol = if should_mute {
+                0.0
+            } else if self.chain_mode == ChainMode::BitPerfect {
+                self.volume
             } else {
-                engine.set_volume(if self.is_muted { 0.0 } else { self.volume });
-            }
+                (self.volume * self.effective_replay_gain_linear).clamp(0.0, 2.0)
+            };
+            engine.set_volume(eff_vol);
         }
 
         // Live Real-Time 48-Band FFT Analysis from speaker audio stream
         let is_audio_active = self.is_playing && !self.is_muted && self.volume > 0.001 && is_chain_ok;
         if is_audio_active {
             if let Some(ref engine) = self.audio_engine {
+                engine.get_visualizer_stereo_samples(&mut self.live_stereo_l, &mut self.live_stereo_r);
+
                 let mut raw_samples = [0.0f32; 1024];
-                engine.get_visualizer_samples(&mut raw_samples);
+                let mut peak_l = 0.0f32;
+                let mut peak_r = 0.0f32;
+                let mut sum_sq_l = 0.0f32;
+                let mut sum_sq_r = 0.0f32;
+                let mut sum_lr = 0.0f32;
+
+                for i in 0..1024 {
+                    let l = self.live_stereo_l[i];
+                    let r = self.live_stereo_r[i];
+                    raw_samples[i] = (l + r) * 0.5;
+
+                    let al = l.abs();
+                    let ar = r.abs();
+                    if al > peak_l { peak_l = al; }
+                    if ar > peak_r { peak_r = ar; }
+
+                    sum_sq_l += l * l;
+                    sum_sq_r += r * r;
+                    sum_lr += l * r;
+                }
+
                 self.fft_analyzer.compute_bands(&raw_samples, &mut self.spectrum_bars);
 
                 // 1. Capture real-time live PCM audio waveform for App Resampler Oscilloscope
@@ -1459,22 +2049,14 @@ impl eframe::App for LunulaApp {
                 }
 
                 // 2. Compute true audio RMS and Peak levels for Output DAC Metering
-                let mut peak_val = 0.0f32;
-                let mut sum_sq = 0.0f32;
-                for &s in &raw_samples {
-                    let a = s.abs();
-                    if a > peak_val {
-                        peak_val = a;
-                    }
-                    sum_sq += s * s;
-                }
-                let rms_val = (sum_sq / 1024.0).sqrt();
+                let rms_l = (sum_sq_l / 1024.0).sqrt();
+                let rms_r = (sum_sq_r / 1024.0).sqrt();
+                let overall_peak = peak_l.max(peak_r);
+                let overall_rms = ((sum_sq_l + sum_sq_r) / 2048.0).sqrt();
 
-                // Compute channel L & R dynamics (enhanced with spectral micro-variance)
-                let bass_energy = (self.spectrum_bars[0] + self.spectrum_bars[1] + self.spectrum_bars[2]) * 0.33;
-                let mid_energy = (self.spectrum_bars[10] + self.spectrum_bars[14] + self.spectrum_bars[18]) * 0.33;
-                let target_l = ((rms_val * 2.0 + bass_energy * 0.25).clamp(0.0, 1.0)).max(peak_val * 0.75);
-                let target_r = ((rms_val * 2.0 + mid_energy * 0.25).clamp(0.0, 1.0)).max(peak_val * 0.75);
+                // Compute channel L & R dynamics
+                let target_l = (rms_l * 2.2).clamp(0.0, 1.0).max(peak_l);
+                let target_r = (rms_r * 2.2).clamp(0.0, 1.0).max(peak_r);
 
                 // Ballistic smoothing (instant attack, smooth release)
                 if target_l > self.dac_meter_l {
@@ -1510,8 +2092,85 @@ impl eframe::App for LunulaApp {
                 }
 
                 // Clip detection (0 dBFS warning)
-                self.dac_clip_l = peak_val >= 0.96;
-                self.dac_clip_r = peak_val >= 0.96;
+                self.dac_clip_l = peak_l >= 0.98;
+                self.dac_clip_r = peak_r >= 0.98;
+
+                // 3. Real Normalized Pearson Phase Correlation between Left and Right
+                let denom = (sum_sq_l * sum_sq_r).sqrt();
+                let inst_corr = if denom > 1e-7 {
+                    (sum_lr / denom).clamp(-1.0, 1.0)
+                } else {
+                    1.0 // In silence or DC, correlation is nominal in-phase
+                };
+                self.live_phase_correlation = self.live_phase_correlation * 0.88 + inst_corr * 0.12;
+
+                // 4. EBU R128 Loudness (LUFS)
+                let mean_power = (sum_sq_l + sum_sq_r) / 1024.0;
+                let inst_lufs = if mean_power > 1e-12 {
+                    (-0.691 + 10.0 * mean_power.log10()).clamp(-70.0, 0.0)
+                } else {
+                    -70.0
+                };
+                self.live_integrated_lufs = self.live_integrated_lufs * 0.94 + inst_lufs * 0.06;
+
+                // 5. True-Peak Level (dBTP) with 4x Inter-Sample Peak (ISP) Oversampling (ITU-R BS.1770)
+                let mut true_peak_max = overall_peak;
+                for i in 1..1023 {
+                    let ym1 = raw_samples[i - 1];
+                    let y0 = raw_samples[i];
+                    let y1 = raw_samples[i + 1];
+                    let y2 = if i + 2 < 1024 { raw_samples[i + 2] } else { y1 };
+
+                    // 4-point Hermite cubic interpolation for sub-sample inter-sample peaks
+                    let a0 = -0.5 * ym1 + 1.5 * y0 - 1.5 * y1 + 0.5 * y2;
+                    let a1 = ym1 - 2.5 * y0 + 2.0 * y1 - 0.5 * y2;
+                    let a2 = -0.5 * ym1 + 0.5 * y1;
+                    let a3 = y0;
+
+                    for &alpha in &[0.25f32, 0.50f32, 0.75f32] {
+                        let isp = ((a0 * alpha + a1) * alpha + a2) * alpha + a3;
+                        let abs_isp = isp.abs();
+                        if abs_isp > true_peak_max {
+                            true_peak_max = abs_isp;
+                        }
+                    }
+                }
+
+                let inst_tp = if true_peak_max > 1e-6 {
+                    (20.0 * true_peak_max.log10()).clamp(-96.0, 6.0)
+                } else {
+                    -96.0
+                };
+                if inst_tp >= self.live_true_peak_db {
+                    self.live_true_peak_db = inst_tp;
+                } else {
+                    self.live_true_peak_db = (self.live_true_peak_db - 0.35).max(inst_tp).max(-96.0);
+                }
+
+                // Inter-sample clipping detection (exceeding 0.0 dBFS / 1.0 peak)
+                if true_peak_max >= 0.999 {
+                    self.live_isp_clip_detected = true;
+                    self.live_isp_clip_count = self.live_isp_clip_count.saturating_add(1);
+                    if inst_tp > self.live_isp_max_over_db {
+                        self.live_isp_max_over_db = inst_tp;
+                    }
+                }
+
+                // 6. Real-time Dynamic Range (DR) / Crest Factor in dB
+                let inst_dr = if overall_rms > 1e-6 && overall_peak > 1e-6 {
+                    (20.0 * (overall_peak / overall_rms).log10()).clamp(0.0, 30.0)
+                } else {
+                    0.0
+                };
+                self.live_dynamic_range = self.live_dynamic_range * 0.92 + inst_dr * 0.08;
+
+                // 7. Real-time Gain Reduction from DSP compression / limiting
+                let inst_gr = engine.get_gain_reduction();
+                if inst_gr > self.live_gain_reduction_db {
+                    self.live_gain_reduction_db = self.live_gain_reduction_db * 0.3 + inst_gr * 0.7;
+                } else {
+                    self.live_gain_reduction_db = (self.live_gain_reduction_db * 0.88 - 0.05).max(0.0);
+                }
             }
         } else {
             // Smoothly decay to baseline when paused, stopped, muted, or chain severed
@@ -1521,12 +2180,24 @@ impl eframe::App for LunulaApp {
             for w in self.live_pcm_waveform.iter_mut() {
                 *w *= 0.80;
             }
+            for s in self.live_stereo_l.iter_mut() {
+                *s *= 0.80;
+            }
+            for s in self.live_stereo_r.iter_mut() {
+                *s *= 0.80;
+            }
             self.dac_meter_l = (self.dac_meter_l * 0.82).max(0.0);
             self.dac_meter_r = (self.dac_meter_r * 0.82).max(0.0);
             self.dac_peak_hold_l = (self.dac_peak_hold_l * 0.85).max(0.0);
             self.dac_peak_hold_r = (self.dac_peak_hold_r * 0.85).max(0.0);
             self.dac_clip_l = false;
             self.dac_clip_r = false;
+
+            self.live_phase_correlation = self.live_phase_correlation * 0.90 + 1.0 * 0.10;
+            self.live_integrated_lufs = (self.live_integrated_lufs - 1.5).max(-70.0);
+            self.live_true_peak_db = (self.live_true_peak_db - 2.0).max(-96.0);
+            self.live_dynamic_range = (self.live_dynamic_range * 0.90).max(0.0);
+            self.live_gain_reduction_db = (self.live_gain_reduction_db * 0.80 - 0.1).max(0.0);
         }
 
         if self.is_playing || self.spectrum_bars.iter().any(|&v| v > 0.005) || !is_chain_ok {
@@ -1544,7 +2215,17 @@ impl eframe::App for LunulaApp {
                 });
 
                 if let Some(pos) = engine_pos {
-                    self.current_time = pos;
+                    if let Some(offset) = self.current_track.cue_offset_sec {
+                        let rel = (pos - offset).max(0.0);
+                        self.current_time = rel;
+                        if let Some(dur) = self.current_track.cue_duration_sec {
+                            if rel >= dur && dur > 0.0 {
+                                self.on_track_ended();
+                            }
+                        }
+                    } else {
+                        self.current_time = pos;
+                    }
                 } else if self.current_track.duration > 0.0 {
                     self.current_time += 1.0 / 60.0;
                     if self.current_time >= self.current_track.duration {
@@ -1687,9 +2368,19 @@ impl eframe::App for LunulaApp {
                         }
 
                         ui.add_space(8.0);
+                        if ui.button(egui::RichText::new("🎬 Tur Studio (90%)").size(12.0).strong().color(Color32::from_rgb(99, 102, 241)))
+                            .on_hover_text("Buka theater panduan interaktif 90% bersama duo not Lu & Nu")
+                            .clicked()
+                        {
+                            self.show_interactive_theater = true;
+                            self.theater_slide = 0;
+                            self.theater_turn = 0;
+                            self.theater_turn_timer = 0.0;
+                        }
                         ui.selectable_value(&mut self.current_tab, AppTab::Equalizer, egui::RichText::new("🎛️ Equalizer 🚧 Coming Soon").strong());
                         ui.selectable_value(&mut self.current_tab, AppTab::Library, egui::RichText::new("📁 Library").strong());
-                        ui.selectable_value(&mut self.current_tab, AppTab::SignalChain, egui::RichText::new("⚡ Signal Chain Studio").strong());
+                        let sig_tab_resp = ui.selectable_value(&mut self.current_tab, AppTab::SignalChain, egui::RichText::new("⚡ Signal Chain Studio").strong());
+                        self.quest_rect_signal_chain_tab = Some(sig_tab_resp.rect);
                         ui.selectable_value(&mut self.current_tab, AppTab::NowPlaying, egui::RichText::new("🎵 Now Playing").strong());
                     });
                 });
@@ -1710,6 +2401,27 @@ impl eframe::App for LunulaApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::from_rgb(248, 250, 252)).inner_margin(16.0))
             .show(ui, |ui| {
+                if self.was_interrupted_by_unplug || self.unplug_notification_timer > 0.0 {
+                    let dev_str = self.unplug_device_name.as_deref().unwrap_or("Audio Device");
+                    egui::Frame::NONE
+                        .fill(Color32::from_rgb(254, 242, 242))
+                        .stroke(Stroke::new(1.0, Color32::from_rgb(248, 113, 113)))
+                        .corner_radius(6.0)
+                        .inner_margin(egui::Margin::symmetric(12, 8))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("🔌 PERANGKAT TERPUTUS (HOT-UNPLUG)").strong().size(11.5).color(Color32::from_rgb(185, 28, 28)));
+                                ui.label(egui::RichText::new(format!("\"{}\" terputus. Pemutaran dijeda aman. Lunula akan melanjutkan otomatis saat perangkat kembali terdeteksi.", dev_str)).size(11.0).color(Color32::from_rgb(127, 29, 29)));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.button(egui::RichText::new("Tutup Notifikasi").size(10.0)).clicked() {
+                                        self.unplug_notification_timer = 0.0;
+                                    }
+                                });
+                            });
+                        });
+                    ui.add_space(8.0);
+                }
+
                 match self.current_tab {
                     AppTab::NowPlaying => {
                         // Quick overview patchbay on top
@@ -1794,8 +2506,8 @@ impl eframe::App for LunulaApp {
 
                         ui.add_space(10.0);
 
-                        // Spectrum Analyzer
-                        self.render_spectrum_visualizer(ui);
+                        // 60% Spectrum Analyzer + 40% Synchronized Lyric Box
+                        self.render_now_playing_visualizer_and_lyrics(ui);
                     }
                     AppTab::SignalChain => {
                         // Header bar: Studio Mode Selection (Simple Studio vs Advance Studio) + Device Selector + Chain Mode
@@ -1805,9 +2517,9 @@ impl eframe::App for LunulaApp {
                             let is_advance = self.studio_mode == crate::models::StudioMode::Advance;
 
                             let simple_text = if is_simple {
-                                egui::RichText::new("🎛️ Simple Studio").strong().size(12.0).color(Color32::WHITE)
+                                egui::RichText::new("🎛️ Simple Studio").strong().size(13.0).color(Color32::WHITE)
                             } else {
-                                egui::RichText::new("🎛️ Simple Studio").size(12.0).color(Color32::from_rgb(100, 116, 139))
+                                egui::RichText::new("🎛️ Simple Studio").size(13.0).color(Color32::from_rgb(100, 116, 139))
                             };
                             let simple_bg = if is_simple { Color32::from_rgb(79, 70, 229) } else { Color32::from_rgb(241, 245, 249) };
                             if ui.add(egui::Button::new(simple_text).fill(simple_bg).corner_radius(6.0)).on_hover_text("Buka tampilan kanvas modular patchbay standar").clicked() {
@@ -1815,9 +2527,9 @@ impl eframe::App for LunulaApp {
                             }
 
                             let advance_text = if is_advance {
-                                egui::RichText::new("🔬 Advance Studio").strong().size(12.0).color(Color32::WHITE)
+                                egui::RichText::new("🔬 Advance Studio").strong().size(13.0).color(Color32::WHITE)
                             } else {
-                                egui::RichText::new("🔬 Advance Studio").size(12.0).color(Color32::from_rgb(100, 116, 139))
+                                egui::RichText::new("🔬 Advance Studio").size(13.0).color(Color32::from_rgb(100, 116, 139))
                             };
                             let advance_bg = if is_advance { Color32::from_rgb(79, 70, 229) } else { Color32::from_rgb(241, 245, 249) };
                             if ui.add(egui::Button::new(advance_text).fill(advance_bg).corner_radius(6.0)).on_hover_text("Buka konsol audio profesional dengan grafik respon frekuensi, RTA spektrum, dan rack unit").clicked() {
@@ -1825,12 +2537,12 @@ impl eframe::App for LunulaApp {
                             }
 
                             if is_advance {
-                                ui.label(egui::RichText::new("PROTOTYPE GUI").size(10.0).strong().color(Color32::from_rgb(245, 158, 11)));
+                                ui.label(egui::RichText::new("PROTOTYPE GUI").size(11.0).strong().color(Color32::from_rgb(245, 158, 11)));
                             }
 
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if is_simple {
-                                    if ui.button(egui::RichText::new("↺ Reset Posisi").size(11.5).strong())
+                                    if ui.button(egui::RichText::new("↺ Reset Posisi").size(12.5).strong())
                                         .on_hover_text("Pusatkan kembali view dan susun rapi 5 blok utama")
                                         .clicked()
                                     {
@@ -1846,7 +2558,7 @@ impl eframe::App for LunulaApp {
                                 };
 
                                 egui::ComboBox::from_id_salt("patchbay_output_device_combo")
-                                    .selected_text(egui::RichText::new(truncated_label).size(11.0).strong())
+                                    .selected_text(egui::RichText::new(truncated_label).size(12.0).strong())
                                     .width(170.0)
                                     .show_ui(ui, |ui| {
                                         if ui.button("🔄 Pindai Ulang Device (Scan)").clicked() {
@@ -1878,16 +2590,16 @@ impl eframe::App for LunulaApp {
                                         }
                                     });
 
-                                if ui.selectable_label(self.chain_mode == ChainMode::OsResampled, egui::RichText::new("OS Resampled").size(11.0).strong()).clicked() {
-                                    self.set_chain_mode(ChainMode::OsResampled);
-                                }
-                                if ui.selectable_label(self.chain_mode == ChainMode::DspActive, egui::RichText::new("DSP Active").size(11.0).strong()).clicked() {
+                                let dsp_btn = ui.selectable_label(self.chain_mode == ChainMode::DspActive, egui::RichText::new("DSP Active").size(12.5).strong());
+                                if dsp_btn.clicked() {
                                     self.set_chain_mode(ChainMode::DspActive);
                                 }
-                                if ui.selectable_label(self.chain_mode == ChainMode::BitPerfect, egui::RichText::new("Bit-Perfect").size(11.0).strong()).clicked() {
+                                let bp_btn = ui.selectable_label(self.chain_mode == ChainMode::BitPerfect, egui::RichText::new("Bit-Perfect").size(12.5).strong());
+                                if bp_btn.clicked() {
                                     self.set_chain_mode(ChainMode::BitPerfect);
                                 }
-                                ui.label(egui::RichText::new("Mode:").size(11.0).color(Color32::from_rgb(100, 116, 139)));
+                                self.quest_rect_dsp_mode_btn = Some(dsp_btn.rect.expand(3.0));
+                                ui.label(egui::RichText::new("Mode:").size(12.0).color(Color32::from_rgb(100, 116, 139)));
                             });
                         });
 
@@ -1911,21 +2623,21 @@ impl eframe::App for LunulaApp {
                                                     ui.label(
                                                         egui::RichText::new("⚡ MODULAR PATCHBAY STUDIO")
                                                             .strong()
-                                                            .size(13.5)
+                                                            .size(15.0)
                                                             .color(Color32::from_rgb(15, 23, 42)),
                                                     );
 
                                                     ui.label(
                                                         egui::RichText::new("• Tarik pin Output ke Input • Klik kabel untuk memutus • Klik kanan tahan untuk geser canvas")
-                                                            .size(10.5)
+                                                            .size(12.0)
                                                             .color(Color32::from_rgb(100, 116, 139)),
                                                     );
 
                                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                         let tut_text = if self.show_patchbay_tutorial {
-                                                            egui::RichText::new("📖 Tutup Tutorial").size(11.0).strong().color(Color32::from_rgb(147, 51, 234))
+                                                            egui::RichText::new("📖 Tutup Tutorial").size(12.0).strong().color(Color32::from_rgb(147, 51, 234))
                                                         } else {
-                                                            egui::RichText::new("📖 Panduan Pemula").size(11.0).strong().color(Color32::from_rgb(99, 102, 241))
+                                                            egui::RichText::new("📖 Panduan Pemula").size(12.0).strong().color(Color32::from_rgb(99, 102, 241))
                                                         };
                                                         if ui.button(tut_text).on_hover_text("Buka modul tutorial bergambar cara kerja Signal Chain Studio").clicked() {
                                                             self.show_patchbay_tutorial = !self.show_patchbay_tutorial;
@@ -1975,12 +2687,12 @@ impl eframe::App for LunulaApp {
                                                         ui.label(
                                                             egui::RichText::new("⚡ MODULAR PATCHBAY CANVAS")
                                                                 .strong()
-                                                                .size(13.0)
+                                                                .size(15.0)
                                                                 .color(Color32::from_rgb(15, 23, 42)),
                                                         );
                                                         ui.label(
                                                             egui::RichText::new("• Klik modul atau kabel untuk inspeksi sirkuit di Telemetry Desk bawah")
-                                                                .size(10.5)
+                                                                .size(12.0)
                                                                 .color(Color32::from_rgb(100, 116, 139)),
                                                         );
                                                     });
@@ -2014,6 +2726,16 @@ impl eframe::App for LunulaApp {
                     }
                 }
             });
+
+        // Roadmap 2: 90% Screen Interactive Studio Theater with Flying Mascot
+        if self.show_interactive_theater {
+            self.render_interactive_theater(ui);
+        }
+
+        // Tag Metadata Editor (Lofty Lossless)
+        if self.show_tag_editor {
+            self.render_tag_editor_modal(ui.ctx());
+        }
     }
 }
 
@@ -2035,6 +2757,37 @@ mod tests {
 
         app.set_chain_mode(ChainMode::OsResampled);
         assert_eq!(app.nodes.iter().find(|n| n.id == 4).unwrap().title, "APP RESAMPLER");
+    }
+
+    #[test]
+    fn test_resampler_settings_customization_and_node4_updates() {
+        use crate::models::{ResamplerSettings, RollOffProfile, SincQuality};
+        let mut app = LunulaApp::new_standalone();
+        assert_eq!(app.resampler_settings.quality, SincQuality::Studio);
+        assert_eq!(app.resampler_settings.profile, RollOffProfile::Sharp);
+
+        // Update to Extreme + Smooth
+        let custom = ResamplerSettings {
+            quality: SincQuality::Extreme,
+            profile: RollOffProfile::Smooth,
+        };
+        app.set_resampler_settings(custom);
+        assert_eq!(app.resampler_settings, custom);
+
+        // Verify Node 4 sub2 updated with short names
+        let node4 = app.nodes.iter().find(|n| n.id == 4).unwrap();
+        assert!(node4.sub2.contains("256-pt"));
+        assert!(node4.sub2.contains("Smooth"));
+
+        // Switch to Fast + Nyquist
+        let custom2 = ResamplerSettings {
+            quality: SincQuality::Fast,
+            profile: RollOffProfile::Nyquist,
+        };
+        app.set_resampler_settings(custom2);
+        let node4_v2 = app.nodes.iter().find(|n| n.id == 4).unwrap();
+        assert!(node4_v2.sub2.contains("64-pt"));
+        assert!(node4_v2.sub2.contains("Nyquist"));
     }
 
     #[test]
@@ -2195,6 +2948,7 @@ mod tests {
             crate::ui::patchbay::TelemetryTab::CumulativeNet,
             crate::ui::patchbay::TelemetryTab::StereoVectorscope,
             crate::ui::patchbay::TelemetryTab::MasterMetering,
+            crate::ui::patchbay::TelemetryTab::WaveformHeatmap,
         ];
 
         for tab in telemetry_tabs {
@@ -2229,6 +2983,42 @@ mod tests {
                 },
             );
             assert!(!out.shapes.is_empty(), "Must render Tube Warmer circuit inspection");
+            out.textures_delta.clear();
+        }
+
+        // Test OpticalLeveler node inspection with interactive Gain Reduction meter
+        app.add_modular_filter(crate::models::NodeType::OpticalLeveler);
+        if let Some(opto_node) = app.nodes.iter().find(|n| n.node_type == crate::models::NodeType::OpticalLeveler) {
+            app.selected_node = Some(opto_node.id);
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: screen,
+                    time: Some(0.25),
+                    ..Default::default()
+                },
+                |ui| {
+                    app.render_telemetry_inspection_desk(ui, 220.0);
+                },
+            );
+            assert!(!out.shapes.is_empty(), "Must render Optical Leveler Gain Reduction meter inspection");
+            out.textures_delta.clear();
+        }
+
+        // Test Compressor node inspection with interactive Threshold & GR meter
+        app.add_modular_filter(crate::models::NodeType::Compressor);
+        if let Some(comp_node) = app.nodes.iter().find(|n| n.node_type == crate::models::NodeType::Compressor) {
+            app.selected_node = Some(comp_node.id);
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: screen,
+                    time: Some(0.28),
+                    ..Default::default()
+                },
+                |ui| {
+                    app.render_telemetry_inspection_desk(ui, 220.0);
+                },
+            );
+            assert!(!out.shapes.is_empty(), "Must render Compressor Gain Reduction inspection");
             out.textures_delta.clear();
         }
 
@@ -2295,6 +3085,306 @@ mod tests {
         );
         assert!(!out.shapes.is_empty(), "FX sidebar palette must render shapes cleanly");
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn test_connecting_lpf_in_flowing_chain_compiles_and_filters() {
+        let mut app = LunulaApp::default();
+        app.set_chain_mode(ChainMode::BitPerfect);
+        assert_eq!(app.chain_mode, ChainMode::BitPerfect);
+        assert!(app.eq_bypass);
+
+        // Add Low-Pass Filter (node 6)
+        let lpf_id = 6;
+        app.nodes.push(ModularNode {
+            id: lpf_id,
+            node_type: NodeType::LowPassFilter,
+            title: "LOW-PASS FILTER".to_string(),
+            sub1: "Cutoff 400 Hz".to_string(),
+            sub2: "Active".to_string(),
+            pos: Pos2::new(300.0, 300.0),
+            is_removable: true,
+            param_val: 400.0,
+        });
+
+        // Wire 1 -> 2 -> 3 -> 6 (LPF) -> 4 -> 5
+        app.connections = vec![
+            CableConnection::new(1, 2),
+            CableConnection::new(2, 3),
+            CableConnection::new(3, 6),
+            CableConnection::new(6, 4),
+            CableConnection::new(4, 5),
+        ];
+        app.invalidate_chain_cache();
+
+        let eval = app.evaluate_signal_chain();
+        assert!(eval.is_complete);
+        assert!(eval.flowing_nodes.contains(&6));
+
+        // When topology changes with flowing DSP, mode should become DspActive
+        let has_flowing_dsp = eval.flowing_nodes.iter().any(|&id| {
+            app.nodes.iter().find(|n| n.id == id).map_or(false, |n| n.node_type.is_dsp_or_effect())
+        });
+        assert!(has_flowing_dsp);
+        app.set_chain_mode(ChainMode::DspActive);
+        assert_eq!(app.chain_mode, ChainMode::DspActive);
+        assert!(!app.eq_bypass);
+
+        let graph = app.compile_signal_chain();
+        assert!(graph.is_complete);
+        assert!(graph.nodes.iter().any(|n| n.name == "LOW-PASS FILTER"));
+
+        // Process audio through DSP pipeline with this graph
+        let mut dsp = crate::audio::dsp::DspPipeline::new(48000.0);
+        dsp.set_eq_bypass(app.eq_bypass);
+        dsp.set_signal_chain(graph);
+
+        // Feed 5000 Hz tone: should be filtered heavily
+        let mut left = [0.0f32; 1000];
+        let mut right = [0.0f32; 1000];
+        for i in 0..1000 {
+            let t = i as f32 / 48000.0;
+            left[i] = (2.0 * std::f32::consts::PI * 5000.0 * t).sin();
+            right[i] = left[i];
+        }
+        dsp.process_block(&mut left, &mut right);
+        let peak = left[800..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(peak < 0.15, "5000 Hz must be heavily attenuated by 400 Hz LPF, got {}", peak);
+    }
+
+    #[test]
+    fn test_live_telemetry_desk_real_computations() {
+        let mut app = LunulaApp::new_standalone();
+
+        // 1. Verify Mono signal (L == R) yields exact +1.0 Pearson correlation
+        for i in 0..1024 {
+            let t = i as f32 / 48000.0;
+            let val = (2.0 * std::f32::consts::PI * 440.0 * t).sin() * 0.5;
+            app.live_stereo_l[i] = val;
+            app.live_stereo_r[i] = val;
+        }
+
+        let mut sum_sq_l = 0.0f32;
+        let mut sum_sq_r = 0.0f32;
+        let mut sum_lr = 0.0f32;
+        let mut peak_val = 0.0f32;
+        for i in 0..1024 {
+            let l = app.live_stereo_l[i];
+            let r = app.live_stereo_r[i];
+            sum_sq_l += l * l;
+            sum_sq_r += r * r;
+            sum_lr += l * r;
+            peak_val = peak_val.max(l.abs()).max(r.abs());
+        }
+
+        let denom = (sum_sq_l * sum_sq_r).sqrt();
+        let corr_mono = (sum_lr / denom).clamp(-1.0, 1.0);
+        assert!((corr_mono - 1.0).abs() < 1e-4, "Mono correlation must be exactly +1.0, got {}", corr_mono);
+
+        // 2. Verify 180-degree Anti-Phase (L == -R) yields -1.0 Pearson correlation
+        for i in 0..1024 {
+            app.live_stereo_r[i] = -app.live_stereo_l[i];
+        }
+        sum_lr = 0.0;
+        for i in 0..1024 {
+            sum_lr += app.live_stereo_l[i] * app.live_stereo_r[i];
+        }
+        let corr_antiphase = (sum_lr / denom).clamp(-1.0, 1.0);
+        assert!((corr_antiphase - (-1.0)).abs() < 1e-4, "Anti-phase correlation must be -1.0, got {}", corr_antiphase);
+
+        // 3. True Peak level calculation
+        let tp_db = 20.0 * peak_val.log10();
+        assert!((tp_db - (-6.02)).abs() < 0.1, "0.5 amplitude must measure ~ -6.02 dBFS, got {}", tp_db);
+
+        // 4. Mid/Side Goniometer Transformation
+        let inv_sqrt2 = 0.7071068f32;
+        let l_mono = 0.5f32;
+        let r_mono = 0.5f32;
+        let s_mono = (r_mono - l_mono) * inv_sqrt2;
+        let m_mono = (r_mono + l_mono) * inv_sqrt2;
+        assert_eq!(s_mono, 0.0, "Pure mono has zero side energy (vertical line)");
+        assert!(m_mono > 0.0, "Pure mono has positive mid energy");
+
+        let l_anti = 0.5f32;
+        let r_anti = -0.5f32;
+        let s_anti = (r_anti - l_anti) * inv_sqrt2;
+        let m_anti = (r_anti + l_anti) * inv_sqrt2;
+        assert_eq!(m_anti, 0.0, "Anti-phase has zero mid energy (horizontal line)");
+        assert!(s_anti.abs() > 0.0, "Anti-phase has high side energy");
+
+        // 5. Test 4x Inter-Sample Peak (ISP) Oversampling and Clipping Detection
+        let mut raw_samples = [0.0f32; 1024];
+        raw_samples[100] = 0.5;
+        raw_samples[101] = 0.99;
+        raw_samples[102] = 0.99;
+        raw_samples[103] = 0.5;
+
+        let mut true_peak_max = 0.99f32;
+        let ym1 = raw_samples[100];
+        let y0 = raw_samples[101];
+        let y1 = raw_samples[102];
+        let y2 = raw_samples[103];
+        let a0 = -0.5 * ym1 + 1.5 * y0 - 1.5 * y1 + 0.5 * y2;
+        let a1 = ym1 - 2.5 * y0 + 2.0 * y1 - 0.5 * y2;
+        let a2 = -0.5 * ym1 + 0.5 * y1;
+        let a3 = y0;
+        for &alpha in &[0.25f32, 0.50f32, 0.75f32] {
+            let isp = ((a0 * alpha + a1) * alpha + a2) * alpha + a3;
+            if isp.abs() > true_peak_max {
+                true_peak_max = isp.abs();
+            }
+        }
+        assert!(true_peak_max > 1.0, "Reconstructed 4x inter-sample peak must exceed 1.0 (detected ISP clip), got {}", true_peak_max);
+        let isp_db = 20.0 * true_peak_max.log10();
+        assert!(isp_db > 0.0, "Inter-sample clipping must exceed 0 dBTP, got {} dBTP", isp_db);
+
+        // 6. Test Live Gain Reduction & Reset Clip
+        app.live_isp_clip_detected = true;
+        app.live_isp_clip_count = 5;
+        app.live_isp_max_over_db = 0.42;
+        app.live_gain_reduction_db = 4.8;
+        assert_eq!(app.live_isp_clip_detected, true);
+        assert_eq!(app.live_gain_reduction_db, 4.8);
+    }
+
+    #[test]
+    fn test_replay_gain_track_and_album_modes() {
+        use crate::models::{ReplayGainData, ReplayGainMode, RepeatMode};
+
+        let mut app = LunulaApp::new_standalone();
+        let mut track = app.current_track.clone();
+        track.album = "Reference Album".to_string();
+        track.replay_gain = ReplayGainData {
+            track_gain_db: Some(-4.5),
+            track_peak: Some(0.95),
+            album_gain_db: Some(-2.0),
+            album_peak: Some(0.90),
+        };
+
+        // 1. Disabled mode
+        app.replay_gain_mode = ReplayGainMode::Disabled;
+        let (db, lin) = app.calculate_effective_replay_gain(&track);
+        assert_eq!(db, 0.0);
+        assert_eq!(lin, 1.0);
+
+        // 2. Track Gain mode
+        app.replay_gain_mode = ReplayGainMode::Track;
+        let (db_track, _) = app.calculate_effective_replay_gain(&track);
+        assert!((db_track - (-4.5)).abs() < 1e-4);
+
+        // 3. Album Gain mode
+        app.replay_gain_mode = ReplayGainMode::Album;
+        let (db_album, _) = app.calculate_effective_replay_gain(&track);
+        assert!((db_album - (-2.0)).abs() < 1e-4);
+
+        // 4. Auto (Smart) mode: Track gain in standard playlist, Album gain in Album repeat or filter
+        app.replay_gain_mode = ReplayGainMode::Auto;
+        app.repeat_mode = RepeatMode::Off;
+        app.selected_album_filter = None;
+        let (db_auto_playlist, _) = app.calculate_effective_replay_gain(&track);
+        assert!((db_auto_playlist - (-4.5)).abs() < 1e-4, "Auto mode in playlist should pick track gain");
+
+        app.repeat_mode = RepeatMode::Album;
+        let (db_auto_album, _) = app.calculate_effective_replay_gain(&track);
+        assert!((db_auto_album - (-2.0)).abs() < 1e-4, "Auto mode in album repeat should pick album gain");
+
+        // 5. Preamp integration
+        app.replay_gain_preamp_db = 1.5;
+        let (db_with_preamp, _) = app.calculate_effective_replay_gain(&track);
+        assert!((db_with_preamp - (-0.5)).abs() < 1e-4, "Preamp +1.5 dB on -2.0 dB should yield -0.5 dB");
+    }
+
+    #[test]
+    fn test_replay_gain_clip_prevention_peak_scaling() {
+        use crate::models::{ReplayGainClipPrevention, ReplayGainData, ReplayGainMode};
+
+        let mut app = LunulaApp::new_standalone();
+        app.replay_gain_mode = ReplayGainMode::Track;
+        app.replay_gain_preamp_db = 0.0;
+
+        let mut track = app.current_track.clone();
+        // Track has high peak of 1.20 (+1.58 dBFS) and requested gain of +3.0 dB
+        track.replay_gain = ReplayGainData {
+            track_gain_db: Some(3.0),
+            track_peak: Some(1.20),
+            album_gain_db: None,
+            album_peak: None,
+        };
+
+        // 1. PreventByPeak: max allowable gain is -20 * log10(1.20) ~= -1.5836 dB
+        app.replay_gain_clip_prevention = ReplayGainClipPrevention::PreventByPeak;
+        let (eff_db, lin) = app.calculate_effective_replay_gain(&track);
+        let max_safe = -20.0 * 1.20f32.log10();
+        assert!((eff_db - max_safe).abs() < 0.01, "PreventByPeak must scale down gain to {}, got {}", max_safe, eff_db);
+        assert!(eff_db < 0.0, "Gain must be scaled down below 0 dBFS to prevent clipping");
+        assert!(lin <= 1.0 / 1.20 + 0.001);
+
+        // 2. Limiter mode: preserves original target gain and arms limiter
+        app.replay_gain_clip_prevention = ReplayGainClipPrevention::Limiter;
+        app.eq_limiter_enabled = false;
+        app.current_track = track.clone();
+        app.update_effective_replay_gain();
+        assert_eq!(app.effective_replay_gain_db, 3.0);
+        assert!(app.eq_limiter_enabled, "Limiter must be armed when ReplayGain boosts signal");
+
+        // 3. None mode: completely unrestricted
+        app.replay_gain_clip_prevention = ReplayGainClipPrevention::None;
+        let (eff_none, lin_none) = app.calculate_effective_replay_gain(&track);
+        assert_eq!(eff_none, 3.0);
+        let expected_lin = 10.0_f32.powf(3.0 / 20.0);
+        assert!((lin_none - expected_lin).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_gapless_peek_next_track_continuity() {
+        use crate::models::{RepeatMode, Track};
+
+        let mut app = LunulaApp::new_standalone();
+        let make_track = |title: &str, album: &str| Track {
+            title: title.to_string(),
+            artist: "Artist".to_string(),
+            album: album.to_string(),
+            duration: 180.0,
+            format: "FLAC".to_string(),
+            sample_rate: 44100,
+            bit_depth: 16,
+            waveform: vec![0.0; 10],
+            waveform_bass: vec![0.0; 10],
+            waveform_mid: vec![0.0; 10],
+            waveform_treble: vec![0.0; 10],
+            file_path: Some(format!("C:/music/{}.flac", title)),
+            file_size_mb: 25.0,
+            bitrate_kbps: None,
+            is_favorite: false,
+            replay_gain: Default::default(),
+            cue_offset_sec: None,
+            cue_duration_sec: None,
+        };
+
+        let t1 = make_track("Song 1", "Album A");
+        let t2 = make_track("Song 2", "Album A");
+        let t3 = make_track("Song 3", "Album B");
+
+        app.playlist = vec![t1.clone(), t2.clone(), t3.clone()];
+        app.current_track = t1.clone();
+        app.repeat_mode = RepeatMode::Off;
+
+        // 1. Sequential: next after Song 1 is Song 2
+        let peek1 = app.peek_next_track();
+        assert_eq!(peek1.map(|t| t.title), Some("Song 2".to_string()));
+
+        // 2. Play Queue has higher priority than playlist
+        let q1 = make_track("Queued Priority Song", "Queue");
+        app.play_queue = vec![q1.clone()];
+        app.queue_cursor = None;
+        let peek_q = app.peek_next_track();
+        assert_eq!(peek_q.map(|t| t.title), Some("Queued Priority Song".to_string()));
+
+        // 3. Repeat One: next track is current track itself
+        app.play_queue.clear();
+        app.repeat_mode = RepeatMode::One;
+        let peek_repeat_one = app.peek_next_track();
+        assert_eq!(peek_repeat_one.map(|t| t.title), Some("Song 1".to_string()));
     }
 }
 

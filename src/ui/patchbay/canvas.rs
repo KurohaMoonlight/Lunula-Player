@@ -6,17 +6,24 @@ use crate::ui::components::draw_five_finger_hand;
 use crate::ui::patchbay::types::*;
 
 impl LunulaApp {
-    // Reset layout of nodes and center canvas view
+    // Reset layout of nodes and center canvas view with spacious, non-overlapping 2-deck studio design
     pub fn reset_patchbay_layout(&mut self, canvas_width: f32, canvas_height: f32) {
         self.patchbay_pan = Vec2::ZERO;
-        let node_width = 188.0;
-        let margin = 20.0;
-        let available = (canvas_width - margin * 2.0 - 5.0 * node_width).max(12.0 * 4.0);
-        let spacing = (available / 4.0).clamp(16.0, 44.0);
-        let center_y = (canvas_height * 0.40 - 38.0).max(36.0);
+        let node_width = 198.0;
+        let gap_x = 52.0;
+        let margin_x = ((canvas_width - (4.0 * node_width + 3.0 * gap_x)) * 0.5).max(30.0);
+        let top_y = (canvas_height * 0.18).clamp(40.0, 70.0);
+        let bot_y = top_y + 145.0;
 
-        for (i, node) in self.nodes.iter_mut().take(5).enumerate() {
-            node.pos = Pos2::new(margin + i as f32 * (node_width + spacing), center_y);
+        for node in self.nodes.iter_mut() {
+            match node.id {
+                1 => node.pos = Pos2::new(margin_x, top_y),
+                2 => node.pos = Pos2::new(margin_x + (node_width + gap_x), top_y),
+                3 => node.pos = Pos2::new(margin_x + (node_width + gap_x) * 1.5, bot_y),
+                4 => node.pos = Pos2::new(margin_x + (node_width + gap_x) * 2.0, top_y),
+                5 => node.pos = Pos2::new(margin_x + (node_width + gap_x) * 3.0, top_y),
+                _ => {}
+            }
         }
     }
 
@@ -31,20 +38,20 @@ impl LunulaApp {
         self.next_node_id += 1;
 
         let (title, sub1, sub2) = match &node_type {
-            NodeType::TubeWarmer => ("TUBE WARMER".to_string(), "Warmth 35%".to_string(), "Triode 12AX7".to_string()),
-            NodeType::StereoWidener => ("STEREO WIDENER".to_string(), "Haas Effect 3D".to_string(), "+35% Soundstage".to_string()),
-            NodeType::BassGuard => ("BASS GUARD".to_string(), "Sub-sonic Limiter".to_string(), "Protects Woofer".to_string()),
-            NodeType::VolumeAttenuator => ("ATTENUATOR".to_string(), "Volume -6 dB".to_string(), "Passive Pad".to_string()),
-            NodeType::LowPassFilter => ("LOW-PASS FILTER".to_string(), "Cutoff 800 Hz".to_string(), "Muffled / Underwater".to_string()),
-            NodeType::Mixer => ("MIXER / SUMMING".to_string(), "Mix: 50% A • 50% B".to_string(), "Dual-Bus Gerbang".to_string()),
-            NodeType::Splitter => ("SPLITTER / Y-BRANCH".to_string(), "Dual-Out (Pin A & B)".to_string(), "Dual-Bus Gerbang".to_string()),
+            NodeType::TubeWarmer => ("🔥 TUBE WARMER".to_string(), "Warmth 35%".to_string(), "Triode 12AX7".to_string()),
+            NodeType::StereoWidener => ("🌐 STEREO WIDENER".to_string(), "Haas Effect 3D".to_string(), "+35% Soundstage".to_string()),
+            NodeType::BassGuard => ("🛡️ BASS GUARD".to_string(), "Sub-sonic Limiter".to_string(), "Protects Woofer".to_string()),
+            NodeType::VolumeAttenuator => ("🔉 ATTENUATOR".to_string(), "Volume -6 dB".to_string(), "Passive Pad".to_string()),
+            NodeType::LowPassFilter => ("🌊 LOW-PASS FILTER".to_string(), "Cutoff 800 Hz".to_string(), "Muffled / Underwater".to_string()),
+            NodeType::Mixer => ("🎚️ MIXER / SUMMING".to_string(), "Mix: 50% A • 50% B".to_string(), "Dual-Bus Gerbang".to_string()),
+            NodeType::Splitter => ("🔀 SPLITTER / Y-BRANCH".to_string(), "Dual-Out (Pin A & B)".to_string(), "Dual-Bus Gerbang".to_string()),
             NodeType::SavedEqPreset(name) => ("🎛️ EQ PRESET".to_string(), name.clone(), "Klik untuk Buka".to_string()),
-            NodeType::VolumeBooster => ("VOLUME BOOSTER".to_string(), "+6.0 dB Gain".to_string(), "Pure Clean Amp".to_string()),
-            NodeType::AnalogPreamp => ("ANALOG PREAMP".to_string(), "0.0 dB Drive".to_string(), "Class-A Warmth".to_string()),
-            NodeType::DynamicLoudness => ("DYNAMIC LOUDNESS".to_string(), "Loudness 50%".to_string(), "ISO 226 Contour".to_string()),
-            NodeType::SteppedAttenuator => ("STEPPED ATTENUATOR".to_string(), "-12 dB".to_string(), "64-Step Resistor".to_string()),
-            NodeType::OpticalLeveler => ("OPTICAL LEVELER".to_string(), "Peak Red 30%".to_string(), "LA-2A Opto".to_string()),
-            NodeType::StereoBalance => ("STEREO BALANCE".to_string(), "Center 0.0 dB".to_string(), "Pan & Trim".to_string()),
+            NodeType::VolumeBooster => ("⚡ VOLUME BOOSTER".to_string(), "+6.0 dB Gain".to_string(), "Pure Clean Amp".to_string()),
+            NodeType::AnalogPreamp => ("📻 ANALOG PREAMP".to_string(), "0.0 dB Drive".to_string(), "Class-A Warmth".to_string()),
+            NodeType::DynamicLoudness => ("🌙 DYNAMIC LOUDNESS".to_string(), "Loudness 50%".to_string(), "ISO 226 Contour".to_string()),
+            NodeType::SteppedAttenuator => ("🪜 STEPPED ATTENUATOR".to_string(), "-12 dB".to_string(), "64-Step Resistor".to_string()),
+            NodeType::OpticalLeveler => ("🎚️ OPTICAL LEVELER".to_string(), "Peak Red 30%".to_string(), "LA-2A Opto".to_string()),
+            NodeType::StereoBalance => ("⚖️ STEREO BALANCE".to_string(), "Center 0.0 dB".to_string(), "Pan & Trim".to_string()),
             _ => ("AUDIO FILTER".to_string(), "DSP Unit".to_string(), "Active".to_string()),
         };
 
@@ -98,8 +105,8 @@ impl LunulaApp {
         let scroll = ui.input(|i| i.smooth_scroll_delta);
         let is_interacting_with_tutorial = if self.show_patchbay_tutorial || self.active_filter_tutorial.is_some() {
             let padding = 12.0;
-            let card_w = 400.0f32.min(canvas_rect.width() - 24.0);
-            let card_h = 440.0f32.min(canvas_rect.height() - 24.0);
+            let card_w = 440.0f32.min(canvas_rect.width() - 24.0);
+            let card_h = 510.0f32.min(canvas_rect.height() - 24.0);
             let r = Rect::from_min_size(
                 Pos2::new(canvas_rect.max.x - card_w - padding, canvas_rect.min.y + padding),
                 Vec2::new(card_w, card_h),
@@ -148,6 +155,7 @@ impl LunulaApp {
         let mut switch_mode: Option<ChainMode> = None;
         let mut topology_changed = false;
         let mut param_change: Option<(usize, f32)> = None;
+        let mut resampler_setting_change: Option<crate::models::ResamplerSettings> = None;
 
         let pointer_pos = ui.input(|i| i.pointer.latest_pos()).or(mouse_pos);
         let is_left_pressed = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
@@ -189,6 +197,15 @@ impl LunulaApp {
                 if node.node_type == NodeType::SteppedAttenuator {
                     let dim_hit = Rect::from_min_size(Pos2::new(world_rect.max.x - 48.0, world_rect.min.y + 36.0), Vec2::new(34.0, 20.0));
                     if pointer_pos.map_or(false, |p| dim_hit.contains(p)) {
+                        is_hovering_slider = true;
+                        break;
+                    }
+                }
+                // App Resampler Quality & Profile Badges hover
+                if node.node_type == NodeType::Driver {
+                    let b1_hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 18.0, world_rect.min.y + 58.0), Vec2::new(54.0, 19.0));
+                    let b2_hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 76.0, world_rect.min.y + 58.0), Vec2::new(58.0, 19.0));
+                    if pointer_pos.map_or(false, |p| b1_hit.contains(p) || b2_hit.contains(p)) {
                         is_hovering_slider = true;
                         break;
                     }
@@ -239,6 +256,34 @@ impl LunulaApp {
                             break;
                         }
                     }
+                    // Check Sinc Quality & Profile Badges on App Resampler
+                    if node.node_type == NodeType::Driver {
+                        let b1_hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 18.0, world_rect.min.y + 58.0), Vec2::new(54.0, 19.0));
+                        let b2_hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 76.0, world_rect.min.y + 58.0), Vec2::new(58.0, 19.0));
+                        if b1_hit.contains(pos) {
+                            let next_q = match self.resampler_settings.quality {
+                                crate::models::SincQuality::Fast => crate::models::SincQuality::Studio,
+                                crate::models::SincQuality::Studio => crate::models::SincQuality::Extreme,
+                                crate::models::SincQuality::Extreme => crate::models::SincQuality::Fast,
+                            };
+                            let mut new_settings = self.resampler_settings;
+                            new_settings.quality = next_q;
+                            resampler_setting_change = Some(new_settings);
+                            clicked_slider = true;
+                            break;
+                        } else if b2_hit.contains(pos) {
+                            let next_p = match self.resampler_settings.profile {
+                                crate::models::RollOffProfile::Sharp => crate::models::RollOffProfile::Smooth,
+                                crate::models::RollOffProfile::Smooth => crate::models::RollOffProfile::Nyquist,
+                                crate::models::RollOffProfile::Nyquist => crate::models::RollOffProfile::Sharp,
+                            };
+                            let mut new_settings = self.resampler_settings;
+                            new_settings.profile = next_p;
+                            resampler_setting_change = Some(new_settings);
+                            clicked_slider = true;
+                            break;
+                        }
+                    }
                     if let Some((s_hit, val)) = get_interactive_slider_bounds_and_val(&node.node_type, world_rect, n_size.x, pos.x) {
                         if s_hit.contains(pos) {
                             self.dragging_slider_node = Some(node.id);
@@ -255,6 +300,11 @@ impl LunulaApp {
                     }
                 }
             }
+        }
+
+        if let Some(new_settings) = resampler_setting_change {
+            self.set_resampler_settings(new_settings);
+            self.selected_node = Some(4);
         }
 
         // 0c. Continuous slider dragging updates
@@ -689,6 +739,9 @@ impl LunulaApp {
 
                 // Check if user clicked or right-clicked on cable to disconnect
                 let mid = points[12];
+                if (conn.from_node == 2 && (conn.to_node == 4 || conn.to_node == 3)) || (conn.from_node == 3 && conn.to_node == 4) {
+                    self.quest_rect_cable_mute_target = Some(Rect::from_center_size(mid, Vec2::new(90.0, 50.0)));
+                }
                 let is_hover_cut = mouse_pos.map_or(false, |p| p.distance(mid) <= 10.0);
                 let is_hover_cable = mouse_pos.map_or(false, |p| points.iter().any(|pt| pt.distance(p) <= 6.0) || p.distance(mid) <= 14.0);
 
@@ -767,21 +820,21 @@ impl LunulaApp {
                     } else {
                         ("⚡ DIRECT BYPASS", Color32::from_rgba_premultiplied(16, 185, 129, 235))
                     };
-                    let badge_rect = Rect::from_center_size(mid - Vec2::new(0.0, 9.0), Vec2::new(104.0, 15.0));
+                    let badge_rect = Rect::from_center_size(mid - Vec2::new(0.0, 10.0), Vec2::new(120.0, 18.0));
                     painter.rect_filled(badge_rect, 4.0, badge_bg);
                     painter.rect_stroke(badge_rect, 4.0, Stroke::new(1.0, Color32::WHITE), egui::StrokeKind::Outside);
-                    painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER, badge_text, egui::FontId::proportional(8.5), Color32::WHITE);
+                    painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER, badge_text, egui::FontId::proportional(10.5), Color32::WHITE);
                 }
 
                 // Cut hint bubble on hover
                 if is_hover_cable {
-                    painter.circle_filled(mid, 8.0, Color32::from_rgb(239, 68, 68));
-                    painter.text(mid, egui::Align2::CENTER_CENTER, "✕", egui::FontId::proportional(9.0), Color32::WHITE);
+                    painter.circle_filled(mid, 9.5, Color32::from_rgb(239, 68, 68));
+                    painter.text(mid, egui::Align2::CENTER_CENTER, "✕", egui::FontId::proportional(10.5), Color32::WHITE);
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 } else if !is_flowing_cable {
                     // Warning icon at midpoint of dead cable
-                    painter.circle_filled(mid, 7.0, Color32::from_rgb(239, 68, 68));
-                    painter.text(mid, egui::Align2::CENTER_CENTER, "!", egui::FontId::proportional(9.0), Color32::WHITE);
+                    painter.circle_filled(mid, 8.5, Color32::from_rgb(239, 68, 68));
+                    painter.text(mid, egui::Align2::CENTER_CENTER, "!", egui::FontId::proportional(10.5), Color32::WHITE);
                 }
             }
         }
@@ -844,7 +897,7 @@ impl LunulaApp {
                         }
 
                         let mid_p = points[steps / 2];
-                        let is_hover_gap = mouse_pos.map_or(false, |p| p.distance(mid_p) <= 13.0);
+                        let is_hover_gap = mouse_pos.map_or(false, |p| p.distance(mid_p) <= 14.0);
                         if is_hover_gap {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                             if response.clicked() {
@@ -852,10 +905,10 @@ impl LunulaApp {
                             }
                         }
 
-                        let btn_rad = if is_hover_gap { 10.0 } else { 8.5 };
+                        let btn_rad = if is_hover_gap { 11.0 } else { 9.5 };
                         painter.circle_filled(mid_p, btn_rad, Color32::from_rgb(239, 68, 68));
                         painter.circle_stroke(mid_p, btn_rad, Stroke::new(1.5, Color32::WHITE));
-                        painter.text(mid_p, egui::Align2::CENTER_CENTER, "✕", egui::FontId::proportional(9.5), Color32::WHITE);
+                        painter.text(mid_p, egui::Align2::CENTER_CENTER, "✕", egui::FontId::proportional(10.5), Color32::WHITE);
                     }
                 }
             }
@@ -1100,9 +1153,9 @@ impl LunulaApp {
                 }
 
                 // DILEWATI badge on the top of the node
-                let badge_rect = Rect::from_min_size(node_rect.min + Vec2::new(26.0, 5.0), Vec2::new(48.0, 15.0));
+                let badge_rect = Rect::from_min_size(node_rect.min + Vec2::new(26.0, 5.0), Vec2::new(58.0, 16.0));
                 painter.rect_filled(badge_rect, 3.0, Color32::from_rgb(226, 232, 240));
-                painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER, "DILEWATI", egui::FontId::proportional(8.0), Color32::from_rgb(100, 116, 139));
+                painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER, "DILEWATI", egui::FontId::proportional(10.0), Color32::from_rgb(100, 116, 139));
 
                 if node_resp.clicked() {
                     switch_mode = Some(ChainMode::DspActive);
@@ -1222,10 +1275,10 @@ impl LunulaApp {
                 Color32::from_rgb(15, 23, 42)
             };
             painter.text(
-                Pos2::new(node_rect.center().x, node_rect.min.y + 11.5),
+                Pos2::new(node_rect.center().x, node_rect.min.y + 13.0),
                 egui::Align2::CENTER_CENTER,
                 &node.title,
-                egui::FontId::proportional(10.5),
+                egui::FontId::proportional(12.5),
                 title_col,
             );
 
@@ -1263,25 +1316,25 @@ impl LunulaApp {
                         format!("Cutoff {:.0} Hz", active_cutoff)
                     };
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 63.0),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 68.0),
                         egui::Align2::CENTER_CENTER,
                         readout,
-                        egui::FontId::proportional(9.5),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(2, 132, 199),
                     );
                 } else {
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 38.0),
                         egui::Align2::CENTER_CENTER,
                         "DILEWATI (Bypassed)",
-                        egui::FontId::proportional(10.0),
+                        egui::FontId::proportional(12.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 41.5),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 56.0),
                         egui::Align2::CENTER_CENTER,
                         "Nonaktif di Bit-Perfect",
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                 }
@@ -1324,26 +1377,33 @@ impl LunulaApp {
                     painter.circle_stroke(Pos2::new(thumb_x, cy), 5.0, Stroke::new(1.8, Color32::from_rgb(126, 34, 206)));
 
                     // A / B labels beside track
-                    painter.text(Pos2::new(slider_track_rect.min.x - 4.0, cy), egui::Align2::RIGHT_CENTER, "A", egui::FontId::proportional(8.5), Color32::from_rgb(126, 34, 206));
-                    painter.text(Pos2::new(slider_track_rect.max.x + 4.0, cy), egui::Align2::LEFT_CENTER, "B", egui::FontId::proportional(8.5), Color32::from_rgb(126, 34, 206));
+                    painter.text(Pos2::new(slider_track_rect.min.x - 5.0, cy), egui::Align2::RIGHT_CENTER, "A", egui::FontId::proportional(10.5), Color32::from_rgb(126, 34, 206));
+                    painter.text(Pos2::new(slider_track_rect.max.x + 5.0, cy), egui::Align2::LEFT_CENTER, "B", egui::FontId::proportional(10.5), Color32::from_rgb(126, 34, 206));
 
                     // Readout
                     let a_pct = (1.0 - active_mix) * 100.0;
                     let b_pct = active_mix * 100.0;
                     let readout = format!("A: {:.0}% • B: {:.0}%", a_pct, b_pct);
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 63.0),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 68.0),
                         egui::Align2::CENTER_CENTER,
                         readout,
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(126, 34, 206),
                     );
                 } else {
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 38.0),
                         egui::Align2::CENTER_CENTER,
                         "DILEWATI (Bypassed)",
-                        egui::FontId::proportional(10.0),
+                        egui::FontId::proportional(12.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 56.0),
+                        egui::Align2::CENTER_CENTER,
+                        "Nonaktif di Bit-Perfect",
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                 }
@@ -1376,18 +1436,25 @@ impl LunulaApp {
 
                     // Readout text below fork
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 63.0),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 68.0),
                         egui::Align2::CENTER_CENTER,
                         "1 In ➔ Out A & B",
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(217, 119, 6),
                     );
                 } else {
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 38.0),
                         egui::Align2::CENTER_CENTER,
                         "DILEWATI (Bypassed)",
-                        egui::FontId::proportional(10.0),
+                        egui::FontId::proportional(12.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 56.0),
+                        egui::Align2::CENTER_CENTER,
+                        "Nonaktif di Bit-Perfect",
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                 }
@@ -1397,9 +1464,9 @@ impl LunulaApp {
 
                 if !is_bypassed_effect {
                     let cy = node_rect.min.y + 44.0;
-                    let badge_rect = Rect::from_center_size(Pos2::new(node_rect.min.x + 24.0, cy), Vec2::new(24.0, 20.0));
+                    let badge_rect = Rect::from_center_size(Pos2::new(node_rect.min.x + 24.0, cy), Vec2::new(26.0, 22.0));
                     painter.rect_filled(badge_rect, 4.0, Color32::from_rgb(30, 27, 75));
-                    painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER, "⚡", egui::FontId::proportional(11.0), Color32::from_rgb(250, 204, 21));
+                    painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER, "⚡", egui::FontId::proportional(12.5), Color32::from_rgb(250, 204, 21));
 
                     let track_min_x = node_rect.min.x + 50.0;
                     let track_w = (node_width - 76.0).max(10.0);
@@ -1433,25 +1500,25 @@ impl LunulaApp {
 
                     let readout = format!("+{:.1} dB Boost • Clean Amp", active_gain);
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 63.0),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 68.0),
                         egui::Align2::CENTER_CENTER,
                         readout,
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(11.0),
                         thrust_color,
                     );
                 } else {
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 38.0),
                         egui::Align2::CENTER_CENTER,
                         "DILEWATI (Bypassed)",
-                        egui::FontId::proportional(10.0),
+                        egui::FontId::proportional(12.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 41.5),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 56.0),
                         egui::Align2::CENTER_CENTER,
                         "Nonaktif di Bit-Perfect",
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                 }
@@ -1503,25 +1570,25 @@ impl LunulaApp {
 
                     let readout = format!("{:+0.1} dB • Class-A SAT", active_gain);
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 63.0),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 68.0),
                         egui::Align2::CENTER_CENTER,
                         readout,
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(194, 65, 12),
                     );
                 } else {
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 38.0),
                         egui::Align2::CENTER_CENTER,
                         "DILEWATI (Bypassed)",
-                        egui::FontId::proportional(10.0),
+                        egui::FontId::proportional(12.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 41.5),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 56.0),
                         egui::Align2::CENTER_CENTER,
                         "Nonaktif di Bit-Perfect",
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                 }
@@ -1532,7 +1599,7 @@ impl LunulaApp {
                 if !is_bypassed_effect {
                     let cy = node_rect.min.y + 44.0;
                     let moon_pos = Pos2::new(node_rect.min.x + 24.0, cy);
-                    painter.text(moon_pos, egui::Align2::CENTER_CENTER, "🌙", egui::FontId::proportional(12.0), Color32::from_rgb(245, 158, 11));
+                    painter.text(moon_pos, egui::Align2::CENTER_CENTER, "🌙", egui::FontId::proportional(13.5), Color32::from_rgb(245, 158, 11));
 
                     let crt_w = (node_width - 56.0).max(10.0);
                     let crt_rect = Rect::from_min_size(Pos2::new(node_rect.min.x + 38.0, cy - 10.0), Vec2::new(crt_w, 20.0));
@@ -1566,25 +1633,25 @@ impl LunulaApp {
 
                     let readout = format!("Loudness {:.0}% • ISO 226 Contour", active_depth);
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 63.0),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 68.0),
                         egui::Align2::CENTER_CENTER,
                         readout,
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(217, 119, 6),
                     );
                 } else {
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 38.0),
                         egui::Align2::CENTER_CENTER,
                         "DILEWATI (Bypassed)",
-                        egui::FontId::proportional(10.0),
+                        egui::FontId::proportional(12.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 41.5),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 56.0),
                         egui::Align2::CENTER_CENTER,
                         "Nonaktif di Bit-Perfect",
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                 }
@@ -1604,14 +1671,14 @@ impl LunulaApp {
                         painter.circle_filled(dot_p, 1.0, Color32::from_rgb(100, 116, 139));
                     }
 
-                    let nixie_w = 54.0;
-                    let nixie_rect = Rect::from_min_size(Pos2::new(node_rect.min.x + 46.0, cy - 9.0), Vec2::new(nixie_w, 18.0));
+                    let nixie_w = 56.0;
+                    let nixie_rect = Rect::from_min_size(Pos2::new(node_rect.min.x + 46.0, cy - 10.0), Vec2::new(nixie_w, 20.0));
                     painter.rect_filled(nixie_rect, 3.0, Color32::from_rgb(15, 23, 42));
                     painter.rect_stroke(nixie_rect, 3.0, Stroke::new(1.0, Color32::from_rgb(6, 182, 212)), egui::StrokeKind::Outside);
-                    painter.text(nixie_rect.center(), egui::Align2::CENTER_CENTER, format!("{:.0} dB", active_db), egui::FontId::monospace(9.5), Color32::from_rgb(34, 211, 238));
+                    painter.text(nixie_rect.center(), egui::Align2::CENTER_CENTER, format!("{:.0} dB", active_db), egui::FontId::monospace(11.0), Color32::from_rgb(34, 211, 238));
 
                     let is_dim = (active_db - (-20.0)).abs() < 0.5;
-                    let dim_rect = Rect::from_min_size(Pos2::new(node_rect.max.x - 48.0, cy - 9.0), Vec2::new(34.0, 18.0));
+                    let dim_rect = Rect::from_min_size(Pos2::new(node_rect.max.x - 48.0, cy - 10.0), Vec2::new(36.0, 20.0));
                     let (dim_bg, dim_fg) = if is_dim {
                         (Color32::from_rgb(6, 182, 212), Color32::WHITE)
                     } else {
@@ -1619,30 +1686,30 @@ impl LunulaApp {
                     };
                     painter.rect_filled(dim_rect, 3.0, dim_bg);
                     painter.rect_stroke(dim_rect, 3.0, Stroke::new(1.0, Color32::from_rgb(203, 213, 225)), egui::StrokeKind::Outside);
-                    painter.text(dim_rect.center(), egui::Align2::CENTER_CENTER, "DIM", egui::FontId::proportional(8.5), dim_fg);
+                    painter.text(dim_rect.center(), egui::Align2::CENTER_CENTER, "DIM", egui::FontId::proportional(10.0), dim_fg);
 
                     let step_num = (((active_db - (-60.0)) / 60.0) * 63.0).round() as i32 + 1;
                     let readout = format!("Step {}/64 • Resistor Ladder", step_num);
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 63.0),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 68.0),
                         egui::Align2::CENTER_CENTER,
                         readout,
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(14, 116, 144),
                     );
                 } else {
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 38.0),
                         egui::Align2::CENTER_CENTER,
                         "DILEWATI (Bypassed)",
-                        egui::FontId::proportional(10.0),
+                        egui::FontId::proportional(12.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 41.5),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 56.0),
                         egui::Align2::CENTER_CENTER,
                         "Nonaktif di Bit-Perfect",
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                 }
@@ -1683,25 +1750,25 @@ impl LunulaApp {
 
                     let readout = format!("Peak Red {:.0}% • LA-2A Opto", active_red);
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 63.0),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 68.0),
                         egui::Align2::CENTER_CENTER,
                         readout,
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(180, 83, 9),
                     );
                 } else {
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 38.0),
                         egui::Align2::CENTER_CENTER,
                         "DILEWATI (Bypassed)",
-                        egui::FontId::proportional(10.0),
+                        egui::FontId::proportional(12.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 41.5),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 56.0),
                         egui::Align2::CENTER_CENTER,
                         "Nonaktif di Bit-Perfect",
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                 }
@@ -1717,10 +1784,10 @@ impl LunulaApp {
                     let thumb_x = track_min_x + track_w * norm;
 
                     let l_col = if active_bal < -5.0 { Color32::from_rgb(99, 102, 241) } else { Color32::from_rgb(148, 163, 184) };
-                    painter.text(Pos2::new(track_min_x - 5.0, cy), egui::Align2::RIGHT_CENTER, "L", egui::FontId::proportional(9.0), l_col);
+                    painter.text(Pos2::new(track_min_x - 6.0, cy), egui::Align2::RIGHT_CENTER, "L", egui::FontId::proportional(11.0), l_col);
 
                     let r_col = if active_bal > 5.0 { Color32::from_rgb(99, 102, 241) } else { Color32::from_rgb(148, 163, 184) };
-                    painter.text(Pos2::new(track_min_x + track_w + 5.0, cy), egui::Align2::LEFT_CENTER, "R", egui::FontId::proportional(9.0), r_col);
+                    painter.text(Pos2::new(track_min_x + track_w + 6.0, cy), egui::Align2::LEFT_CENTER, "R", egui::FontId::proportional(11.0), r_col);
 
                     painter.rect_filled(Rect::from_min_size(Pos2::new(track_min_x, cy - 2.5), Vec2::new(track_w, 5.0)), 2.5, Color32::from_rgb(238, 242, 255));
                     let center_x = track_min_x + track_w * 0.5;
@@ -1737,25 +1804,25 @@ impl LunulaApp {
                         format!("L {:.0}% / R {:.0}%", 50.0 - active_bal * 0.5, 50.0 + active_bal * 0.5)
                     };
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 63.0),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 68.0),
                         egui::Align2::CENTER_CENTER,
                         readout,
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(79, 70, 229),
                     );
                 } else {
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 38.0),
                         egui::Align2::CENTER_CENTER,
                         "DILEWATI (Bypassed)",
-                        egui::FontId::proportional(10.0),
+                        egui::FontId::proportional(12.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 41.5),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 56.0),
                         egui::Align2::CENTER_CENTER,
                         "Nonaktif di Bit-Perfect",
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                 }
@@ -1908,7 +1975,7 @@ impl LunulaApp {
                         Pos2::new(track_min_x, node_rect.min.y + 26.0),
                         egui::Align2::LEFT_CENTER,
                         "TRIODE 12AX7",
-                        egui::FontId::proportional(8.5),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(180, 83, 9),
                     );
 
@@ -1921,26 +1988,26 @@ impl LunulaApp {
 
                     let readout = format!("Warmth {:.0}%", active_warmth);
                     painter.text(
-                        Pos2::new(track_min_x + track_w * 0.5, node_rect.min.y + 63.0),
+                        Pos2::new(track_min_x + track_w * 0.5, node_rect.min.y + 68.0),
                         egui::Align2::CENTER_CENTER,
                         readout,
-                        egui::FontId::proportional(9.5),
+                        egui::FontId::proportional(11.5),
                         Color32::from_rgb(194, 65, 12),
                     );
                 } else {
                     let right_cx = track_min_x + track_w * 0.5;
                     painter.text(
-                        Pos2::new(right_cx, node_rect.min.y + 35.0),
+                        Pos2::new(right_cx, node_rect.min.y + 42.0),
                         egui::Align2::CENTER_CENTER,
                         "DILEWATI (Bypassed)",
-                        egui::FontId::proportional(9.5),
+                        egui::FontId::proportional(12.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                     painter.text(
-                        Pos2::new(right_cx, node_rect.min.y + 51.0),
+                        Pos2::new(right_cx, node_rect.min.y + 60.0),
                         egui::Align2::CENTER_CENTER,
                         "Nonaktif di Bit-Perfect",
-                        egui::FontId::proportional(8.5),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                 }
@@ -1982,25 +2049,25 @@ impl LunulaApp {
 
                     let readout = format!("Soundstage +{:.0}% • Haas 3D", active_widener);
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 63.0),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 68.0),
                         egui::Align2::CENTER_CENTER,
                         readout,
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(67, 56, 202),
                     );
                 } else {
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 38.0),
                         egui::Align2::CENTER_CENTER,
                         "DILEWATI (Bypassed)",
-                        egui::FontId::proportional(10.0),
+                        egui::FontId::proportional(12.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 41.5),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 56.0),
                         egui::Align2::CENTER_CENTER,
                         "Nonaktif di Bit-Perfect",
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                 }
@@ -2074,7 +2141,7 @@ impl LunulaApp {
                 }
 
                 // Center format badge
-                let badge_rect = Rect::from_center_size(Pos2::new(node_rect.center().x, cy - 7.0), Vec2::new(76.0, 15.0));
+                let badge_rect = Rect::from_center_size(Pos2::new(node_rect.center().x, cy - 7.0), Vec2::new(84.0, 18.0));
                 painter.rect_filled(badge_rect, 3.0, Color32::from_rgb(238, 242, 255));
                 painter.rect_stroke(badge_rect, 3.0, Stroke::new(0.8, Color32::from_rgb(199, 210, 254)), egui::StrokeKind::Outside);
                 let badge_txt = if !node.sub1.is_empty() { &node.sub1 } else { "FLAC Lossless" };
@@ -2082,16 +2149,16 @@ impl LunulaApp {
                     badge_rect.center(),
                     egui::Align2::CENTER_CENTER,
                     badge_txt,
-                    egui::FontId::proportional(8.0),
+                    egui::FontId::proportional(10.5),
                     Color32::from_rgb(67, 56, 202),
                 );
 
                 let sub2_txt = if !node.sub2.is_empty() { &node.sub2 } else { "Lossless Master" };
                 painter.text(
-                    Pos2::new(node_rect.center().x, node_rect.min.y + 63.0),
+                    Pos2::new(node_rect.center().x, node_rect.min.y + 68.0),
                     egui::Align2::CENTER_CENTER,
                     sub2_txt,
-                    egui::FontId::proportional(8.5),
+                    egui::FontId::proportional(11.0),
                     Color32::from_rgb(100, 116, 139),
                 );
             } else if node.node_type == NodeType::Buffer {
@@ -2132,10 +2199,10 @@ impl LunulaApp {
 
                 let sub2_txt = if !node.sub2.is_empty() { &node.sub2 } else { "100% Buffered • 0 Disk I/O" };
                 painter.text(
-                    Pos2::new(node_rect.center().x, node_rect.min.y + 63.0),
+                    Pos2::new(node_rect.center().x, node_rect.min.y + 68.0),
                     egui::Align2::CENTER_CENTER,
                     sub2_txt,
-                    egui::FontId::proportional(8.5),
+                    egui::FontId::proportional(11.0),
                     Color32::from_rgb(14, 116, 144),
                 );
             } else if node.node_type == NodeType::Dsp {
@@ -2169,33 +2236,33 @@ impl LunulaApp {
                     }
 
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 63.0),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 68.0),
                         egui::Align2::CENTER_CENTER,
                         "64-bit Master DSP Bus",
-                        egui::FontId::proportional(8.5),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(99, 102, 241),
                     );
                 } else {
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 38.0),
                         egui::Align2::CENTER_CENTER,
                         "DILEWATI (Direct Wire)",
-                        egui::FontId::proportional(10.0),
+                        egui::FontId::proportional(12.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 41.5),
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 56.0),
                         egui::Align2::CENTER_CENTER,
                         "0.0 dB Pure Master",
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(11.0),
                         Color32::from_rgb(148, 163, 184),
                     );
                 }
             } else if node.node_type == NodeType::Driver {
                 // 📡 APP RESAMPLER: Real-Time Sinc/PCM Oscilloscope Screen
                 let scope_rect = Rect::from_min_size(
-                    Pos2::new(node_rect.min.x + 20.0, node_rect.min.y + 32.0),
-                    Vec2::new(node_width - 40.0, 24.0),
+                    Pos2::new(node_rect.min.x + 18.0, node_rect.min.y + 28.0),
+                    Vec2::new(node_width - 36.0, 25.0),
                 );
                 // Oscilloscope dark CRT glass bezel
                 painter.rect_filled(scope_rect, 3.0, Color32::from_rgb(11, 19, 43));
@@ -2217,7 +2284,7 @@ impl LunulaApp {
                 }
 
                 let trace_painter = painter.with_clip_rect(scope_rect);
-                let pts_count = 32;
+                let pts_count = 36;
                 let mut trace_pts = Vec::with_capacity(pts_count);
 
                 let is_active_audio = self.is_playing && is_flowing;
@@ -2235,41 +2302,78 @@ impl LunulaApp {
                         let amp = (sample * 1.5).clamp(-0.95, 0.95);
                         sc_cy - amp * (scope_rect.height() * 0.44)
                     } else {
-                        sc_cy
+                        // When idle: Plot Sinc Kernel Impulse Response Curve
+                        let x = (frac - 0.5) * 6.28318;
+                        let cutoff = self.resampler_settings.profile.cutoff() as f32;
+                        let sinc_val = if x.abs() < 1e-4 {
+                            1.0
+                        } else {
+                            (x * cutoff * 2.2).sin() / (x * cutoff * 2.2)
+                        };
+                        let win = (0.5 * (1.0 + (frac * std::f32::consts::PI * 2.0).cos())).clamp(0.0, 1.0);
+                        sc_cy - (sinc_val * win) * (scope_rect.height() * 0.40)
                     };
                     trace_pts.push(Pos2::new(px, py));
                 }
 
                 // Phosphor Bloom Glow underneath (softer, wider stroke)
-                if is_active_audio {
-                    for w in trace_pts.windows(2) {
-                        trace_painter.line_segment([w[0], w[1]], Stroke::new(2.8, Color32::from_rgba_unmultiplied(52, 211, 153, 50)));
-                    }
+                let glow_col = if is_active_audio {
+                    Color32::from_rgba_unmultiplied(52, 211, 153, 50)
+                } else {
+                    Color32::from_rgba_unmultiplied(56, 189, 248, 35)
+                };
+                for w in trace_pts.windows(2) {
+                    trace_painter.line_segment([w[0], w[1]], Stroke::new(2.8, glow_col));
                 }
                 // High-intensity sharp beam trace on top
-                let beam_color = if is_active_audio { Color32::from_rgb(52, 211, 153) } else { Color32::from_rgb(51, 65, 85) };
+                let beam_color = if is_active_audio {
+                    Color32::from_rgb(52, 211, 153)
+                } else {
+                    Color32::from_rgb(56, 189, 248)
+                };
                 for w in trace_pts.windows(2) {
                     trace_painter.line_segment([w[0], w[1]], Stroke::new(1.3, beam_color));
                 }
 
-                // Micro "LIVE OSC" badge in top-right
-                if is_active_audio {
-                    painter.text(
-                        Pos2::new(scope_rect.max.x - 3.5, scope_rect.min.y + 2.0),
-                        egui::Align2::RIGHT_TOP,
-                        "LIVE",
-                        egui::FontId::proportional(6.0),
-                        Color32::from_rgb(52, 211, 153),
-                    );
-                }
-
-                let sub2_txt = if !node.sub2.is_empty() { &node.sub2 } else { "Rubato Sinc • 48.0 kHz" };
+                // Micro badge in top-right
+                let (badge_txt, badge_col) = if is_active_audio {
+                    ("LIVE", Color32::from_rgb(52, 211, 153))
+                } else {
+                    (self.resampler_settings.quality.short_name(), Color32::from_rgb(56, 189, 248))
+                };
                 painter.text(
-                    Pos2::new(node_rect.center().x, node_rect.min.y + 63.0),
-                    egui::Align2::CENTER_CENTER,
-                    sub2_txt,
-                    egui::FontId::proportional(8.5),
-                    Color32::from_rgb(16, 185, 129),
+                    Pos2::new(scope_rect.max.x - 3.5, scope_rect.min.y + 2.0),
+                    egui::Align2::RIGHT_TOP,
+                    badge_txt,
+                    egui::FontId::proportional(8.0),
+                    badge_col,
+                );
+
+                // Interactive Badges & Rate Readout below scope
+                let b1_rect = Rect::from_min_size(Pos2::new(node_rect.min.x + 18.0, node_rect.min.y + 57.0), Vec2::new(52.0, 19.0));
+                let b2_rect = Rect::from_min_size(Pos2::new(node_rect.min.x + 74.0, node_rect.min.y + 57.0), Vec2::new(56.0, 19.0));
+
+                let b1_hov = mouse_pos.map_or(false, |p| b1_rect.contains(p));
+                let b2_hov = mouse_pos.map_or(false, |p| b2_rect.contains(p));
+
+                // Badge 1: Sinc Quality
+                painter.rect_filled(b1_rect, 3.0, if b1_hov { Color32::from_rgb(30, 41, 59) } else { Color32::from_rgb(15, 23, 42) });
+                painter.rect_stroke(b1_rect, 3.0, Stroke::new(1.0, if b1_hov { Color32::from_rgb(99, 102, 241) } else { Color32::from_rgb(51, 65, 85) }), egui::StrokeKind::Inside);
+                painter.text(b1_rect.center(), egui::Align2::CENTER_CENTER, self.resampler_settings.quality.short_name(), egui::FontId::proportional(9.5), Color32::from_rgb(199, 210, 254));
+
+                // Badge 2: Roll-Off Profile
+                painter.rect_filled(b2_rect, 3.0, if b2_hov { Color32::from_rgb(30, 41, 59) } else { Color32::from_rgb(15, 23, 42) });
+                painter.rect_stroke(b2_rect, 3.0, Stroke::new(1.0, if b2_hov { Color32::from_rgb(16, 185, 129) } else { Color32::from_rgb(51, 65, 85) }), egui::StrokeKind::Inside);
+                painter.text(b2_rect.center(), egui::Align2::CENTER_CENTER, self.resampler_settings.profile.short_name(), egui::FontId::proportional(9.5), Color32::from_rgb(167, 243, 208));
+
+                // Right text: hardware rate
+                let rate_text = self.signal_path_report.as_ref().map_or("48.0k".to_string(), |r| format!("{:.1}k", r.device_rate as f32 / 1000.0));
+                painter.text(
+                    Pos2::new(node_rect.max.x - 18.0, node_rect.min.y + 66.5),
+                    egui::Align2::RIGHT_CENTER,
+                    rate_text,
+                    egui::FontId::monospace(9.5),
+                    Color32::from_rgb(148, 163, 184),
                 );
             } else if node.node_type == NodeType::Endpoint {
                 // 🔊 OUTPUT DAC: Precision Studio Stereo Meter (L & R) with Peak-Hold & Clip Warning
@@ -2290,8 +2394,8 @@ impl LunulaApp {
                 let ch_y_l = dac_rect.min.y + 2.0;
                 let ch_y_r = dac_rect.min.y + 13.0;
 
-                let meter_x = dac_rect.min.x + 13.0;
-                let meter_w = dac_rect.width() - 25.0; // Room for L/R label on left, clip LED on right
+                let meter_x = dac_rect.min.x + 15.0;
+                let meter_w = dac_rect.width() - 27.0; // Room for L/R label on left, clip LED on right
                 let seg_count = 14;
                 let seg_w = (meter_w - (seg_count - 1) as f32 * 1.5) / seg_count as f32;
 
@@ -2307,7 +2411,7 @@ impl LunulaApp {
                         Pos2::new(dac_rect.min.x + 3.0, ch_y + row_h * 0.5),
                         egui::Align2::LEFT_CENTER,
                         if is_left { "L" } else { "R" },
-                        egui::FontId::proportional(7.5),
+                        egui::FontId::proportional(9.5),
                         lbl_col,
                     );
 
@@ -2367,10 +2471,10 @@ impl LunulaApp {
 
                 let sub2_txt = if !node.sub2.is_empty() { &node.sub2 } else { "32-bit Float PCM Direct" };
                 painter.text(
-                    Pos2::new(node_rect.center().x, node_rect.min.y + 63.0),
+                    Pos2::new(node_rect.center().x, node_rect.min.y + 68.0),
                     egui::Align2::CENTER_CENTER,
                     sub2_txt,
-                    egui::FontId::proportional(8.5),
+                    egui::FontId::proportional(11.0),
                     Color32::from_rgb(217, 119, 6),
                 );
             } else if let NodeType::SavedEqPreset(ref name) = node.node_type {
@@ -2435,10 +2539,10 @@ impl LunulaApp {
                 };
 
                 painter.text(
-                    Pos2::new(node_rect.center().x, node_rect.min.y + 63.0),
+                    Pos2::new(node_rect.center().x, node_rect.min.y + 68.0),
                     egui::Align2::CENTER_CENTER,
                     sub2_txt,
-                    egui::FontId::proportional(8.5),
+                    egui::FontId::proportional(11.0),
                     sub2_col,
                 );
             } else {
@@ -2468,18 +2572,18 @@ impl LunulaApp {
                 };
 
                 painter.text(
-                    Pos2::new(node_rect.center().x, node_rect.min.y + 27.5),
+                    Pos2::new(node_rect.center().x, node_rect.min.y + 36.0),
                     egui::Align2::CENTER_CENTER,
                     &display_sub1,
-                    egui::FontId::proportional(10.0),
+                    egui::FontId::proportional(12.0),
                     sub1_col,
                 );
 
                 painter.text(
-                    Pos2::new(node_rect.center().x, node_rect.min.y + 41.5),
+                    Pos2::new(node_rect.center().x, node_rect.min.y + 54.0),
                     egui::Align2::CENTER_CENTER,
                     sub2_txt,
-                    egui::FontId::proportional(9.0),
+                    egui::FontId::proportional(11.0),
                     sub2_col,
                 );
             }
@@ -2549,7 +2653,7 @@ impl LunulaApp {
                             Pos2::new(pin_pos.x + 9.0, pin_pos.y),
                             egui::Align2::LEFT_CENTER,
                             lbl,
-                            egui::FontId::proportional(8.5),
+                            egui::FontId::proportional(10.5),
                             Color32::from_rgb(100, 116, 139),
                         );
                     }
@@ -2628,7 +2732,7 @@ impl LunulaApp {
                             Pos2::new(pin_pos.x - 9.0, pin_pos.y),
                             egui::Align2::RIGHT_CENTER,
                             lbl,
-                            egui::FontId::proportional(8.5),
+                            egui::FontId::proportional(10.5),
                             Color32::from_rgb(100, 116, 139),
                         );
                     }
@@ -2727,8 +2831,8 @@ impl LunulaApp {
 
         // 7. Interactive Bottom Status Pill
         let banner_rect = Rect::from_min_size(
-            Pos2::new(canvas_rect.min.x + 12.0, canvas_rect.max.y - 25.0),
-            Vec2::new(canvas_rect.width() - 24.0, 19.0),
+            Pos2::new(canvas_rect.min.x + 12.0, canvas_rect.max.y - 32.0),
+            Vec2::new(canvas_rect.width() - 24.0, 26.0),
         );
         let (pill_bg, pill_stroke, status_icon, status_msg, text_col) = if chain_eval.is_complete {
             if self.is_playing {
@@ -2757,13 +2861,51 @@ impl LunulaApp {
                                 Color32::from_rgb(6, 95, 70),
                             )
                         }
-                        ChainMode::DspActive => (
-                            Color32::from_rgba_premultiplied(238, 242, 255, 230),
-                            Stroke::new(1.0, Color32::from_rgb(199, 210, 254)),
-                            "🟣",
-                            "JALUR AUDIO AKTIF (DSP ACTIVE) — 10-Band Peaking EQ dalam presisi 64-bit Float (f64) dengan Headroom Guard",
-                            Color32::from_rgb(67, 56, 202),
-                        ),
+                        ChainMode::DspActive => {
+                            let has_flowing_eq = chain_eval.flowing_nodes.contains(&3)
+                                || self.nodes.iter().any(|n| matches!(n.node_type, NodeType::SavedEqPreset(_)) && chain_eval.flowing_nodes.contains(&n.id));
+
+                            let other_dsp_count = self.nodes.iter().filter(|n| {
+                                n.node_type.is_dsp_or_effect()
+                                    && n.id != 3
+                                    && !matches!(n.node_type, NodeType::SavedEqPreset(_))
+                                    && chain_eval.flowing_nodes.contains(&n.id)
+                            }).count();
+
+                            if has_flowing_eq && other_dsp_count > 0 {
+                                (
+                                    Color32::from_rgba_premultiplied(238, 242, 255, 230),
+                                    Stroke::new(1.0, Color32::from_rgb(199, 210, 254)),
+                                    "🟣",
+                                    "JALUR AUDIO AKTIF (DSP ACTIVE) — 10-Band EQ & Modul Efek Aktif (Presisi 64-bit Float)",
+                                    Color32::from_rgb(67, 56, 202),
+                                )
+                            } else if has_flowing_eq {
+                                (
+                                    Color32::from_rgba_premultiplied(238, 242, 255, 230),
+                                    Stroke::new(1.0, Color32::from_rgb(199, 210, 254)),
+                                    "🟣",
+                                    "JALUR AUDIO AKTIF (DSP ACTIVE) — 10-Band Peaking EQ dalam presisi 64-bit Float (f64) dengan Headroom Guard",
+                                    Color32::from_rgb(67, 56, 202),
+                                )
+                            } else if other_dsp_count > 0 {
+                                (
+                                    Color32::from_rgba_premultiplied(238, 242, 255, 230),
+                                    Stroke::new(1.0, Color32::from_rgb(199, 210, 254)),
+                                    "🟣",
+                                    "JALUR AUDIO AKTIF (DSP ACTIVE) — Modul FX Aktif (10-Band EQ Tidak Tersambung)",
+                                    Color32::from_rgb(67, 56, 202),
+                                )
+                            } else {
+                                (
+                                    Color32::from_rgba_premultiplied(241, 245, 249, 230),
+                                    Stroke::new(1.0, Color32::from_rgb(226, 232, 240)),
+                                    "⚪",
+                                    "JALUR AUDIO AKTIF (DSP ACTIVE) — Passthrough Murni (Modul DSP dilewati / tidak tersambung)",
+                                    Color32::from_rgb(71, 85, 105),
+                                )
+                            }
+                        }
                         ChainMode::OsResampled => (
                             Color32::from_rgba_premultiplied(254, 243, 199, 230),
                             Stroke::new(1.0, Color32::from_rgb(253, 230, 138)),
@@ -2798,7 +2940,7 @@ impl LunulaApp {
             banner_rect.center(),
             egui::Align2::CENTER_CENTER,
             format!("{} {}", status_icon, status_msg),
-            egui::FontId::proportional(10.5),
+            egui::FontId::proportional(12.5),
             text_col,
         );
 
@@ -2839,7 +2981,15 @@ impl LunulaApp {
 
         if topology_changed {
             self.invalidate_chain_cache();
-            self.sync_signal_chain_to_engine();
+            let chain_eval = self.evaluate_signal_chain();
+            let has_flowing_dsp = chain_eval.flowing_nodes.iter().any(|&id| {
+                self.nodes.iter().find(|n| n.id == id).map_or(false, |n| n.node_type.is_dsp_or_effect())
+            });
+            if has_flowing_dsp && self.chain_mode != ChainMode::DspActive {
+                self.set_chain_mode(ChainMode::DspActive);
+            } else {
+                self.sync_signal_chain_to_engine();
+            }
         }
 
         // Empty Canvas Context Menu: Right-Click on empty canvas background to quickly add modules

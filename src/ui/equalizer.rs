@@ -291,7 +291,8 @@ impl LunulaApp {
 
                 ui.add_space(6.0);
 
-                let (rect, _response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 115.0), egui::Sense::hover());
+                let canvas_h = (ui.available_height() - 14.0).clamp(115.0, 300.0);
+                let (rect, _response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), canvas_h), egui::Sense::hover());
                 let painter = ui.painter_at(rect);
 
                 painter.rect_filled(rect, 8.0, Color32::from_rgb(248, 250, 252));
@@ -307,6 +308,8 @@ impl LunulaApp {
                 } else {
                     self.volume.clamp(0.0, 1.2)
                 };
+
+                let max_bar_h = rect.height() - 20.0;
 
                 for i in 0..bars {
                     let t = i as f32 / bars as f32;
@@ -324,7 +327,7 @@ impl LunulaApp {
 
                     let bar_height = if vol_scale > 0.001 && has_energy {
                         let combined = fft_energy * eq_factor;
-                        (combined * 88.0).clamp(3.0, 96.0)
+                        (combined * (max_bar_h * 0.92)).clamp(3.0, max_bar_h)
                     } else {
                         3.0
                     };
@@ -574,9 +577,93 @@ impl LunulaApp {
                                 self.sync_parametric_to_legacy_eq();
                             }
                         }
+
+                        let import_btn = ui.add(
+                            egui::Button::new(
+                                egui::RichText::new("📥 Import AutoEq")
+                                    .size(11.0)
+                                    .strong()
+                                    .color(Color32::from_rgb(14, 116, 144))
+                            )
+                            .fill(Color32::from_rgb(240, 249, 255))
+                            .stroke(Stroke::new(1.0, Color32::from_rgb(186, 230, 253)))
+                        );
+                        if import_btn.clicked() {
+                            if let Some(file_path) = rfd::FileDialog::new()
+                                .set_title("Pilih Berkas Profil AutoEq (ParametricEQ.txt)")
+                                .add_filter("AutoEq Parametric Profile", &["txt", "csv"])
+                                .pick_file()
+                            {
+                                if let Ok(content) = std::fs::read_to_string(&file_path) {
+                                    let default_name = file_path
+                                        .file_stem()
+                                        .and_then(|s| s.to_str())
+                                        .unwrap_or("AutoEq Profile")
+                                        .to_string();
+                                    match crate::audio::parse_autoeq_text(&default_name, &content) {
+                                        Ok(new_preset) => {
+                                            let name = new_preset.name.clone();
+                                            let band_count = new_preset.bands.len();
+                                            let preamp_db = new_preset.manual_preamp_db;
+
+                                            *preset = new_preset.clone();
+                                            *is_dirty = false;
+                                            self.active_eq = new_preset.clone();
+
+                                            self.eq_presets.retain(|p| p.name != name);
+                                            self.eq_presets.push(new_preset);
+                                            self.selected_band_idx = Some(0);
+                                            self.sync_parametric_to_legacy_eq();
+                                            self.sync_signal_chain_to_engine();
+                                            self.save_library_state();
+
+                                            self.autoeq_import_status = Some((
+                                                format!("Berhasil mengimpor '{}' ({} band, Preamp {:.1} dB)", name, band_count, preamp_db),
+                                                true,
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            self.autoeq_import_status = Some((format!("Gagal mengimpor AutoEq: {}", e), false));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        import_btn.on_hover_text("Impor profil kalibrasi headphone AutoEq (ParametricEQ.txt)");
                     });
                 });
         });
+
+        // AutoEq Status Notification Banner
+        let mut dismiss_autoeq_status = false;
+        if let Some((ref msg, is_ok)) = self.autoeq_import_status {
+            ui.add_space(4.0);
+            let (bg, border, text_color) = if is_ok {
+                (Color32::from_rgb(236, 253, 245), Color32::from_rgb(167, 243, 208), Color32::from_rgb(6, 95, 70))
+            } else {
+                (Color32::from_rgb(254, 242, 242), Color32::from_rgb(254, 202, 202), Color32::from_rgb(153, 27, 27))
+            };
+
+            egui::Frame::new()
+                .fill(bg)
+                .stroke(Stroke::new(1.0, border))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(10, 6))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let icon = if is_ok { "✨" } else { "⚠️" };
+                        ui.label(egui::RichText::new(format!("{} {}", icon, msg)).size(11.5).strong().color(text_color));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("✕").clicked() {
+                                dismiss_autoeq_status = true;
+                            }
+                        });
+                    });
+                });
+        }
+        if dismiss_autoeq_status {
+            self.autoeq_import_status = None;
+        }
 
         // Save preset modal dialog
         if self.show_save_preset_dialog {
@@ -1348,6 +1435,105 @@ impl LunulaApp {
 
                         ui.label(egui::RichText::new("Diterapkan pada stage output saat bit depth DAC < sumber.").size(10.5).color(Color32::from_rgb(100, 116, 139)));
                     });
+                });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(6.0);
+
+                // Section: ReplayGain & Clipping Prevention
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("🔊 REPLAYGAIN & ANTI-CLIPPING").strong().size(12.0).color(Color32::from_rgb(15, 23, 42)));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let eff_db = self.effective_replay_gain_db;
+                        let eff_text = if self.chain_mode == ChainMode::BitPerfect {
+                            "Bypass (Bit-Perfect Mode)".to_string()
+                        } else if self.replay_gain_mode == crate::models::ReplayGainMode::Disabled {
+                            "Nonaktif (0.0 dB)".to_string()
+                        } else {
+                            format!("{:+.1} dB ({:.2}x)", eff_db, self.effective_replay_gain_linear)
+                        };
+                        ui.label(egui::RichText::new(format!("Effective Gain: {}", eff_text)).size(11.0).strong().color(Color32::from_rgb(2, 132, 199)));
+                    });
+                });
+
+                ui.add_space(4.0);
+                ui.columns(3, |rg_cols| {
+                    // Col 1: Mode
+                    rg_cols[0].vertical(|ui| {
+                        ui.label(egui::RichText::new("Mode ReplayGain").strong().size(11.0).color(Color32::from_rgb(51, 65, 85)));
+                        ui.add_space(2.0);
+                        let modes = [
+                            (crate::models::ReplayGainMode::Auto, "Auto (Smart)"),
+                            (crate::models::ReplayGainMode::Track, "Track Gain"),
+                            (crate::models::ReplayGainMode::Album, "Album Gain"),
+                            (crate::models::ReplayGainMode::Disabled, "Disabled"),
+                        ];
+                        for (m, lbl) in modes {
+                            let is_cur = self.replay_gain_mode == m;
+                            if ui.selectable_label(is_cur, egui::RichText::new(lbl).size(10.5)).clicked() {
+                                self.replay_gain_mode = m;
+                                self.update_effective_replay_gain();
+                                self.save_library_state();
+                            }
+                        }
+                    });
+
+                    // Col 2: Clip Prevention
+                    rg_cols[1].vertical(|ui| {
+                        ui.label(egui::RichText::new("Pencegah Clipping").strong().size(11.0).color(Color32::from_rgb(51, 65, 85)));
+                        ui.add_space(2.0);
+                        let clips = [
+                            (crate::models::ReplayGainClipPrevention::PreventByPeak, "Prevent by Peak (Scale Down)"),
+                            (crate::models::ReplayGainClipPrevention::Limiter, "Apply Soft Limiter"),
+                            (crate::models::ReplayGainClipPrevention::None, "None (Unprotected)"),
+                        ];
+                        for (cp, lbl) in clips {
+                            let is_cur = self.replay_gain_clip_prevention == cp;
+                            if ui.selectable_label(is_cur, egui::RichText::new(lbl).size(10.5)).clicked() {
+                                self.replay_gain_clip_prevention = cp;
+                                self.update_effective_replay_gain();
+                                self.save_library_state();
+                            }
+                        }
+                    });
+
+                    // Col 3: Preamp Slider
+                    rg_cols[2].vertical(|ui| {
+                        ui.label(egui::RichText::new("ReplayGain Preamp").strong().size(11.0).color(Color32::from_rgb(51, 65, 85)));
+                        ui.add_space(2.0);
+                        let mut preamp = self.replay_gain_preamp_db;
+                        let slider = egui::Slider::new(&mut preamp, -12.0..=12.0)
+                            .suffix(" dB")
+                            .step_by(0.5);
+                        if ui.add(slider).changed() {
+                            self.replay_gain_preamp_db = preamp;
+                            self.update_effective_replay_gain();
+                            self.save_library_state();
+                        }
+                        if ui.button(egui::RichText::new("Reset Preamp 0 dB").size(10.0)).clicked() {
+                            self.replay_gain_preamp_db = 0.0;
+                            self.update_effective_replay_gain();
+                            self.save_library_state();
+                        }
+                    });
+                });
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("🔀 TRANSISI CROSSFADE:").strong().size(11.0).color(Color32::from_rgb(15, 23, 42)));
+                    let mut cf = self.crossfade_secs;
+                    let cf_slider = egui::Slider::new(&mut cf, 0.0..=12.0)
+                        .suffix(" s (0 = Gapless)")
+                        .step_by(0.5);
+                    if ui.add(cf_slider).changed() {
+                        self.set_crossfade_secs(cf);
+                    }
+                    if cf > 0.0 {
+                        ui.label(egui::RichText::new(format!("Overlap: {:.1} detik", cf)).size(10.5).color(Color32::from_rgb(14, 165, 233)));
+                    } else {
+                        ui.label(egui::RichText::new("⚡ Gapless Murni 0 ms").size(10.5).color(Color32::from_rgb(16, 185, 129)));
+                    }
                 });
             });
     }

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::audio::types::{Effect, SignalChainGraph};
+use crate::audio::types::{Effect, EffectType, SignalChainGraph};
 use super::biquad::soft_limit;
 use super::effects::GraphicEqEffect;
 
@@ -18,6 +18,7 @@ pub enum StepInput {
 pub struct ExecutionStep {
     pub node_id: u32,
     pub name: String,
+    pub effect_type: EffectType,
     pub slot: usize,
     pub effect: Box<dyn Effect>,
     pub input: StepInput,
@@ -90,17 +91,17 @@ impl GraphExecutor {
     pub fn set_eq_band(&mut self, index: usize, gain_db: f32) {
         self.fallback_eq.set_param(index as u32, gain_db);
         for step in &mut self.steps {
-            if step.effect.name() == "10-Band Graphic EQ" {
+            if step.effect_type == EffectType::GraphicEq {
                 step.effect.set_param(index as u32, gain_db);
             }
         }
         for node in &mut self.graph.nodes {
-            if node.effect.name() == "10-Band Graphic EQ" {
+            if node.effect.effect_type() == EffectType::GraphicEq {
                 node.effect.set_param(index as u32, gain_db);
             }
         }
         for effect in &mut self.graph.effects {
-            if effect.name() == "10-Band Graphic EQ" {
+            if effect.effect_type() == EffectType::GraphicEq {
                 effect.set_param(index as u32, gain_db);
             }
         }
@@ -120,6 +121,23 @@ impl GraphExecutor {
         if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == node_id) {
             node.effect.set_param(param_id, value);
         }
+    }
+
+    pub fn get_max_gain_reduction(&self) -> f32 {
+        let mut max_gr = 0.0f32;
+        for step in &self.steps {
+            let gr = step.effect.gain_reduction_db();
+            if gr > max_gr {
+                max_gr = gr;
+            }
+        }
+        for effect in &self.graph.effects {
+            let gr = effect.gain_reduction_db();
+            if gr > max_gr {
+                max_gr = gr;
+            }
+        }
+        max_gr
     }
 
     pub fn reset_states(&mut self) {
@@ -164,14 +182,15 @@ impl GraphExecutor {
                 let slot = new_steps.len();
                 node_to_slot.insert(node_id, slot);
 
-                // Preserve state from previous execution step if same node_id and name
-                if let Some(old_step) = self.steps.iter_mut().find(|s| s.node_id == node_id && s.name == node.name) {
+                let eff_type = node.effect.effect_type();
+
+                // Preserve state from previous execution step if same node_id and effect type
+                if let Some(old_step) = self.steps.iter_mut().find(|s| s.node_id == node_id && s.effect_type == eff_type) {
                     std::mem::swap(&mut node.effect, &mut old_step.effect);
                     node.effect.set_sample_rate(self.sample_rate);
                 }
 
-                let eff_name = node.effect.name();
-                if eff_name != "Passthrough (Wire)" && eff_name != "Splitter / Y-Branch Bus" {
+                if !eff_type.is_routing_only() {
                     has_active = true;
                 }
 
@@ -181,7 +200,7 @@ impl GraphExecutor {
 
                 let input = if incoming.is_empty() {
                     StepInput::Source
-                } else if node.effect.mix_ratio().is_some() || eff_name.starts_with("Mixer") {
+                } else if node.effect.mix_ratio().is_some() || eff_type.is_mixer() {
                     has_active = true;
                     let mut slot_a = None;
                     let mut slot_b = None;
@@ -208,6 +227,7 @@ impl GraphExecutor {
                 new_steps.push(ExecutionStep {
                     node_id,
                     name: node.name.clone(),
+                    effect_type: eff_type,
                     slot,
                     effect: node.effect,
                     input,
@@ -287,7 +307,7 @@ impl GraphExecutor {
         }
 
         // 5. Legacy sequential effects (if provided without DAG nodes)
-        if !self.graph.effects.is_empty() {
+        if self.steps.is_empty() && !self.graph.effects.is_empty() {
             for effect in &mut self.graph.effects {
                 effect.process_block(left, right);
             }

@@ -46,8 +46,8 @@ pub fn render_routing_help_button(
 #[inline]
 pub fn get_node_size(node_type: &NodeType) -> Vec2 {
     match node_type {
-        NodeType::TubeWarmer => Vec2::new(216.0, 96.0),
-        _ => Vec2::new(188.0, 76.0),
+        NodeType::TubeWarmer => Vec2::new(228.0, 102.0),
+        _ => Vec2::new(198.0, 84.0),
     }
 }
 

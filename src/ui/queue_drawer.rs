@@ -120,6 +120,85 @@ impl LunulaApp {
                             }
                         });
 
+                        ui.add_space(4.0);
+
+                        // Gapless & ReplayGain Controls
+                        ui.horizontal(|ui| {
+                            let gapless_label = if self.is_gapless_enabled { "⚡ Gapless: ON" } else { "⚡ Gapless: OFF" };
+                            let gapless_btn = if self.is_gapless_enabled {
+                                egui::Button::new(egui::RichText::new(gapless_label).strong().size(10.5).color(Color32::WHITE))
+                                    .fill(Color32::from_rgb(16, 185, 129))
+                                    .corner_radius(4.0)
+                            } else {
+                                egui::Button::new(egui::RichText::new(gapless_label).size(10.5).color(Color32::from_rgb(71, 85, 105)))
+                                    .fill(Color32::WHITE)
+                                    .stroke(Stroke::new(1.0, Color32::from_rgb(203, 213, 225)))
+                                    .corner_radius(4.0)
+                            };
+                            if ui.add(gapless_btn).on_hover_text("Pemutaran lagu bersambung tanpa jeda (zero-flush sample-accurate handoff)").clicked() {
+                                self.is_gapless_enabled = !self.is_gapless_enabled;
+                                if self.is_gapless_enabled {
+                                    if let Some(next) = self.peek_next_track() {
+                                        if let Some(ref p) = next.file_path {
+                                            if let Some(ref engine) = self.audio_engine {
+                                                engine.queue_next(std::path::PathBuf::from(p));
+                                            }
+                                        }
+                                    }
+                                } else if let Some(ref engine) = self.audio_engine {
+                                    engine.clear_next();
+                                }
+                            }
+
+                            ui.label(egui::RichText::new("🔊 ReplayGain:").strong().size(10.5).color(Color32::from_rgb(71, 85, 105)));
+                            let rg_modes = [
+                                (crate::models::ReplayGainMode::Auto, "Auto"),
+                                (crate::models::ReplayGainMode::Track, "Track"),
+                                (crate::models::ReplayGainMode::Album, "Album"),
+                                (crate::models::ReplayGainMode::Disabled, "Off"),
+                            ];
+                            for (m, lbl) in rg_modes {
+                                let is_active = self.replay_gain_mode == m;
+                                let btn = if is_active {
+                                    egui::Button::new(egui::RichText::new(lbl).strong().size(10.0).color(Color32::WHITE))
+                                        .fill(Color32::from_rgb(99, 102, 241))
+                                        .corner_radius(4.0)
+                                } else {
+                                    egui::Button::new(egui::RichText::new(lbl).size(10.0).color(Color32::from_rgb(71, 85, 105)))
+                                        .fill(Color32::WHITE)
+                                        .stroke(Stroke::new(1.0, Color32::from_rgb(203, 213, 225)))
+                                        .corner_radius(4.0)
+                                };
+                                if ui.add(btn).clicked() {
+                                    self.replay_gain_mode = m;
+                                    self.update_effective_replay_gain();
+                                    self.save_library_state();
+                                }
+                            }
+                        });
+
+                        // Crossfade Settings
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("🔀 Crossfade:").strong().size(10.5).color(Color32::from_rgb(71, 85, 105)));
+                            let cf_presets = [(0.0f32, "0s (Off)"), (2.0, "2s"), (4.0, "4s"), (8.0, "8s")];
+                            for (secs, lbl) in cf_presets {
+                                let is_active = (self.crossfade_secs - secs).abs() < 0.2;
+                                let btn = if is_active {
+                                    egui::Button::new(egui::RichText::new(lbl).strong().size(10.0).color(Color32::WHITE))
+                                        .fill(Color32::from_rgb(14, 165, 233))
+                                        .corner_radius(4.0)
+                                } else {
+                                    egui::Button::new(egui::RichText::new(lbl).size(10.0).color(Color32::from_rgb(71, 85, 105)))
+                                        .fill(Color32::WHITE)
+                                        .stroke(Stroke::new(1.0, Color32::from_rgb(203, 213, 225)))
+                                        .corner_radius(4.0)
+                                };
+                                if ui.add(btn).on_hover_text("Transisi tumpang-tindih (fade-out lagu lama & fade-in lagu baru)").clicked() {
+                                    self.set_crossfade_secs(secs);
+                                }
+                            }
+                        });
+
                         // Album Repeat Info Note
                         if self.repeat_mode == RepeatMode::Album {
                             ui.add_space(2.0);

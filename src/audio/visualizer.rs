@@ -6,35 +6,70 @@ pub const NUM_BANDS: usize = 48;
 
 // Lock-free circular sample buffer shared between audio rendering callback and UI thread
 pub struct VisualizerRingBuffer {
-    buffer: [AtomicU32; VISUALIZER_BUFFER_SIZE],
+    buffer_l: [AtomicU32; VISUALIZER_BUFFER_SIZE],
+    buffer_r: [AtomicU32; VISUALIZER_BUFFER_SIZE],
     write_idx: AtomicUsize,
+    gain_reduction_db: AtomicU32,
 }
 
 impl VisualizerRingBuffer {
     pub fn new() -> Self {
         Self {
-            buffer: std::array::from_fn(|_| AtomicU32::new(0)),
+            buffer_l: std::array::from_fn(|_| AtomicU32::new(0)),
+            buffer_r: std::array::from_fn(|_| AtomicU32::new(0)),
             write_idx: AtomicUsize::new(0),
+            gain_reduction_db: AtomicU32::new(0),
         }
     }
 
     #[inline(always)]
     pub fn push_sample(&self, sample: f32) {
+        self.push_stereo(sample, sample);
+    }
+
+    #[inline(always)]
+    pub fn push_stereo(&self, left: f32, right: f32) {
         let idx = self.write_idx.fetch_add(1, Ordering::Relaxed) % VISUALIZER_BUFFER_SIZE;
-        self.buffer[idx].store(sample.to_bits(), Ordering::Relaxed);
+        self.buffer_l[idx].store(left.to_bits(), Ordering::Relaxed);
+        self.buffer_r[idx].store(right.to_bits(), Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn set_gain_reduction(&self, gr: f32) {
+        self.gain_reduction_db.store(gr.to_bits(), Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn get_gain_reduction(&self) -> f32 {
+        f32::from_bits(self.gain_reduction_db.load(Ordering::Relaxed))
     }
 
     pub fn clear(&self) {
-        for b in &self.buffer {
+        for b in &self.buffer_l {
             b.store(0, Ordering::Relaxed);
         }
+        for b in &self.buffer_r {
+            b.store(0, Ordering::Relaxed);
+        }
+        self.gain_reduction_db.store(0, Ordering::Relaxed);
     }
 
     pub fn get_latest_samples(&self, dest: &mut [f32; FFT_SIZE]) {
         let current_idx = self.write_idx.load(Ordering::Relaxed);
         for (i, d) in dest.iter_mut().enumerate() {
             let idx = (current_idx.wrapping_add(VISUALIZER_BUFFER_SIZE - FFT_SIZE + i)) % VISUALIZER_BUFFER_SIZE;
-            *d = f32::from_bits(self.buffer[idx].load(Ordering::Relaxed));
+            let l = f32::from_bits(self.buffer_l[idx].load(Ordering::Relaxed));
+            let r = f32::from_bits(self.buffer_r[idx].load(Ordering::Relaxed));
+            *d = (l + r) * 0.5;
+        }
+    }
+
+    pub fn get_latest_stereo(&self, dest_l: &mut [f32; FFT_SIZE], dest_r: &mut [f32; FFT_SIZE]) {
+        let current_idx = self.write_idx.load(Ordering::Relaxed);
+        for i in 0..FFT_SIZE {
+            let idx = (current_idx.wrapping_add(VISUALIZER_BUFFER_SIZE - FFT_SIZE + i)) % VISUALIZER_BUFFER_SIZE;
+            dest_l[i] = f32::from_bits(self.buffer_l[idx].load(Ordering::Relaxed));
+            dest_r[i] = f32::from_bits(self.buffer_r[idx].load(Ordering::Relaxed));
         }
     }
 }

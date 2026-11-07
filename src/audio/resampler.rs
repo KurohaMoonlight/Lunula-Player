@@ -3,6 +3,7 @@ use rubato::{
     SincInterpolationType, WindowFunction,
 };
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
+use crate::audio::types::ResamplerSettings;
 
 // Audiophile-grade stereo sinc resampler using Rubato
 // Replaces naive linear interpolation with bandlimited windowed sinc convolution,
@@ -10,6 +11,7 @@ use rubato::audioadapter_buffers::direct::InterleavedSlice;
 pub struct StereoResampler {
     source_rate: u32,
     target_rate: u32,
+    settings: ResamplerSettings,
     sinc_resampler: Option<Async<f32>>,
     in_buffer: Vec<f32>,
     out_buffer: Vec<f32>,
@@ -20,9 +22,14 @@ pub struct StereoResampler {
 
 impl StereoResampler {
     pub fn new(source_rate: u32, target_rate: u32) -> Self {
+        Self::new_with_settings(source_rate, target_rate, ResamplerSettings::default())
+    }
+
+    pub fn new_with_settings(source_rate: u32, target_rate: u32, settings: ResamplerSettings) -> Self {
         let mut resampler = Self {
             source_rate: source_rate.max(1),
             target_rate: target_rate.max(1),
+            settings,
             sinc_resampler: None,
             in_buffer: Vec::new(),
             out_buffer: Vec::new(),
@@ -32,6 +39,17 @@ impl StereoResampler {
         };
         resampler.setup_sinc();
         resampler
+    }
+
+    pub fn settings(&self) -> ResamplerSettings {
+        self.settings
+    }
+
+    pub fn set_settings(&mut self, settings: ResamplerSettings) {
+        if self.settings != settings {
+            self.settings = settings;
+            self.setup_sinc();
+        }
     }
 
     #[inline(always)]
@@ -52,8 +70,8 @@ impl StereoResampler {
 
         let ratio = self.target_rate as f64 / self.source_rate as f64;
         let params = SincInterpolationParameters {
-            sinc_len: 128,
-            f_cutoff: Some(0.95),
+            sinc_len: self.settings.quality.sinc_len(),
+            f_cutoff: Some(self.settings.profile.cutoff()),
             interpolation: SincInterpolationType::Cubic,
             oversampling_factor: 256,
             window: WindowFunction::BlackmanHarris2,
@@ -255,5 +273,44 @@ mod tests {
 
         // Expected output length should be roughly 2000 * (48000 / 96000) = ~1000 frames
         assert!(outs.len() >= 800 && outs.len() <= 1200);
+    }
+
+    #[test]
+    fn test_resampler_custom_settings() {
+        use crate::audio::types::{RollOffProfile, SincQuality};
+        let mut resampler = StereoResampler::new(44100, 48000);
+        assert_eq!(resampler.settings().quality, SincQuality::Studio);
+        assert_eq!(resampler.settings().profile, RollOffProfile::Sharp);
+
+        // Switch to Fast + Smooth
+        let custom = ResamplerSettings {
+            quality: SincQuality::Fast,
+            profile: RollOffProfile::Smooth,
+        };
+        resampler.set_settings(custom);
+        assert_eq!(resampler.settings(), custom);
+
+        // Switch to Extreme + Nyquist
+        let extreme = ResamplerSettings {
+            quality: SincQuality::Extreme,
+            profile: RollOffProfile::Nyquist,
+        };
+        resampler.set_settings(extreme);
+        assert_eq!(resampler.settings(), extreme);
+
+        // Verify it still processes frames properly under extreme settings
+        let mut count = 0;
+        let mut outs = 0;
+        while let Some(_) = resampler.next_frame(|| {
+            if count < 500 {
+                count += 1;
+                Some((0.3, -0.3))
+            } else {
+                None
+            }
+        }) {
+            outs += 1;
+        }
+        assert!(outs > 400);
     }
 }

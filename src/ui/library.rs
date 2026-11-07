@@ -43,6 +43,7 @@ impl LunulaApp {
         let mut track_add_to_playlist: Option<(usize, String)> = None;
         let mut track_remove_from_playlist: Option<(String, String)> = None;
         let mut track_to_delete_from_library: Option<(String, String)> = None;
+        let mut track_to_edit_tags: Option<Track> = None;
         let mut album_to_delete_from_library: Option<String> = None;
         let mut artist_to_delete_from_library: Option<String> = None;
         let mut playlist_to_delete: Option<usize> = None;
@@ -541,7 +542,7 @@ impl LunulaApp {
                                                     ui.label(egui::RichText::new(format!("{} Lagu • {:.1} MB", tracks.len(), total_size)).size(10.5).color(Color32::from_rgb(148, 163, 184)));
                                                 });
                                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                    if ui.button(egui::RichText::new("Filter Kategori Ini ➔").strong().size(11.5)).clicked() {
+                                                    if ui.button(egui::RichText::new("Filter Kategori Ini ▶").strong().size(11.5)).clicked() {
                                                         set_quality_filter = Some(tier_id.to_string());
                                                         switch_to_all_tracks = true;
                                                     }
@@ -695,6 +696,10 @@ impl LunulaApp {
                                             if let Some(ref path) = song.file_path {
                                                 if ui.button("📂 Buka Lokasi File di Explorer").clicked() {
                                                     open_file_in_explorer(path);
+                                                    ui.close();
+                                                }
+                                                if ui.button("✏️ Edit Tag Metadata (Lofty)").clicked() {
+                                                    track_to_edit_tags = Some((*song).clone());
                                                     ui.close();
                                                 }
                                             }
@@ -1260,6 +1265,10 @@ impl LunulaApp {
                                                 open_file_in_explorer(path);
                                                 ui.close();
                                             }
+                                            if ui.button("✏️ Edit Tag Metadata (Lofty)").clicked() {
+                                                track_to_edit_tags = Some(song.clone());
+                                                ui.close();
+                                            }
                                         }
                                     });
 
@@ -1408,6 +1417,10 @@ impl LunulaApp {
         if let Some(pl_id) = playlist_to_delete {
             had_mutations = true;
             self.custom_playlists.retain(|p| p.id != pl_id);
+        }
+
+        if let Some(track) = track_to_edit_tags {
+            self.open_tag_editor(&track);
         }
 
         if let Some(alb) = set_album_filter {

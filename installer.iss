@@ -2,7 +2,7 @@
 ; Professional Windows Installer
 
 #define MyAppName "Lunula Audio Player"
-#define MyAppVersion "0.1.3"
+#define MyAppVersion "1.0.0"
 #define MyAppPublisher "Lunula Audio"
 #define MyAppExeName "lunulaplayer.exe"
 

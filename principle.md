@@ -1,0 +1,1 @@
+Lunula is honest audio player, no gimmick allowed

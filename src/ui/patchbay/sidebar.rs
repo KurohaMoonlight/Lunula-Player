@@ -235,9 +235,9 @@ impl LunulaApp {
             ui.vertical(|ui| {
                 // 1. Header Ringkas
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("🎛️ FX TOOLBOX").strong().size(13.0).color(Color32::from_rgb(15, 23, 42)));
+                    ui.label(egui::RichText::new("🎛️ FX TOOLBOX").strong().size(15.0).color(Color32::from_rgb(15, 23, 42)));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new("Klik untuk tambah").size(10.0).color(Color32::from_rgb(148, 163, 184)));
+                        ui.label(egui::RichText::new("Klik untuk tambah").size(11.5).color(Color32::from_rgb(148, 163, 184)));
                     });
                 });
 
@@ -245,7 +245,7 @@ impl LunulaApp {
 
                 // 2. Search Bar Interaktif
                 let has_search_text = !self.patchbay_filter_search.is_empty();
-                let clear_btn_w = if has_search_text { 22.0 } else { 0.0 };
+                let clear_btn_w = if has_search_text { 24.0 } else { 0.0 };
 
                 ui.horizontal(|ui| {
                     let search_resp = ui.add(
@@ -256,7 +256,7 @@ impl LunulaApp {
 
                     // Clear button jika ada teks pencarian
                     if has_search_text {
-                        if ui.button(egui::RichText::new("✕").size(10.0).color(Color32::from_rgb(148, 163, 184))).on_hover_text("Bersihkan pencarian").clicked() {
+                        if ui.button(egui::RichText::new("✕").size(11.5).color(Color32::from_rgb(148, 163, 184))).on_hover_text("Bersihkan pencarian").clicked() {
                             self.patchbay_filter_search.clear();
                         }
                     }
@@ -293,7 +293,7 @@ impl LunulaApp {
                             Color32::from_rgb(71, 85, 105)
                         };
 
-                        let btn = egui::Button::new(egui::RichText::new(*label).size(10.0).strong().color(text_color))
+                        let btn = egui::Button::new(egui::RichText::new(*label).size(11.5).strong().color(text_color))
                             .fill(chip_color)
                             .corner_radius(4.0)
                             .stroke(Stroke::NONE);
@@ -348,8 +348,8 @@ impl LunulaApp {
                             };
                             let count_on_canvas = canvas_nodes.len();
 
-                            // Render compact card row (~44px height)
-                            let row_height = 42.0;
+                            // Render compact card row (~48px height for effortless readability)
+                            let row_height = 48.0;
                             let (row_rect, row_resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), egui::Sense::click());
                             let r_painter = ui.painter_at(row_rect);
 
@@ -373,47 +373,60 @@ impl LunulaApp {
                             r_painter.rect_filled(row_rect, 6.0, bg_color);
                             r_painter.rect_stroke(row_rect, 6.0, Stroke::new(if is_hovered { 1.2 } else { 0.8 }, border_color), egui::StrokeKind::Inside);
 
-                            // Left Icon Badge (28x28px)
-                            let icon_rect = Rect::from_center_size(Pos2::new(row_rect.min.x + 22.0, row_rect.center().y), Vec2::splat(26.0));
-                            r_painter.rect_filled(icon_rect, 5.0, if def.is_coming_soon { Color32::from_rgb(241, 245, 249) } else { def.bg_accent });
-                            r_painter.text(icon_rect.center(), egui::Align2::CENTER_CENTER, def.icon, egui::FontId::proportional(14.0), Color32::WHITE);
+                            // Left Icon Badge (30x30px)
+                            let icon_rect = Rect::from_center_size(Pos2::new(row_rect.min.x + 24.0, row_rect.center().y), Vec2::splat(30.0));
+                            let icon_bg = if def.is_coming_soon { Color32::from_rgb(241, 245, 249) } else { def.bg_accent };
+                            let icon_fg = if def.is_coming_soon { Color32::from_rgb(148, 163, 184) } else { def.accent_color };
+                            r_painter.rect_filled(icon_rect, 5.0, icon_bg);
+                            r_painter.rect_stroke(icon_rect, 5.0, Stroke::new(1.0, icon_fg.gamma_multiply(0.35)), egui::StrokeKind::Inside);
+
+                            if def.node_type == NodeType::StereoWidener {
+                                let c = icon_rect.center();
+                                for r in [3.5f32, 7.0, 10.5] {
+                                    r_painter.line_segment([Pos2::new(c.x - r, c.y - 5.0), Pos2::new(c.x - r, c.y + 5.0)], Stroke::new(1.3, icon_fg));
+                                    r_painter.line_segment([Pos2::new(c.x + r, c.y - 5.0), Pos2::new(c.x + r, c.y + 5.0)], Stroke::new(1.3, icon_fg));
+                                }
+                                r_painter.circle_filled(c, 2.5, icon_fg);
+                            } else {
+                                r_painter.text(icon_rect.center(), egui::Align2::CENTER_CENTER, def.icon, egui::FontId::proportional(16.0), icon_fg);
+                            }
 
                             // Center Text Area
-                            let text_left = row_rect.min.x + 42.0;
+                            let text_left = row_rect.min.x + 46.0;
                             let text_right = row_rect.max.x - 76.0;
-                            let text_top = row_rect.min.y + 6.0;
+                            let text_top = row_rect.min.y + 7.0;
 
                             // Baris 1: Judul + Status Badge
                             let title_color = if def.is_coming_soon { Color32::from_rgb(100, 116, 139) } else { Color32::from_rgb(15, 23, 42) };
-                            r_painter.text(Pos2::new(text_left, text_top), egui::Align2::LEFT_TOP, def.title, egui::FontId::proportional(11.5), title_color);
+                            r_painter.text(Pos2::new(text_left, text_top), egui::Align2::LEFT_TOP, def.title, egui::FontId::proportional(13.0), title_color);
 
                             if def.is_coming_soon {
                                 let badge_pos = Pos2::new(text_right - 4.0, text_top + 1.0);
-                                r_painter.text(badge_pos, egui::Align2::RIGHT_TOP, "🔒 Coming Soon", egui::FontId::proportional(9.0), Color32::from_rgb(217, 119, 6));
+                                r_painter.text(badge_pos, egui::Align2::RIGHT_TOP, "🔒 Coming Soon", egui::FontId::proportional(10.5), Color32::from_rgb(217, 119, 6));
                             } else if count_on_canvas > 0 {
                                 let badge_text = if count_on_canvas == 1 { "✓ Di Canvas".to_string() } else { format!("{}x di Canvas", count_on_canvas) };
                                 let badge_pos = Pos2::new(text_right - 4.0, text_top + 1.0);
-                                r_painter.text(badge_pos, egui::Align2::RIGHT_TOP, badge_text, egui::FontId::monospace(9.0), Color32::from_rgb(16, 185, 129));
+                                r_painter.text(badge_pos, egui::Align2::RIGHT_TOP, badge_text, egui::FontId::monospace(10.5), Color32::from_rgb(16, 185, 129));
                             }
 
                             // Baris 2: Subtitle ramah pemula
                             let sub_text = if def.is_coming_soon { "Segera hadir dalam pembaruan berikutnya" } else { def.subtitle };
                             let sub_color = if def.is_coming_soon { Color32::from_rgb(148, 163, 184) } else { Color32::from_rgb(100, 116, 139) };
-                            r_painter.text(Pos2::new(text_left, text_top + 15.0), egui::Align2::LEFT_TOP, sub_text, egui::FontId::proportional(9.5), sub_color);
+                            r_painter.text(Pos2::new(text_left, text_top + 17.0), egui::Align2::LEFT_TOP, sub_text, egui::FontId::proportional(11.0), sub_color);
 
                             if def.is_coming_soon {
                                 // Locked badge
                                 let cs_w = 66.0;
-                                let cs_h = 22.0;
+                                let cs_h = 24.0;
                                 let cs_rect = Rect::from_center_size(Pos2::new(row_rect.max.x - 38.0, row_rect.center().y), Vec2::new(cs_w, cs_h));
                                 r_painter.rect_filled(cs_rect, 4.0, Color32::from_rgb(254, 243, 199));
                                 r_painter.rect_stroke(cs_rect, 4.0, Stroke::new(0.8, Color32::from_rgb(251, 191, 36)), egui::StrokeKind::Inside);
-                                r_painter.text(cs_rect.center(), egui::Align2::CENTER_CENTER, "🔒 Soon", egui::FontId::proportional(9.5), Color32::from_rgb(180, 83, 9));
+                                r_painter.text(cs_rect.center(), egui::Align2::CENTER_CENTER, "🔒 Soon", egui::FontId::proportional(10.5), Color32::from_rgb(180, 83, 9));
                             } else {
                                 // Right Action 1: Tombol "? Panduan"
-                                let help_w = 18.0;
-                                let help_h = 22.0;
-                                let help_rect = Rect::from_center_size(Pos2::new(row_rect.max.x - 56.0, row_rect.center().y), Vec2::new(help_w, help_h));
+                                let help_w = 20.0;
+                                let help_h = 24.0;
+                                let help_rect = Rect::from_center_size(Pos2::new(row_rect.max.x - 58.0, row_rect.center().y), Vec2::new(help_w, help_h));
                                 let help_resp = ui.interact(help_rect, ui.scope_id().with(("help_fx_btn", def.title)), egui::Sense::click())
                                     .on_hover_text(format!("Buka panduan bergambar & cara kerja {}", def.title));
 
@@ -421,15 +434,15 @@ impl LunulaApp {
                                 let help_fg = if help_resp.hovered() { Color32::from_rgb(79, 70, 229) } else { Color32::from_rgb(100, 116, 139) };
 
                                 r_painter.rect_filled(help_rect, 4.0, help_bg);
-                                r_painter.text(help_rect.center(), egui::Align2::CENTER_CENTER, "?", egui::FontId::proportional(11.0), help_fg);
+                                r_painter.text(help_rect.center(), egui::Align2::CENTER_CENTER, "?", egui::FontId::proportional(12.0), help_fg);
 
                                 if help_resp.clicked() {
                                     switch_to_tutorial = Some(def.node_type.clone());
                                 }
 
                                 // Right Action 2: Tombol "+ Tambah"
-                                let btn_w = 42.0;
-                                let btn_h = 22.0;
+                                let btn_w = 46.0;
+                                let btn_h = 24.0;
                                 let btn_rect = Rect::from_center_size(Pos2::new(row_rect.max.x - 24.0, row_rect.center().y), Vec2::new(btn_w, btn_h));
                                 let btn_resp = ui.interact(btn_rect, ui.scope_id().with(("add_fx_btn", def.title)), egui::Sense::click());
 
@@ -437,7 +450,11 @@ impl LunulaApp {
                                 let btn_fg = if btn_resp.hovered() { Color32::WHITE } else { Color32::from_rgb(79, 70, 229) };
 
                                 r_painter.rect_filled(btn_rect, 4.0, btn_bg);
-                                r_painter.text(btn_rect.center(), egui::Align2::CENTER_CENTER, "+ Tambah", egui::FontId::proportional(9.0), btn_fg);
+                                r_painter.text(btn_rect.center(), egui::Align2::CENTER_CENTER, "+ Tambah", egui::FontId::proportional(11.0), btn_fg);
+
+                                if def.node_type == NodeType::TubeWarmer {
+                                    self.quest_rect_tube_warmer_btn = Some(row_rect);
+                                }
 
                                 // Interaksi Tambah
                                 if row_resp.clicked() || btn_resp.clicked() {
@@ -512,11 +529,11 @@ impl LunulaApp {
                             // Jika ada lebih dari 1 kartu di kanvas, tampilkan indikator seleksi instan
                             if count_on_canvas > 1 {
                                 ui.horizontal(|ui| {
-                                    ui.add_space(42.0);
-                                    ui.label(egui::RichText::new("Pilih di Canvas:").size(9.0).color(Color32::from_rgb(148, 163, 184)));
+                                    ui.add_space(46.0);
+                                    ui.label(egui::RichText::new("Pilih di Canvas:").size(10.5).color(Color32::from_rgb(148, 163, 184)));
                                     for (i, node_id) in canvas_nodes.iter().enumerate() {
                                         let is_sel = self.selected_node == Some(*node_id);
-                                        let chip_btn = egui::Button::new(egui::RichText::new(format!("#{}", i + 1)).size(9.0).color(if is_sel { Color32::WHITE } else { Color32::from_rgb(71, 85, 105) }))
+                                        let chip_btn = egui::Button::new(egui::RichText::new(format!("#{}", i + 1)).size(10.5).color(if is_sel { Color32::WHITE } else { Color32::from_rgb(71, 85, 105) }))
                                             .fill(if is_sel { def.accent_color } else { Color32::from_rgb(241, 245, 249) })
                                             .corner_radius(3.0);
                                         if ui.add(chip_btn).clicked() {
@@ -533,9 +550,9 @@ impl LunulaApp {
                         if match_count == 0 {
                             ui.vertical_centered(|ui| {
                                 ui.add_space(20.0);
-                                ui.label(egui::RichText::new("🔍 Tidak ada filter yang cocok").size(11.0).color(Color32::from_rgb(148, 163, 184)));
-                                ui.label(egui::RichText::new(format!("Kata kunci: \"{}\"", self.patchbay_filter_search)).size(10.0).color(Color32::from_rgb(100, 116, 139)));
-                                if ui.button(egui::RichText::new("Reset Pencarian").size(10.5).color(Color32::from_rgb(79, 70, 229))).clicked() {
+                                ui.label(egui::RichText::new("🔍 Tidak ada filter yang cocok").size(13.0).color(Color32::from_rgb(148, 163, 184)));
+                                ui.label(egui::RichText::new(format!("Kata kunci: \"{}\"", self.patchbay_filter_search)).size(11.5).color(Color32::from_rgb(100, 116, 139)));
+                                if ui.button(egui::RichText::new("Reset Pencarian").size(12.0).color(Color32::from_rgb(79, 70, 229))).clicked() {
                                     self.patchbay_filter_search.clear();
                                     self.patchbay_category_idx = 0;
                                 }

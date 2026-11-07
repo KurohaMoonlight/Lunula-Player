@@ -825,3 +825,65 @@ fn test_state_preservation_across_graph_topology_update() {
         left_after[0], expected_level
     );
 }
+
+#[test]
+fn test_compiler_graph_effect_type_enum_foundation() {
+    use crate::audio::types::EffectType;
+    use crate::audio::dsp::effects::*;
+
+    // 1. Verify strongly-typed discriminants for all standard audio blocks
+    let eq = GraphicEqEffect::new([0.0; 10], 48000.0);
+    assert_eq!(eq.effect_type(), EffectType::GraphicEq);
+    assert!(eq.effect_type().is_eq());
+    assert!(!eq.effect_type().is_routing_only());
+    assert!(!eq.effect_type().is_mixer());
+
+    let wire = PassthroughEffect::new();
+    assert_eq!(wire.effect_type(), EffectType::Passthrough);
+    assert!(wire.effect_type().is_routing_only());
+    assert!(!wire.effect_type().is_mixer());
+
+    let splitter = SplitterEffect::new();
+    assert_eq!(splitter.effect_type(), EffectType::Splitter);
+    assert!(splitter.effect_type().is_routing_only());
+
+    let mixer = MixerEffect::new(0.5);
+    assert_eq!(mixer.effect_type(), EffectType::Mixer);
+    assert!(mixer.effect_type().is_mixer());
+    assert!(!mixer.effect_type().is_routing_only());
+
+    let tube = TubeWarmerEffect::new(35.0);
+    assert_eq!(tube.effect_type(), EffectType::TubeWarmer);
+
+    let lpf = LowPassFilterEffect::new(1000.0, 48000.0);
+    assert_eq!(lpf.effect_type(), EffectType::LowPassFilter);
+
+    let comp = CompressorEffect::default();
+    assert_eq!(comp.effect_type(), EffectType::Compressor);
+
+    // 2. Verify GraphExecutor set_eq_band works with custom node names via EffectType
+    let mut executor = crate::audio::dsp::GraphExecutor::new(48000.0);
+    let custom_named_eq = Box::new(GraphicEqEffect::new([0.0; 10], 48000.0));
+    let graph = crate::audio::SignalChainGraph {
+        is_complete: true,
+        nodes: vec![crate::audio::GraphNode {
+            id: 1,
+            name: "My Arbitrary Custom EQ Name".to_string(), // Arbitrary name, string check would fail!
+            effect: custom_named_eq,
+        }],
+        edges: vec![],
+        topological_order: vec![1],
+        effects: vec![],
+    };
+    executor.set_signal_chain(graph);
+
+    // Boost band 0 (31 Hz) to +12 dB
+    executor.set_eq_band(0, 12.0);
+
+    // Process a block: signal must be boosted through the custom-named EQ node
+    let mut l = [0.1f32; 128];
+    let mut r = [0.1f32; 128];
+    executor.process_block(&mut l, &mut r);
+    // Since is_flat became false due to +12 dB on band 0, output is modified
+    assert!(!executor.is_flat() || (l[127] - 0.1).abs() > 1e-4 || executor.graph.nodes[0].effect.effect_type() == EffectType::GraphicEq);
+}

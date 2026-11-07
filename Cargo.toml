@@ -1,6 +1,6 @@
 [package]
 name = "lunulaplayer"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 
 [dependencies]
@@ -20,6 +20,8 @@ rubato = "5.0.1"
 
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.26"
+souvlaki = "0.9.3"
+windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi"] }
 
 [profile.dev]
 opt-level = 1

@@ -237,13 +237,25 @@ pub enum AppTab {
     Equalizer,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum OnboardingQuestStep {
+    #[default]
+    Welcome,           // Misi 1: Sambutan & Kenalkan Studio
+    NavigateToStudio,  // Misi 2: Buka Tab Signal Chain Studio
+    UnderstandModes,   // Misi 3: Filosofi Bit-Perfect vs DSP Active
+    ConnectFirstCable, // Misi 4: Sambungkan kabel Buffer -> DAC
+    TestAutoMute,      // Misi 5: Putuskan kabel untuk merasakan Auto-Mute
+    InsertTubeWarmer,  // Misi 6: Pasang efek Tube Warmer dari sidebar
+    Completed,         // Misi 7: Selesai! Quest Complete Certificate
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StudioMode {
     Simple,
     Advance,
 }
 
-pub use crate::audio::ChainMode;
+pub use crate::audio::{ChainMode, ResamplerSettings, RollOffProfile, SincQuality};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum NodeType {
@@ -268,6 +280,7 @@ pub enum NodeType {
     SteppedAttenuator,
     OpticalLeveler,
     StereoBalance,
+    Compressor,
 }
 
 impl NodeType {
@@ -289,6 +302,7 @@ impl NodeType {
                 | NodeType::SteppedAttenuator
                 | NodeType::OpticalLeveler
                 | NodeType::StereoBalance
+                | NodeType::Compressor
         )
     }
 }
@@ -376,7 +390,53 @@ pub enum RepeatMode {
     Album,    // Ulangi hanya lagu-lagu di album ini
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct ReplayGainData {
+    pub track_gain_db: Option<f32>,
+    pub track_peak: Option<f32>,
+    pub album_gain_db: Option<f32>,
+    pub album_peak: Option<f32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ReplayGainMode {
+    #[default]
+    Auto,      // Track gain when shuffling / playlist, Album gain when playing albums
+    Track,     // Always Track gain
+    Album,     // Always Album gain
+    Disabled,  // Off / bypass
+}
+
+impl ReplayGainMode {
+    pub fn name(&self) -> &'static str {
+        match self {
+            ReplayGainMode::Auto => "Auto (Smart)",
+            ReplayGainMode::Track => "Track Gain",
+            ReplayGainMode::Album => "Album Gain",
+            ReplayGainMode::Disabled => "Disabled (Off)",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ReplayGainClipPrevention {
+    #[default]
+    PreventByPeak, // Automatically scale down boost to avoid exceeding 0 dBFS
+    Limiter,        // Use fast transparent soft-limiter
+    None,           // No prevention
+}
+
+impl ReplayGainClipPrevention {
+    pub fn name(&self) -> &'static str {
+        match self {
+            ReplayGainClipPrevention::PreventByPeak => "Prevent by Peak",
+            ReplayGainClipPrevention::Limiter => "Apply Limiter",
+            ReplayGainClipPrevention::None => "None (Unprotected)",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct Track {
     pub title: String,
     pub artist: String,
@@ -393,6 +453,9 @@ pub struct Track {
     pub file_size_mb: f32,
     pub bitrate_kbps: Option<u32>,
     pub is_favorite: bool,
+    pub replay_gain: ReplayGainData,
+    pub cue_offset_sec: Option<f32>,
+    pub cue_duration_sec: Option<f32>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -426,6 +489,12 @@ pub struct TrackData {
     pub file_size_mb: f32,
     pub bitrate_kbps: Option<u32>,
     pub is_favorite: bool,
+    #[serde(default)]
+    pub replay_gain: Option<ReplayGainData>,
+    #[serde(default)]
+    pub cue_offset_sec: Option<f32>,
+    #[serde(default)]
+    pub cue_duration_sec: Option<f32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -462,6 +531,20 @@ pub struct SavedAppState {
     pub eq_limiter_enabled: Option<bool>,
     #[serde(default)]
     pub eq_dither_mode: Option<DitherMode>,
+    #[serde(default)]
+    pub has_completed_onboarding: Option<bool>,
+    #[serde(default)]
+    pub resampler_quality: Option<SincQuality>,
+    #[serde(default)]
+    pub resampler_profile: Option<RollOffProfile>,
+    #[serde(default)]
+    pub replay_gain_mode: Option<ReplayGainMode>,
+    #[serde(default)]
+    pub replay_gain_preamp_db: Option<f32>,
+    #[serde(default)]
+    pub replay_gain_clip_prevention: Option<ReplayGainClipPrevention>,
+    #[serde(default)]
+    pub crossfade_secs: Option<f32>,
 }
 
 impl From<TrackData> for Track {
@@ -484,6 +567,9 @@ impl From<TrackData> for Track {
             file_size_mb: data.file_size_mb,
             bitrate_kbps: data.bitrate_kbps,
             is_favorite: data.is_favorite,
+            replay_gain: data.replay_gain.unwrap_or_default(),
+            cue_offset_sec: data.cue_offset_sec,
+            cue_duration_sec: data.cue_duration_sec,
         }
     }
 }
@@ -502,6 +588,9 @@ impl From<&Track> for TrackData {
             file_size_mb: track.file_size_mb,
             bitrate_kbps: track.bitrate_kbps,
             is_favorite: track.is_favorite,
+            replay_gain: Some(track.replay_gain),
+            cue_offset_sec: track.cue_offset_sec,
+            cue_duration_sec: track.cue_duration_sec,
         }
     }
 }

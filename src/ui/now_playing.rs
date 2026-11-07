@@ -4,6 +4,29 @@ use crate::models::WaveformMode;
 use crate::app::LunulaApp;
 use crate::ui::components::{format_time, lerp_color, render_card_frame};
 
+fn parse_lyric_singer_and_text(raw: &str) -> (Option<&str>, &str) {
+    let trimmed = raw.trim();
+    if trimmed.starts_with('{') {
+        if let Some(end) = trimmed.find('}') {
+            let singer = trimmed[1..end].trim();
+            let rest = trimmed[end + 1..].trim();
+            if !singer.is_empty() && !rest.is_empty() {
+                return (Some(singer), rest);
+            }
+        }
+    }
+    if trimmed.starts_with('[') && !trimmed.starts_with("[0") && !trimmed.starts_with("[1") && !trimmed.starts_with("[2") {
+        if let Some(end) = trimmed.find(']') {
+            let singer = trimmed[1..end].trim();
+            let rest = trimmed[end + 1..].trim();
+            if !singer.is_empty() && !rest.is_empty() {
+                return (Some(singer), rest);
+            }
+        }
+    }
+    (None, trimmed)
+}
+
 impl LunulaApp {
     pub fn render_ambient_waveform_station(&mut self, ui: &mut egui::Ui) {
         render_card_frame(ui, |ui| {
@@ -912,6 +935,337 @@ impl LunulaApp {
         );
 
         res.on_hover_text(tooltip);
+    }
+
+    /// Split Layout: 54% Real-Time Spectrum Analyzer + 46% Synchronized Lyric Box
+    pub fn render_now_playing_visualizer_and_lyrics(&mut self, ui: &mut egui::Ui) {
+        let total_w = ui.available_width();
+        let spec_w = (total_w * 0.54).max(280.0);
+        let lyric_w = (total_w - spec_w - 12.0).max(220.0);
+
+        let stage_h = (ui.available_height() - 8.0).clamp(240.0, 420.0);
+
+        ui.horizontal(|ui| {
+            // Left 54%: Spectrum Analyzer
+            ui.allocate_ui(egui::vec2(spec_w, stage_h), |ui| {
+                self.render_spectrum_visualizer(ui);
+            });
+
+            ui.add_space(8.0);
+
+            // Right 46%: Synchronized Lyric Box
+            ui.allocate_ui(egui::vec2(lyric_w, stage_h), |ui| {
+                self.render_synced_lyric_box(ui);
+            });
+        });
+    }
+
+    pub fn render_synced_lyric_box(&mut self, ui: &mut egui::Ui) {
+        crate::ui::components::render_card_frame(ui, |ui| {
+            ui.vertical(|ui| {
+                // 1. Sleek Modern Header Bar
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("🎙️").size(15.5));
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("LIRIK TERSINKRONISASI")
+                                    .strong()
+                                    .size(13.0)
+                                    .color(Color32::from_rgb(15, 23, 42)),
+                            );
+                            if self.current_lyrics.is_some() {
+                                egui::Frame::new()
+                                    .fill(Color32::from_rgb(236, 253, 245))
+                                    .corner_radius(4.0)
+                                    .inner_margin(egui::Margin::symmetric(6, 1))
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            egui::RichText::new("● SYNC")
+                                                .strong()
+                                                .size(9.5)
+                                                .color(Color32::from_rgb(16, 185, 129)),
+                                        );
+                                    });
+                            }
+                        });
+                        ui.label(
+                            egui::RichText::new("Real-time LRC Engine • Klik baris lirik untuk lompat audio")
+                                .size(10.5)
+                                .color(Color32::from_rgb(100, 116, 139)),
+                        );
+                    });
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Manual file picker button
+                        if ui.add(
+                            egui::Button::new(
+                                egui::RichText::new("📂 Muat .lrc")
+                                    .size(11.0)
+                                    .strong()
+                                    .color(Color32::from_rgb(79, 70, 229))
+                            )
+                            .fill(Color32::from_rgb(238, 242, 255))
+                            .stroke(Stroke::new(1.0, Color32::from_rgb(199, 210, 254)))
+                            .corner_radius(6.0)
+                            .min_size(Vec2::new(82.0, 26.0))
+                        )
+                        .on_hover_text("Pilih berkas lirik .lrc secara manual dari disk")
+                        .clicked()
+                        {
+                            if let Some(path) = rfd::FileDialog::new().add_filter("LRC Lyrics", &["lrc", "txt"]).pick_file() {
+                                if let Ok(content) = std::fs::read_to_string(&path) {
+                                    self.current_lyrics = Some(crate::lyrics::Lyrics::parse(&content));
+                                    self.lyrics_offset_trim_sec = 0.0;
+                                }
+                            }
+                        }
+
+                        // Offset trim segmented controls: [-0.5s] [Offset] [+0.5s]
+                        if self.current_lyrics.is_some() {
+                            if ui.add(
+                                egui::Button::new(egui::RichText::new("+0.5s ⏩").size(10.5))
+                                    .fill(Color32::from_rgb(241, 245, 249))
+                                    .corner_radius(5.0)
+                            )
+                            .on_hover_text("Mundurkan waktu lirik 0.5 detik")
+                            .clicked()
+                            {
+                                self.lyrics_offset_trim_sec += 0.5;
+                            }
+
+                            let offset_label = if self.lyrics_offset_trim_sec.abs() > 0.01 {
+                                format!("{:+.1}s (↺ Reset)", self.lyrics_offset_trim_sec)
+                            } else {
+                                "±0.0s".to_string()
+                            };
+
+                            let offset_col = if self.lyrics_offset_trim_sec.abs() > 0.01 {
+                                Color32::from_rgb(79, 70, 229)
+                            } else {
+                                Color32::from_rgb(148, 163, 184)
+                            };
+
+                            if ui.add(
+                                egui::Button::new(egui::RichText::new(offset_label).size(10.5).strong().color(offset_col))
+                                    .fill(Color32::from_rgb(248, 250, 252))
+                                    .corner_radius(5.0)
+                            )
+                            .on_hover_text("Klik untuk mereset offset waktu lirik ke 0.0 detik")
+                            .clicked()
+                            {
+                                self.lyrics_offset_trim_sec = 0.0;
+                            }
+
+                            if ui.add(
+                                egui::Button::new(egui::RichText::new("⏪ -0.5s").size(10.5))
+                                    .fill(Color32::from_rgb(241, 245, 249))
+                                    .corner_radius(5.0)
+                            )
+                            .on_hover_text("Majukan waktu lirik 0.5 detik")
+                            .clicked()
+                            {
+                                self.lyrics_offset_trim_sec -= 0.5;
+                            }
+                        }
+                    });
+                });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                let mut seek_target = None;
+
+                if let Some(ref lyrics) = self.current_lyrics {
+                    if lyrics.lines.is_empty() {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(30.0);
+                            ui.label(egui::RichText::new("📄 Berkas .lrc tidak memiliki baris lirik dengan stempel waktu").size(12.0).color(Color32::from_rgb(148, 163, 184)));
+                        });
+                    } else {
+                        let active_time = (self.current_time + self.lyrics_offset_trim_sec).max(0.0);
+                        let active_idx = lyrics.find_active_index(active_time);
+
+                        let scroll_h = (ui.available_height() - 4.0).max(160.0);
+
+                        egui::ScrollArea::vertical()
+                            .max_height(scroll_h)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.add_space(24.0); // Top padding so first line can scroll to center
+
+                                for (i, line) in lyrics.lines.iter().enumerate() {
+                                    let is_active = Some(i) == active_idx;
+                                    let (singer_opt, clean_text) = parse_lyric_singer_and_text(&line.text);
+                                    let display_text = if clean_text.trim().is_empty() { "♪ ♪ ♪" } else { clean_text };
+
+                                    let row_id = ui.scope_id().with(("lyric_row", i));
+                                    let row_h = if is_active { 42.0 } else { 32.0 };
+                                    let row_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), row_h));
+                                    let line_click = ui.interact(row_rect, row_id, egui::Sense::click());
+                                    let is_hovered = line_click.hovered();
+
+                                    let time_str = format_time(line.timestamp_sec);
+
+                                    if is_active {
+                                        let resp = egui::Frame::new()
+                                            .fill(Color32::from_rgb(238, 242, 255))
+                                            .stroke(Stroke::new(1.2, Color32::from_rgb(199, 210, 254)))
+                                            .corner_radius(8.0)
+                                            .inner_margin(egui::Margin::symmetric(10, 7))
+                                            .show(ui, |ui| {
+                                                ui.horizontal(|ui| {
+                                                    // Glowing vertical indicator bar
+                                                    let (bar_rect, _) = ui.allocate_exact_size(Vec2::new(3.0, 18.0), egui::Sense::hover());
+                                                    ui.painter().rect_filled(bar_rect, 1.5, Color32::from_rgb(79, 70, 229));
+                                                    ui.add_space(6.0);
+
+                                                    // Timestamp on the LEFT: Always visible, bold indigo
+                                                    ui.allocate_ui(Vec2::new(42.0, 18.0), |ui| {
+                                                        ui.label(
+                                                            egui::RichText::new(&time_str)
+                                                                .size(11.5)
+                                                                .strong()
+                                                                .color(Color32::from_rgb(79, 70, 229)),
+                                                        );
+                                                    });
+
+                                                    ui.add_space(4.0);
+
+                                                    if let Some(singer) = singer_opt {
+                                                        egui::Frame::new()
+                                                            .fill(Color32::from_rgb(224, 231, 255))
+                                                            .corner_radius(4.0)
+                                                            .inner_margin(egui::Margin::symmetric(6, 2))
+                                                            .show(ui, |ui| {
+                                                                ui.label(egui::RichText::new(singer).strong().size(11.0).color(Color32::from_rgb(67, 56, 202)));
+                                                            });
+                                                        ui.add_space(4.0);
+                                                    }
+
+                                                    ui.label(
+                                                        egui::RichText::new(display_text)
+                                                            .strong()
+                                                            .size(15.5)
+                                                            .color(Color32::from_rgb(15, 23, 42)),
+                                                    );
+                                                });
+                                            });
+                                        resp.response.scroll_to_me(Some(egui::Align::Center));
+                                    } else {
+                                        let bg_col = if is_hovered {
+                                            Color32::from_rgb(241, 245, 249)
+                                        } else {
+                                            Color32::TRANSPARENT
+                                        };
+
+                                        egui::Frame::new()
+                                            .fill(bg_col)
+                                            .corner_radius(6.0)
+                                            .inner_margin(egui::Margin::symmetric(10, 6))
+                                            .show(ui, |ui| {
+                                                ui.horizontal(|ui| {
+                                                    // Placeholder space matching the 3.0px bar + 6.0px space of active line
+                                                    ui.add_space(9.0);
+
+                                                    // Timestamp on the LEFT: Always visible for inactive lines too
+                                                    let ts_color = if is_hovered {
+                                                        Color32::from_rgb(71, 85, 105)
+                                                    } else {
+                                                        Color32::from_rgb(148, 163, 184)
+                                                    };
+                                                    ui.allocate_ui(Vec2::new(42.0, 18.0), |ui| {
+                                                        ui.label(
+                                                            egui::RichText::new(&time_str)
+                                                                .size(11.5)
+                                                                .color(ts_color),
+                                                        );
+                                                    });
+
+                                                    ui.add_space(4.0);
+
+                                                    if let Some(singer) = singer_opt {
+                                                        egui::Frame::new()
+                                                            .fill(Color32::from_rgb(241, 245, 249))
+                                                            .corner_radius(4.0)
+                                                            .inner_margin(egui::Margin::symmetric(5, 1))
+                                                            .show(ui, |ui| {
+                                                                ui.label(egui::RichText::new(singer).size(10.5).color(Color32::from_rgb(100, 116, 139)));
+                                                            });
+                                                        ui.add_space(4.0);
+                                                    }
+
+                                                    let text_col = if is_hovered {
+                                                        Color32::from_rgb(15, 23, 42)
+                                                    } else {
+                                                        Color32::from_rgb(100, 116, 139)
+                                                    };
+
+                                                    ui.label(
+                                                        egui::RichText::new(display_text)
+                                                            .size(13.0)
+                                                            .color(text_col),
+                                                    );
+                                                });
+                                            });
+                                    }
+
+                                    if line_click.clicked() {
+                                        seek_target = Some(line.timestamp_sec);
+                                    }
+
+                                    ui.add_space(3.0);
+                                }
+
+                                ui.add_space(40.0); // Bottom padding so last line can scroll to center
+                            });
+                    }
+                } else {
+                    // Empty state
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(28.0);
+                        ui.label(egui::RichText::new("🎙️").size(36.0));
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new("Belum Ada Lirik Tersinkronisasi")
+                                .strong()
+                                .size(14.5)
+                                .color(Color32::from_rgb(15, 23, 42)),
+                        );
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("Simpan file .lrc di folder lagu dengan nama yang sama, atau muat secara manual.")
+                                .size(11.5)
+                                .color(Color32::from_rgb(100, 116, 139)),
+                        );
+                        ui.add_space(14.0);
+                        if ui.add(
+                            egui::Button::new(
+                                egui::RichText::new("📂 Pilih Berkas Lirik (.lrc)")
+                                    .strong()
+                                    .size(12.0)
+                                    .color(Color32::WHITE)
+                            )
+                            .fill(Color32::from_rgb(79, 70, 229))
+                            .corner_radius(6.0)
+                            .min_size(Vec2::new(170.0, 30.0))
+                        ).clicked() {
+                            if let Some(path) = rfd::FileDialog::new().add_filter("LRC Lyrics", &["lrc", "txt"]).pick_file() {
+                                if let Ok(content) = std::fs::read_to_string(&path) {
+                                    self.current_lyrics = Some(crate::lyrics::Lyrics::parse(&content));
+                                    self.lyrics_offset_trim_sec = 0.0;
+                                }
+                            }
+                        }
+                    });
+                }
+
+                if let Some(target) = seek_target {
+                    self.seek_to(target);
+                }
+            });
+        });
     }
 }
 
