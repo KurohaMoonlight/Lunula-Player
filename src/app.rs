@@ -2492,100 +2492,111 @@ impl eframe::App for LunulaApp {
 
                 match self.current_tab {
                     AppTab::NowPlaying => {
-                        // Quick overview patchbay on top
-                        render_card_frame(ui, |ui| {
-                            ui.vertical(|ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new("⚡ MODULAR SIGNAL CHAIN").strong().size(13.5).color(Color32::from_rgb(15, 23, 42)));
-                                    if !is_chain_ok {
-                                        ui.label(egui::RichText::new("⚠️ Sinyal Terputus (Audio Dibisukan)").size(11.5).color(Color32::from_rgb(239, 68, 68)).strong());
-                                    } else if let Some(ref r) = self.signal_path_report {
-                                        if r.requested_mode == ChainMode::BitPerfect && r.actual_mode == ChainMode::OsResampled {
-                                            ui.label(egui::RichText::new(format!("⚠️ Fallback: OS Resampled {:.1} kHz", r.device_rate as f32 / 1000.0)).size(11.5).color(Color32::from_rgb(217, 119, 6)).strong());
-                                        } else if r.actual_mode == ChainMode::BitPerfect {
-                                            ui.label(egui::RichText::new(format!("✓ Sinyal Bit-Perfect Mengalir ({:.1} kHz Native)", r.device_rate as f32 / 1000.0)).size(11.5).color(Color32::from_rgb(16, 185, 129)).strong());
-                                        } else if r.actual_mode == ChainMode::DspActive {
-                                            let eval = self.evaluate_signal_chain();
-                                            let flowing_fx: Vec<&str> = self.nodes.iter()
-                                                .filter(|n| n.node_type.is_dsp_or_effect() && eval.flowing_nodes.contains(&n.id))
-                                                .map(|n| n.title.as_str())
-                                                .collect();
-                                            let fx_desc = if flowing_fx.is_empty() {
-                                                "Direct Passthrough".to_string()
-                                            } else {
-                                                flowing_fx.join(", ")
-                                            };
-                                            ui.label(egui::RichText::new(format!("✓ Rantai Modular Aktif ({} • {:.1} kHz)", fx_desc, r.device_rate as f32 / 1000.0)).size(11.5).color(Color32::from_rgb(99, 102, 241)).strong());
-                                        } else {
-                                            ui.label(egui::RichText::new("✓ OS Resampled (48.0 kHz Shared)").size(11.5).color(Color32::from_rgb(217, 119, 6)).strong());
-                                        }
-                                    } else {
-                                        match self.chain_mode {
-                                            ChainMode::BitPerfect => {
-                                                ui.label(egui::RichText::new("✓ Sinyal Bit-Perfect Siap").size(11.5).color(Color32::from_rgb(16, 185, 129)).strong());
-                                            }
-                                            ChainMode::DspActive => {
-                                                ui.label(egui::RichText::new("✓ Rantai Modular Siap").size(11.5).color(Color32::from_rgb(99, 102, 241)).strong());
-                                            }
-                                            ChainMode::OsResampled => {
-                                                ui.label(egui::RichText::new("✓ OS Resampled Siap (48 kHz)").size(11.5).color(Color32::from_rgb(217, 119, 6)).strong());
-                                            }
-                                        }
-                                    }
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        if ui.button(egui::RichText::new("Buka Studio Penuh ➔").strong()).clicked() {
-                                            self.current_tab = AppTab::SignalChain;
-                                        }
-                                    });
-                                });
-                                ui.add_space(4.0);
-                                self.render_modular_patchbay_canvas(ui, Vec2::new(ui.available_width(), 130.0));
-                            });
-                        });
-
-                        ui.add_space(8.0);
-
-                        // If fallback to OS Resampled happened due to hardware rate mismatch, show honest banner
-                        if let Some(ref r) = self.signal_path_report {
-                            if is_chain_ok && r.requested_mode == ChainMode::BitPerfect && r.actual_mode == ChainMode::OsResampled {
-                                egui::Frame::new()
-                                    .fill(Color32::from_rgb(254, 243, 199))
-                                    .stroke(Stroke::new(1.0, Color32::from_rgb(253, 230, 138)))
-                                    .corner_radius(8.0)
-                                    .inner_margin(egui::Margin::symmetric(14, 8))
-                                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                // Quick overview patchbay on top
+                                render_card_frame(ui, |ui| {
+                                    ui.vertical(|ui| {
                                         ui.horizontal(|ui| {
-                                            ui.label(egui::RichText::new("⚠️ PERINGATAN FALLBACK BIT-PERFECT:").strong().size(12.0).color(Color32::from_rgb(180, 83, 9)));
-                                            ui.label(egui::RichText::new(format!("Perangkat '{}' tidak mendukung sample rate {:.1} kHz file lagu ini secara native. Engine beralih jujur ke OS Resampling {:.1} kHz agar pemutaran tidak rusak.", r.device_name, r.source_rate as f32 / 1000.0, r.device_rate as f32 / 1000.0)).size(11.5).color(Color32::from_rgb(146, 64, 14)));
+                                            let full_w = ui.available_width();
+                                            let is_narrow_w = full_w < 640.0;
+                                            ui.label(egui::RichText::new("⚡ MODULAR SIGNAL CHAIN").strong().size(13.5).color(Color32::from_rgb(15, 23, 42)));
+                                            if !is_chain_ok {
+                                                ui.label(egui::RichText::new("⚠️ Sinyal Terputus").size(11.5).color(Color32::from_rgb(239, 68, 68)).strong());
+                                            } else if let Some(ref r) = self.signal_path_report {
+                                                if r.requested_mode == ChainMode::BitPerfect && r.actual_mode == ChainMode::OsResampled {
+                                                    let txt = if is_narrow_w { "⚠️ OS Resampled" } else { "⚠️ Fallback: OS Resampled" };
+                                                    ui.label(egui::RichText::new(format!("{} {:.1} kHz", txt, r.device_rate as f32 / 1000.0)).size(11.5).color(Color32::from_rgb(217, 119, 6)).strong());
+                                                } else if r.actual_mode == ChainMode::BitPerfect {
+                                                    let txt = if is_narrow_w { "✓ Bit-Perfect Direct" } else { "✓ Sinyal Bit-Perfect Mengalir (Native)" };
+                                                    ui.label(egui::RichText::new(txt).size(11.5).color(Color32::from_rgb(16, 185, 129)).strong());
+                                                } else if r.actual_mode == ChainMode::DspActive {
+                                                    let eval = self.evaluate_signal_chain();
+                                                    let flowing_fx: Vec<&str> = self.nodes.iter()
+                                                        .filter(|n| n.node_type.is_dsp_or_effect() && eval.flowing_nodes.contains(&n.id))
+                                                        .map(|n| n.title.as_str())
+                                                        .collect();
+                                                    let fx_desc = if is_narrow_w || flowing_fx.len() > 2 {
+                                                        format!("{} Modul DSP", flowing_fx.len())
+                                                    } else if flowing_fx.is_empty() {
+                                                        "Passthrough".to_string()
+                                                    } else {
+                                                        flowing_fx.join(", ")
+                                                    };
+                                                    ui.label(egui::RichText::new(format!("✓ DSP: {} ({:.1} kHz)", fx_desc, r.device_rate as f32 / 1000.0)).size(11.5).color(Color32::from_rgb(99, 102, 241)).strong());
+                                                } else {
+                                                    ui.label(egui::RichText::new("✓ OS Resampled (48 kHz)").size(11.5).color(Color32::from_rgb(217, 119, 6)).strong());
+                                                }
+                                            } else {
+                                                match self.chain_mode {
+                                                    ChainMode::BitPerfect => {
+                                                        ui.label(egui::RichText::new("✓ Bit-Perfect Siap").size(11.5).color(Color32::from_rgb(16, 185, 129)).strong());
+                                                    }
+                                                    ChainMode::DspActive => {
+                                                        ui.label(egui::RichText::new("✓ Rantai Modular Siap").size(11.5).color(Color32::from_rgb(99, 102, 241)).strong());
+                                                    }
+                                                    ChainMode::OsResampled => {
+                                                        ui.label(egui::RichText::new("✓ OS Resampled Siap").size(11.5).color(Color32::from_rgb(217, 119, 6)).strong());
+                                                    }
+                                                }
+                                            }
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                let btn_txt = if is_narrow_w { "Studio ➔" } else { "Buka Studio Penuh ➔" };
+                                                if ui.button(egui::RichText::new(btn_txt).strong()).clicked() {
+                                                    self.current_tab = AppTab::SignalChain;
+                                                }
+                                            });
                                         });
-                                    });
-                                ui.add_space(6.0);
-                            }
-                        }
-
-                        // If signal chain is severed, display a warning card above transport
-                        if !is_chain_ok {
-                            egui::Frame::new()
-                                .fill(Color32::from_rgb(254, 242, 242))
-                                .stroke(Stroke::new(1.0, Color32::from_rgb(252, 165, 165)))
-                                .corner_radius(8.0)
-                                .inner_margin(egui::Margin::symmetric(14, 8))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(egui::RichText::new("🔴 JALUR SINYAL AUDIO TERPUTUS:").strong().size(12.5).color(Color32::from_rgb(185, 28, 28)));
-                                        ui.label(egui::RichText::new("Lagu tidak dapat berbunyi karena sambungan rantai audio (RAM Buffer / DSP / DAC) terputus. Klik tanda ✕ merah di atas untuk menyambung!").size(12.0).color(Color32::from_rgb(153, 27, 27)));
+                                        ui.add_space(4.0);
+                                        self.render_modular_patchbay_canvas(ui, Vec2::new(ui.available_width(), 130.0));
                                     });
                                 });
-                            ui.add_space(6.0);
-                        }
 
-                        // Grand Ambient Waveform Station + Perfectly Centered Transport Deck
-                        self.render_ambient_waveform_station(ui);
+                                ui.add_space(8.0);
 
-                        ui.add_space(10.0);
+                                // If fallback to OS Resampled happened due to hardware rate mismatch, show honest banner
+                                if let Some(ref r) = self.signal_path_report {
+                                    if is_chain_ok && r.requested_mode == ChainMode::BitPerfect && r.actual_mode == ChainMode::OsResampled {
+                                        egui::Frame::new()
+                                            .fill(Color32::from_rgb(254, 243, 199))
+                                            .stroke(Stroke::new(1.0, Color32::from_rgb(253, 230, 138)))
+                                            .corner_radius(8.0)
+                                            .inner_margin(egui::Margin::symmetric(14, 8))
+                                            .show(ui, |ui| {
+                                                ui.horizontal(|ui| {
+                                                    ui.label(egui::RichText::new("⚠️ PERINGATAN FALLBACK BIT-PERFECT:").strong().size(12.0).color(Color32::from_rgb(180, 83, 9)));
+                                                    ui.label(egui::RichText::new(format!("Perangkat '{}' tidak mendukung sample rate {:.1} kHz file lagu ini secara native. Engine beralih jujur ke OS Resampling {:.1} kHz agar pemutaran tidak rusak.", r.device_name, r.source_rate as f32 / 1000.0, r.device_rate as f32 / 1000.0)).size(11.5).color(Color32::from_rgb(146, 64, 14)));
+                                                });
+                                            });
+                                        ui.add_space(6.0);
+                                    }
+                                }
 
-                        // 60% Spectrum Analyzer + 40% Synchronized Lyric Box
-                        self.render_now_playing_visualizer_and_lyrics(ui);
+                                // If signal chain is severed, display a warning card above transport
+                                if !is_chain_ok {
+                                    egui::Frame::new()
+                                        .fill(Color32::from_rgb(254, 242, 242))
+                                        .stroke(Stroke::new(1.0, Color32::from_rgb(252, 165, 165)))
+                                        .corner_radius(8.0)
+                                        .inner_margin(egui::Margin::symmetric(14, 8))
+                                        .show(ui, |ui| {
+                                            ui.horizontal(|ui| {
+                                                ui.label(egui::RichText::new("🔴 JALUR SINYAL AUDIO TERPUTUS:").strong().size(12.5).color(Color32::from_rgb(185, 28, 28)));
+                                                ui.label(egui::RichText::new("Lagu tidak dapat berbunyi karena sambungan rantai audio (RAM Buffer / DSP / DAC) terputus. Klik tanda ✕ merah di atas untuk menyambung!").size(12.0).color(Color32::from_rgb(153, 27, 27)));
+                                            });
+                                        });
+                                    ui.add_space(6.0);
+                                }
+
+                                // Grand Ambient Waveform Station + Perfectly Centered Transport Deck
+                                self.render_ambient_waveform_station(ui);
+
+                                ui.add_space(10.0);
+
+                                // Responsive Spectrum Analyzer + Synchronized Lyric Box
+                                self.render_now_playing_visualizer_and_lyrics(ui);
+                            });
                     }
                     AppTab::SignalChain => {
                         // Header bar: Studio Mode Selection (Simple Studio vs Advance Studio) + Device Selector + Chain Mode

@@ -33,8 +33,12 @@ impl LunulaApp {
             ui.vertical(|ui| {
                 // Top Header: Real Embedded Album Cover Art & Live Info
                 ui.horizontal(|ui| {
-                    // Album Cover Art Box (56x56 px)
-                    let art_size = Vec2::splat(56.0);
+                    let full_header_w = ui.available_width();
+                    let is_narrow_header = full_header_w < 560.0;
+
+                    // Album Cover Art Box (56x56 px, or 48x48 on narrow)
+                    let art_dim = if is_narrow_header { 48.0 } else { 56.0 };
+                    let art_size = Vec2::splat(art_dim);
                     let (art_rect, _) = ui.allocate_exact_size(art_size, egui::Sense::hover());
                     let art_painter = ui.painter_at(art_rect);
 
@@ -56,48 +60,60 @@ impl LunulaApp {
                         );
                     }
 
-                    ui.add_space(10.0);
+                    ui.add_space(8.0);
 
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            let fav_icon = if self.current_track.is_favorite { "❤️" } else { "🤍" };
-                            if ui.button(egui::RichText::new(fav_icon).size(15.0)).on_hover_text("Tandai sebagai Favorit").clicked() {
-                                self.current_track.is_favorite = !self.current_track.is_favorite;
-                                let is_fav = self.current_track.is_favorite;
-                                for t in self.playlist.iter_mut() {
-                                    if t.title == self.current_track.title && t.artist == self.current_track.artist {
-                                        t.is_favorite = is_fav;
+                    let zoom_ctrl_w = if is_narrow_header { 105.0 } else { 170.0 };
+                    let text_col_w = (full_header_w - art_dim - 12.0 - zoom_ctrl_w).max(110.0);
+
+                    ui.allocate_ui(Vec2::new(text_col_w, art_dim), |ui| {
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                let fav_icon = if self.current_track.is_favorite { "❤️" } else { "🤍" };
+                                if ui.button(egui::RichText::new(fav_icon).size(14.0)).on_hover_text("Tandai sebagai Favorit").clicked() {
+                                    self.current_track.is_favorite = !self.current_track.is_favorite;
+                                    let is_fav = self.current_track.is_favorite;
+                                    for t in self.playlist.iter_mut() {
+                                        if t.title == self.current_track.title && t.artist == self.current_track.artist {
+                                            t.is_favorite = is_fav;
+                                        }
                                     }
                                 }
+                                let title_txt = egui::RichText::new(&self.current_track.title)
+                                    .strong()
+                                    .size(if is_narrow_header { 14.5 } else { 16.5 })
+                                    .color(Color32::from_rgb(15, 23, 42));
+                                ui.add(egui::Label::new(title_txt).truncate());
+
+                                if !is_narrow_header {
+                                    let artist_txt = egui::RichText::new(format!("— {}", self.current_track.artist))
+                                        .strong()
+                                        .size(14.5)
+                                        .color(Color32::from_rgb(100, 116, 139));
+                                    ui.add(egui::Label::new(artist_txt).truncate());
+                                }
+                            });
+                            if is_narrow_header && !self.current_track.artist.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(&self.current_track.artist)
+                                        .size(11.5)
+                                        .color(Color32::from_rgb(100, 116, 139)),
+                                );
+                            } else if self.current_track.duration > 0.0 {
+                                ui.label(
+                                    egui::RichText::new(format!("{} • {} kHz / {}-bit Hi-Res (DR14)", self.current_track.format, self.current_track.sample_rate / 1000, self.current_track.bit_depth))
+                                        .strong()
+                                        .size(11.0)
+                                        .color(Color32::from_rgb(14, 165, 233)),
+                                );
+                            } else {
+                                ui.label(
+                                    egui::RichText::new("Lunula Engine Standby • Buka Library untuk Memilih Musik")
+                                        .strong()
+                                        .size(11.0)
+                                        .color(Color32::from_rgb(148, 163, 184)),
+                                );
                             }
-                            ui.label(
-                                egui::RichText::new(&self.current_track.title)
-                                    .strong()
-                                    .size(17.5)
-                                    .color(Color32::from_rgb(15, 23, 42)),
-                            );
-                            ui.label(
-                                egui::RichText::new(format!("— {}", self.current_track.artist))
-                                    .strong()
-                                    .size(15.0)
-                                    .color(Color32::from_rgb(100, 116, 139)),
-                            );
                         });
-                        if self.current_track.duration > 0.0 {
-                            ui.label(
-                                egui::RichText::new(format!("{} • {} kHz / {}-bit Hi-Res (DR14 Mastering)", self.current_track.format, self.current_track.sample_rate / 1000, self.current_track.bit_depth))
-                                    .strong()
-                                    .size(11.5)
-                                    .color(Color32::from_rgb(14, 165, 233)),
-                            );
-                        } else {
-                            ui.label(
-                                egui::RichText::new("Lunula Engine Standby • Buka Tab Library untuk Memilih Musik")
-                                    .strong()
-                                    .size(11.5)
-                                    .color(Color32::from_rgb(148, 163, 184)),
-                            );
-                        }
                     });
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -105,10 +121,15 @@ impl LunulaApp {
                         if ui.button(egui::RichText::new("➕").size(10.5)).on_hover_text("Zoom In Waveform").clicked() {
                             self.zoom_level = (self.zoom_level * 1.25).clamp(4.0, 140.0);
                         }
+                        let zoom_lbl = if is_narrow_header {
+                            format!("🔍{:.1}x", zoom_factor)
+                        } else {
+                            format!("🔍 {:.1}x (Ctrl+Scroll)", zoom_factor)
+                        };
                         ui.label(
-                            egui::RichText::new(format!("🔍 {:.1}x (Ctrl + Scroll)", zoom_factor))
+                            egui::RichText::new(zoom_lbl)
                                 .strong()
-                                .size(11.5)
+                                .size(11.0)
                                 .color(Color32::from_rgb(100, 116, 139)),
                         );
                         if ui.button(egui::RichText::new("➖").size(10.5)).on_hover_text("Zoom Out Waveform").clicked() {
@@ -433,18 +454,25 @@ impl LunulaApp {
                 // Mode Switcher & Frequency Legend Toolbar
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("TAMPILAN WAVE:")
-                            .size(11.0)
-                            .strong()
-                            .color(Color32::from_rgb(148, 163, 184)),
-                    );
+                    let avail_w = ui.available_width();
+                    let is_compact_bar = avail_w < 720.0;
+                    let is_narrow_bar = avail_w < 540.0;
+
+                    if !is_narrow_bar {
+                        ui.label(
+                            egui::RichText::new("TAMPILAN WAVE:")
+                                .size(11.0)
+                                .strong()
+                                .color(Color32::from_rgb(148, 163, 184)),
+                        );
+                    }
 
                     let is_stacked = self.waveform_mode == WaveformMode::StackedMultiBand;
                     let is_spectral = self.waveform_mode == WaveformMode::SpectralBlend;
 
+                    let stacked_lbl = if is_compact_bar { "📊 3-Band" } else { "📊 3-Band Layers" };
                     let btn_stacked = egui::Button::new(
-                        egui::RichText::new("📊 3-Band Layers")
+                        egui::RichText::new(stacked_lbl)
                             .size(11.5)
                             .strong()
                             .color(if is_stacked { Color32::from_rgb(30, 41, 59) } else { Color32::from_rgb(100, 116, 139) })
@@ -458,8 +486,9 @@ impl LunulaApp {
                         self.save_library_state();
                     }
 
+                    let spectral_lbl = if is_compact_bar { "🌈 Spectral" } else { "🌈 Spectral Blend" };
                     let btn_spectral = egui::Button::new(
-                        egui::RichText::new("🌈 Spectral Blend")
+                        egui::RichText::new(spectral_lbl)
                             .size(11.5)
                             .strong()
                             .color(if is_spectral { Color32::from_rgb(30, 41, 59) } else { Color32::from_rgb(100, 116, 139) })
@@ -473,47 +502,51 @@ impl LunulaApp {
                         self.save_library_state();
                     }
 
-                    // Right-aligned Frequency Legend
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Treble badge
-                        ui.label(
-                            egui::RichText::new("Treble (>4kHz)")
-                                .size(11.0)
-                                .strong()
-                                .color(Color32::from_rgb(100, 116, 139)),
-                        );
-                        ui.label(egui::RichText::new("●").size(15.0).color(Color32::from_rgb(245, 158, 11)));
+                    // Right-aligned Frequency Legend (adapts cleanly to available width)
+                    if !is_narrow_bar {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let treble_lbl = if is_compact_bar { "Treble" } else { "Treble (>4kHz)" };
+                            ui.label(
+                                egui::RichText::new(treble_lbl)
+                                    .size(11.0)
+                                    .strong()
+                                    .color(Color32::from_rgb(100, 116, 139)),
+                            );
+                            ui.label(egui::RichText::new("●").size(15.0).color(Color32::from_rgb(245, 158, 11)));
 
-                        ui.add_space(10.0);
+                            ui.add_space(8.0);
 
-                        // Mid badge
-                        ui.label(
-                            egui::RichText::new("Mid (250Hz-4kHz)")
-                                .size(11.0)
-                                .strong()
-                                .color(Color32::from_rgb(100, 116, 139)),
-                        );
-                        ui.label(egui::RichText::new("●").size(15.0).color(Color32::from_rgb(14, 165, 233)));
+                            let mid_lbl = if is_compact_bar { "Mid" } else { "Mid (250Hz-4kHz)" };
+                            ui.label(
+                                egui::RichText::new(mid_lbl)
+                                    .size(11.0)
+                                    .strong()
+                                    .color(Color32::from_rgb(100, 116, 139)),
+                            );
+                            ui.label(egui::RichText::new("●").size(15.0).color(Color32::from_rgb(14, 165, 233)));
 
-                        ui.add_space(10.0);
+                            ui.add_space(8.0);
 
-                        // Bass badge
-                        ui.label(
-                            egui::RichText::new("Bass (<250Hz)")
-                                .size(11.0)
-                                .strong()
-                                .color(Color32::from_rgb(100, 116, 139)),
-                        );
-                        ui.label(egui::RichText::new("●").size(15.0).color(Color32::from_rgb(217, 70, 239)));
+                            let bass_lbl = if is_compact_bar { "Bass" } else { "Bass (<250Hz)" };
+                            ui.label(
+                                egui::RichText::new(bass_lbl)
+                                    .size(11.0)
+                                    .strong()
+                                    .color(Color32::from_rgb(100, 116, 139)),
+                            );
+                            ui.label(egui::RichText::new("●").size(15.0).color(Color32::from_rgb(217, 70, 239)));
 
-                        ui.add_space(6.0);
-                        ui.label(
-                            egui::RichText::new("SPECTRUM:")
-                                .size(11.0)
-                                .strong()
-                                .color(Color32::from_rgb(148, 163, 184)),
-                        );
-                    });
+                            if !is_compact_bar {
+                                ui.add_space(6.0);
+                                ui.label(
+                                    egui::RichText::new("SPECTRUM:")
+                                        .size(11.0)
+                                        .strong()
+                                        .color(Color32::from_rgb(148, 163, 184)),
+                                );
+                            }
+                        });
+                    }
                 });
 
                 // Centered Transport Deck
@@ -526,55 +559,70 @@ impl LunulaApp {
     // Perfectly Centered 3-Column Transport Deck with Smooth Animated Hover
     pub fn render_balanced_transport_deck(&mut self, ui: &mut egui::Ui) {
         let full_width = ui.available_width();
-        let left_width = 240.0;
-        let right_width = 280.0;
-        let center_width = (full_width - left_width - right_width).max(200.0);
+
+        let (left_width, right_width) = if full_width < 540.0 {
+            let lw = (full_width * 0.25).clamp(80.0, 130.0);
+            let rw = (full_width * 0.36).clamp(120.0, 180.0);
+            (lw, rw)
+        } else if full_width < 760.0 {
+            let lw = (full_width * 0.28).clamp(130.0, 190.0);
+            let rw = (full_width * 0.36).clamp(180.0, 240.0);
+            (lw, rw)
+        } else {
+            (240.0, 280.0)
+        };
+
+        let center_width = (full_width - left_width - right_width).max(150.0);
 
         ui.horizontal(|ui| {
-            // LEFT COLUMN (240px): Cover Thumbnail & Confident Time Typography
+            // LEFT COLUMN: Cover Thumbnail & Confident Time Typography
             ui.allocate_ui_with_layout(
                 Vec2::new(left_width, 44.0),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
-                    let thumb_size = Vec2::splat(38.0);
-                    let (thumb_rect, _) = ui.allocate_exact_size(thumb_size, egui::Sense::hover());
-                    let thumb_painter = ui.painter_at(thumb_rect);
+                    if left_width >= 130.0 {
+                        let thumb_size = Vec2::splat(36.0);
+                        let (thumb_rect, _) = ui.allocate_exact_size(thumb_size, egui::Sense::hover());
+                        let thumb_painter = ui.painter_at(thumb_rect);
 
-                    if let Some(ref texture) = self.current_cover_texture {
-                        thumb_painter.rect_filled(thumb_rect, 6.0, Color32::from_rgb(15, 23, 42));
-                        thumb_painter.image(
-                            texture.id(),
-                            thumb_rect,
-                            Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
-                            Color32::WHITE,
-                        );
-                        thumb_painter.rect_stroke(thumb_rect, 6.0, Stroke::new(1.0, Color32::from_rgba_unmultiplied(226, 232, 240, 150)), egui::StrokeKind::Outside);
-                    } else {
-                        crate::ui::components::draw_album_art(
-                            &thumb_painter,
-                            thumb_rect,
-                            &self.current_track.title,
-                            self.current_track.bit_depth > 16,
-                        );
+                        if let Some(ref texture) = self.current_cover_texture {
+                            thumb_painter.rect_filled(thumb_rect, 6.0, Color32::from_rgb(15, 23, 42));
+                            thumb_painter.image(
+                                texture.id(),
+                                thumb_rect,
+                                Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+                                Color32::WHITE,
+                            );
+                            thumb_painter.rect_stroke(thumb_rect, 6.0, Stroke::new(1.0, Color32::from_rgba_unmultiplied(226, 232, 240, 150)), egui::StrokeKind::Outside);
+                        } else {
+                            crate::ui::components::draw_album_art(
+                                &thumb_painter,
+                                thumb_rect,
+                                &self.current_track.title,
+                                self.current_track.bit_depth > 16,
+                            );
+                        }
+
+                        ui.add_space(6.0);
                     }
-
-                    ui.add_space(8.0);
 
                     ui.vertical(|ui| {
                         ui.label(
                             egui::RichText::new(format_time(self.current_time))
                                 .strong()
-                                .size(16.0)
+                                .size(if left_width < 130.0 { 14.5 } else { 16.0 })
                                 .color(Color32::from_rgb(15, 23, 42)),
                         );
 
-                        let remaining = (self.current_track.duration - self.current_time).max(0.0);
-                        ui.label(
-                            egui::RichText::new(format!("-{}", format_time(remaining)))
-                                .strong()
-                                .size(11.5)
-                                .color(Color32::from_rgb(148, 163, 184)),
-                        );
+                        if left_width >= 120.0 {
+                            let remaining = (self.current_track.duration - self.current_time).max(0.0);
+                            ui.label(
+                                egui::RichText::new(format!("-{}", format_time(remaining)))
+                                    .strong()
+                                    .size(11.0)
+                                    .color(Color32::from_rgb(148, 163, 184)),
+                            );
+                        }
                     });
                 },
             );
@@ -585,20 +633,23 @@ impl LunulaApp {
                 egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
                 |ui| {
                     ui.horizontal(|ui| {
+                        let btn_gap = if center_width < 220.0 { 4.0 } else { 8.0 };
+                        let play_gap = if center_width < 220.0 { 6.0 } else { 12.0 };
+
                         let shuffle_tip = if self.is_shuffled {
                             "Shuffle: Aktif (Lagu Diacak) - Klik untuk Matikan"
                         } else {
                             "Shuffle: Mati (Urutan Normal) - Klik untuk Acak"
                         };
-                        self.render_toggle_icon_btn(ui, "btn_shuffle", "🔀", 15.0, self.is_shuffled, shuffle_tip, |app| {
+                        self.render_toggle_icon_btn(ui, "btn_shuffle", "🔀", 14.0, self.is_shuffled, shuffle_tip, |app| {
                             app.toggle_shuffle();
                         });
-                        ui.add_space(8.0);
+                        ui.add_space(btn_gap);
 
-                        self.render_icon_btn(ui, "btn_prev", "⏮", 18.0, "Previous", |app| {
+                        self.render_icon_btn(ui, "btn_prev", "⏮", 17.0, "Previous", |app| {
                             app.play_prev_track();
                         });
-                        ui.add_space(12.0);
+                        ui.add_space(play_gap);
 
                         // Floating Play/Pause Button with Morphing Live Oscilloscope Beam
                         let play_size = Vec2::splat(44.0);
@@ -709,12 +760,12 @@ impl LunulaApp {
                             }
                         }
 
-                        ui.add_space(12.0);
+                        ui.add_space(play_gap);
 
-                        self.render_icon_btn(ui, "btn_next", "⏭", 18.0, "Next", |app| {
+                        self.render_icon_btn(ui, "btn_next", "⏭", 17.0, "Next", |app| {
                             app.play_next_track();
                         });
-                        ui.add_space(8.0);
+                        ui.add_space(btn_gap);
 
                         let (repeat_icon, is_rep_active, repeat_tip) = match self.repeat_mode {
                             crate::models::RepeatMode::Off => ("🔁", false, "Repeat: Mati (Klik untuk Ulangi Semua)"),
@@ -722,21 +773,23 @@ impl LunulaApp {
                             crate::models::RepeatMode::One => ("🔂", true, "Repeat: 1 Lagu Ini Saja (Klik untuk Ulangi Album Ini)"),
                             crate::models::RepeatMode::Album => ("💿", true, "Repeat: Hanya Lagu Album Ini (Klik untuk Matikan)"),
                         };
-                        self.render_toggle_icon_btn(ui, "btn_repeat", repeat_icon, 15.0, is_rep_active, repeat_tip, |app| {
+                        self.render_toggle_icon_btn(ui, "btn_repeat", repeat_icon, 14.0, is_rep_active, repeat_tip, |app| {
                             app.cycle_repeat_mode();
                         });
                     });
                 },
             );
 
-            // RIGHT COLUMN (280px): Sleek Modern Volume Slider & Queue Drawer Toggle
+            // RIGHT COLUMN: Sleek Modern Volume Slider & Queue Drawer Toggle
             ui.allocate_ui_with_layout(
                 Vec2::new(right_width, 44.0),
                 egui::Layout::right_to_left(egui::Align::Center),
                 |ui| {
                     // Queue Drawer Toggle Button
                     let q_count = self.play_queue.len();
-                    let q_text = if q_count > 0 {
+                    let q_text = if right_width < 190.0 {
+                        if q_count > 0 { format!("📑 {}", q_count) } else { "📑".to_string() }
+                    } else if q_count > 0 {
                         format!("📑 Antrean ({})", q_count)
                     } else {
                         "📑 Antrean".to_string()
@@ -745,7 +798,7 @@ impl LunulaApp {
                         egui::Button::new(
                             egui::RichText::new(q_text)
                                 .strong()
-                                .size(11.5)
+                                .size(11.0)
                                 .color(if self.show_queue_drawer {
                                     Color32::from_rgb(2, 132, 199)
                                 } else {
@@ -758,37 +811,39 @@ impl LunulaApp {
                             Color32::from_rgb(241, 245, 249)
                         })
                         .corner_radius(6.0)
-                        .min_size(Vec2::new(32.0, 26.0)),
+                        .min_size(Vec2::new(26.0, 26.0)),
                     ).on_hover_text("Buka / Tutup Panel Antrean Lagu (Queue)");
 
                     if q_btn.clicked() {
                         self.show_queue_drawer = !self.show_queue_drawer;
                     }
 
-                    ui.add_space(8.0);
+                    ui.add_space(6.0);
 
                     let is_bp = self.chain_mode == crate::models::ChainMode::BitPerfect;
 
                     if is_bp {
+                        let bp_lbl = if right_width < 220.0 { "100%" } else { "100% (Direct)" };
                         ui.label(
-                            egui::RichText::new("100% (Direct)")
+                            egui::RichText::new(bp_lbl)
                                 .strong()
-                                .size(11.5)
+                                .size(11.0)
                                 .color(Color32::from_rgb(16, 185, 129)),
                         ).on_hover_text("Volume dikunci pada 100% (Bit-Perfect Pure Direct) untuk menjaga integritas bit audio asli tanpa attenuasi digital. Gunakan knob hardware DAC / speaker.");
-                    } else {
+                    } else if right_width >= 160.0 {
                         let vol_pct = (if self.is_muted { 0.0 } else { self.volume } * 100.0) as u32;
                         ui.label(
                             egui::RichText::new(format!("{:3}%", vol_pct))
                                 .strong()
-                                .size(13.0)
+                                .size(12.0)
                                 .color(Color32::from_rgb(71, 85, 105)),
                         );
                     }
 
-                    ui.add_space(8.0);
+                    ui.add_space(6.0);
 
-                    let vol_size = Vec2::new(100.0, 10.0);
+                    let slider_w = (right_width - if is_bp { 75.0 } else if right_width < 160.0 { 55.0 } else { 85.0 }).clamp(35.0, 100.0);
+                    let vol_size = Vec2::new(slider_w, 10.0);
                     let (vol_rect, vol_res) = ui.allocate_exact_size(vol_size, if is_bp { egui::Sense::hover() } else { egui::Sense::click_and_drag() });
                     let vol_hover = ui.ctx().animate_bool(ui.scope_id().with("vol_hover_anim"), vol_res.hovered() || vol_res.dragged());
 
@@ -837,7 +892,7 @@ impl LunulaApp {
 
                     let speaker_btn = ui.add(
                         egui::Button::new(
-                            egui::RichText::new(vol_icon).strong().size(15.0).color(Color32::from_rgb(15, 23, 42)),
+                            egui::RichText::new(vol_icon).strong().size(14.0).color(Color32::from_rgb(15, 23, 42)),
                         )
                         .frame(false),
                     );
@@ -937,23 +992,29 @@ impl LunulaApp {
         res.on_hover_text(tooltip);
     }
 
-    /// Split Layout: 54% Real-Time Spectrum Analyzer + 46% Synchronized Lyric Box
+    /// Split Layout: 54% Real-Time Spectrum Analyzer + 46% Synchronized Lyric Box (responsive)
     pub fn render_now_playing_visualizer_and_lyrics(&mut self, ui: &mut egui::Ui) {
         let total_w = ui.available_width();
-        let spec_w = (total_w * 0.54).max(280.0);
-        let lyric_w = (total_w - spec_w - 12.0).max(220.0);
+        let (spec_w, lyric_w) = if total_w < 560.0 {
+            let half = (total_w - 8.0) * 0.5;
+            (half.max(120.0), half.max(120.0))
+        } else {
+            let sw = (total_w * 0.54).clamp(240.0, total_w - 200.0);
+            let lw = total_w - sw - 8.0;
+            (sw, lw)
+        };
 
-        let stage_h = (ui.available_height() - 8.0).clamp(240.0, 420.0);
+        let stage_h = (ui.available_height() - 8.0).clamp(160.0, 420.0);
 
         ui.horizontal(|ui| {
-            // Left 54%: Spectrum Analyzer
+            // Left: Spectrum Analyzer
             ui.allocate_ui(egui::vec2(spec_w, stage_h), |ui| {
                 self.render_spectrum_visualizer(ui);
             });
 
             ui.add_space(8.0);
 
-            // Right 46%: Synchronized Lyric Box
+            // Right: Synchronized Lyric Box
             ui.allocate_ui(egui::vec2(lyric_w, stage_h), |ui| {
                 self.render_synced_lyric_box(ui);
             });
@@ -975,13 +1036,17 @@ impl LunulaApp {
             ui.vertical(|ui| {
                 // 1. Sleek Modern Header Bar
                 ui.horizontal(|ui| {
+                    let box_w = ui.available_width();
+                    let is_narrow_box = box_w < 340.0;
+
                     ui.label(egui::RichText::new("🎙️").size(15.5));
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
+                            let title_txt = if is_narrow_box { "LIRIK" } else { "LIRIK TERSINKRONISASI" };
                             ui.label(
-                                egui::RichText::new("LIRIK TERSINKRONISASI")
+                                egui::RichText::new(title_txt)
                                     .strong()
-                                    .size(13.0)
+                                    .size(12.5)
                                     .color(Color32::from_rgb(15, 23, 42)),
                             );
                             if self.current_lyrics.is_some() {
@@ -999,26 +1064,29 @@ impl LunulaApp {
                                     });
                             }
                         });
-                        ui.label(
-                            egui::RichText::new("Real-time LRC Engine • Klik baris lirik untuk lompat audio")
-                                .size(10.5)
-                                .color(Color32::from_rgb(100, 116, 139)),
-                        );
+                        if !is_narrow_box {
+                            ui.label(
+                                egui::RichText::new("Real-time LRC Engine • Klik lirik lompat audio")
+                                    .size(10.0)
+                                    .color(Color32::from_rgb(100, 116, 139)),
+                            );
+                        }
                     });
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Manual file picker button
+                        let lrc_btn_label = if is_narrow_box { "📂 LRC" } else { "📂 Muat .lrc" };
                         if ui.add(
                             egui::Button::new(
-                                egui::RichText::new("📂 Muat .lrc")
-                                    .size(11.0)
+                                egui::RichText::new(lrc_btn_label)
+                                    .size(10.5)
                                     .strong()
                                     .color(Color32::from_rgb(79, 70, 229))
                             )
                             .fill(Color32::from_rgb(238, 242, 255))
                             .stroke(Stroke::new(1.0, Color32::from_rgb(199, 210, 254)))
                             .corner_radius(6.0)
-                            .min_size(Vec2::new(82.0, 26.0))
+                            .min_size(Vec2::new(if is_narrow_box { 56.0 } else { 82.0 }, 26.0))
                         )
                         .on_hover_text("Pilih berkas lirik .lrc secara manual dari disk")
                         .clicked()
@@ -1034,7 +1102,7 @@ impl LunulaApp {
                         // Offset trim segmented controls: [-0.5s] [Offset] [+0.5s]
                         if self.current_lyrics.is_some() {
                             if ui.add(
-                                egui::Button::new(egui::RichText::new("+0.5s ⏩").size(10.5))
+                                egui::Button::new(egui::RichText::new("+0.5s").size(10.0))
                                     .fill(Color32::from_rgb(241, 245, 249))
                                     .corner_radius(5.0)
                             )
@@ -1045,7 +1113,7 @@ impl LunulaApp {
                             }
 
                             let offset_label = if self.lyrics_offset_trim_sec.abs() > 0.01 {
-                                format!("{:+.1}s (↺ Reset)", self.lyrics_offset_trim_sec)
+                                format!("{:+.1}s", self.lyrics_offset_trim_sec)
                             } else {
                                 "±0.0s".to_string()
                             };
@@ -1057,7 +1125,7 @@ impl LunulaApp {
                             };
 
                             if ui.add(
-                                egui::Button::new(egui::RichText::new(offset_label).size(10.5).strong().color(offset_col))
+                                egui::Button::new(egui::RichText::new(offset_label).size(10.0).strong().color(offset_col))
                                     .fill(Color32::from_rgb(248, 250, 252))
                                     .corner_radius(5.0)
                             )
@@ -1068,7 +1136,7 @@ impl LunulaApp {
                             }
 
                             if ui.add(
-                                egui::Button::new(egui::RichText::new("⏪ -0.5s").size(10.5))
+                                egui::Button::new(egui::RichText::new("-0.5s").size(10.0))
                                     .fill(Color32::from_rgb(241, 245, 249))
                                     .corner_radius(5.0)
                             )

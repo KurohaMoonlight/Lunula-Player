@@ -227,7 +227,7 @@ impl LunulaApp {
             }
         } else if self.theater_slide == 1 {
             // Slide 2:
-            // Turns 0, 1 (Linear initial DAG chain) => Single series path.
+            // Turns 0, 1 (Linear initial DAG chain) => Direct cable (RAM Buffer -> DAC).
             // Turns 2, 3, 4, 5 (Nu cuts cable, introduces Splitter, LPF, Summing, explains Dry & Wet) =>
             // Automatically spawns the 3 modules and connects Dry & Wet parallel routing!
             if self.theater_turn < 2 {
@@ -337,19 +337,22 @@ impl LunulaApp {
                 // 1. Fullscreen Dark Dimmed Frosted Backdrop
                 p.rect_filled(screen_rect, 0.0, Color32::from_black_alpha(215));
 
-                // 2. Strict 90% Screen Geometry calculation
+                // 2. Strict 90% Screen Geometry calculation with safe minimums
                 let screen_size = screen_rect.size();
-                let theater_w = (screen_size.x * 0.90).clamp(760.0, 1280.0);
-                let theater_h = (screen_size.y * 0.90).clamp(520.0, 820.0);
+                let max_w = (screen_size.x - 16.0).max(300.0);
+                let max_h = (screen_size.y - 16.0).max(280.0);
+                let theater_w = (screen_size.x * 0.92).clamp(320.0, 1280.0).min(max_w);
+                let theater_h = (screen_size.y * 0.92).clamp(360.0, 820.0).min(max_h);
                 let theater_rect = Rect::from_center_size(screen_rect.center(), Vec2::new(theater_w, theater_h));
 
                 let mut theater_ui = ui.new_child(egui::UiBuilder::new().max_rect(theater_rect));
 
+                let inner_pad = if theater_w < 640.0 { 10.0 } else { 16.0 };
                 egui::Frame::new()
                     .fill(Color32::from_rgb(11, 15, 26)) // Deep Studio Obsidian Slate
                     .stroke(Stroke::new(1.8, Color32::from_rgb(79, 70, 229))) // Cohesive Royal Indigo Border
                     .corner_radius(16.0)
-                    .inner_margin(16.0)
+                    .inner_margin(inner_pad)
                     .shadow(egui::epaint::Shadow {
                         offset: [0, 16],
                         blur: 48,
@@ -357,32 +360,41 @@ impl LunulaApp {
                         color: Color32::from_black_alpha(240),
                     })
                     .show(&mut theater_ui, |ui| {
-                        let content_w = theater_w - 32.0;
+                        let content_w = theater_w - inner_pad * 2.0;
                         ui.set_width(content_w);
-                        ui.set_max_height(theater_h - 32.0);
+                        ui.set_max_height(theater_h - inner_pad * 2.0);
 
                         // --- 1. HEADER BAR (Clean, Modern Studio Console) ---
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("🎬").size(22.0));
+                            if content_w >= 540.0 {
+                                ui.label(egui::RichText::new("🎬").size(20.0));
+                            }
                             ui.vertical(|ui| {
+                                let title_text = if content_w < 600.0 {
+                                    "LUNULA STUDIO THEATER"
+                                } else {
+                                    "LUNULA STUDIO THEATER • PANDUAN INTERAKTIF 90%"
+                                };
                                 ui.label(
-                                    egui::RichText::new("LUNULA STUDIO THEATER • PANDUAN INTERAKTIF 90%")
+                                    egui::RichText::new(title_text)
                                         .strong()
-                                        .size(13.5)
+                                        .size(if content_w < 600.0 { 12.0 } else { 13.5 })
                                         .color(Color32::from_rgb(241, 245, 249)),
                                 );
-                                ui.label(
-                                    egui::RichText::new("Duo Not Balok Kembar \"Lu & Nu\" • Bodi Hitam Outline Putih • Edukasi Audio 60 FPS")
-                                        .size(11.0)
-                                        .color(Color32::from_rgb(148, 163, 184)),
-                                );
+                                if content_w >= 680.0 {
+                                    ui.label(
+                                        egui::RichText::new("Duo Not Balok Kembar \"Lu & Nu\" • Bodi Hitam Outline Putih • Edukasi Audio 60 FPS")
+                                            .size(11.0)
+                                            .color(Color32::from_rgb(148, 163, 184)),
+                                    );
+                                }
                             });
 
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                // Modern, eye-friendly dark pill button with mathematically aligned procedural ✕
+                                let close_label = if content_w < 640.0 { "Lewati" } else { "Lewati & Masuk Studio" };
                                 let close_resp = render_studio_button(
                                     ui,
-                                    "Lewati & Masuk Studio",
+                                    close_label,
                                     ButtonIcon::Close,
                                     IconPosition::Left,
                                     true,
@@ -398,116 +410,39 @@ impl LunulaApp {
                             });
                         });
 
-                        ui.add_space(8.0);
+                        ui.add_space(6.0);
 
-                        // --- 2. SLIDE NAVIGATION TABS (Slides 1 & 2) ---
-                        ui.horizontal(|ui| {
-                            let s1_active = self.theater_slide == 0;
-                            let s1_btn = egui::Button::new(
-                                egui::RichText::new("1. Filosofi Dual-Engine (Bit-Perfect vs DSP)")
-                                    .size(11.5)
-                                    .strong()
-                                    .color(if s1_active { Color32::WHITE } else { Color32::from_rgb(148, 163, 184) }),
-                            )
-                            .fill(if s1_active { Color32::from_rgb(49, 46, 129) } else { Color32::from_rgb(18, 24, 38) })
-                            .stroke(Stroke::new(
-                                if s1_active { 1.2 } else { 1.0 },
-                                if s1_active { Color32::from_rgb(129, 140, 248) } else { Color32::from_rgb(39, 49, 70) },
-                            ))
-                            .corner_radius(8.0);
+                        // --- 2. SLIDE NAVIGATION TABS (Slides 1 to 5, responsive wrapped) ---
+                        ui.horizontal_wrapped(|ui| {
+                            let slide_titles = [
+                                (0, "1. Filosofi Dual-Engine (Bit-Perfect vs DSP)", "1. Dual-Engine"),
+                                (1, "2. Modular Canvas & Arsitektur DAG", "2. Canvas DAG"),
+                                (2, "3. Filter Studio, Grafik Telemetri & Aturan DAG", "3. Filter & Telemetri"),
+                                (3, "4. Now Playing, Osiloskop & Antrean", "4. Now Playing"),
+                                (4, "5. Music Library & Koleksi Lokal", "5. Library"),
+                            ];
 
-                            if ui.add(s1_btn).clicked() && self.theater_slide != 0 {
-                                self.theater_slide = 0;
-                                self.theater_turn = 0;
-                                self.theater_turn_timer = 0.0;
-                            }
+                            for (idx, full_lbl, short_lbl) in slide_titles {
+                                let is_active = self.theater_slide == idx;
+                                let lbl = if content_w < 980.0 { short_lbl } else { full_lbl };
+                                let btn = egui::Button::new(
+                                    egui::RichText::new(lbl)
+                                        .size(11.0)
+                                        .strong()
+                                        .color(if is_active { Color32::WHITE } else { Color32::from_rgb(148, 163, 184) }),
+                                )
+                                .fill(if is_active { Color32::from_rgb(49, 46, 129) } else { Color32::from_rgb(18, 24, 38) })
+                                .stroke(Stroke::new(
+                                    if is_active { 1.2 } else { 1.0 },
+                                    if is_active { Color32::from_rgb(129, 140, 248) } else { Color32::from_rgb(39, 49, 70) },
+                                ))
+                                .corner_radius(6.0);
 
-                            ui.add_space(6.0);
-
-                            let s2_active = self.theater_slide == 1;
-                            let s2_btn = egui::Button::new(
-                                egui::RichText::new("2. Modular Canvas, Fitur Studio & Arsitektur DAG")
-                                    .size(11.5)
-                                    .strong()
-                                    .color(if s2_active { Color32::WHITE } else { Color32::from_rgb(148, 163, 184) }),
-                            )
-                            .fill(if s2_active { Color32::from_rgb(49, 46, 129) } else { Color32::from_rgb(18, 24, 38) })
-                            .stroke(Stroke::new(
-                                if s2_active { 1.2 } else { 1.0 },
-                                if s2_active { Color32::from_rgb(129, 140, 248) } else { Color32::from_rgb(39, 49, 70) },
-                            ))
-                            .corner_radius(8.0);
-
-                            if ui.add(s2_btn).clicked() && self.theater_slide != 1 {
-                                self.theater_slide = 1;
-                                self.theater_turn = 0;
-                                self.theater_turn_timer = 0.0;
-                            }
-
-                            ui.add_space(6.0);
-
-                            let s3_active = self.theater_slide == 2;
-                            let s3_btn = egui::Button::new(
-                                egui::RichText::new("3. Filter Studio, Grafik Telemetri & Aturan DAG")
-                                    .size(11.5)
-                                    .strong()
-                                    .color(if s3_active { Color32::WHITE } else { Color32::from_rgb(148, 163, 184) }),
-                            )
-                            .fill(if s3_active { Color32::from_rgb(49, 46, 129) } else { Color32::from_rgb(18, 24, 38) })
-                            .stroke(Stroke::new(
-                                if s3_active { 1.2 } else { 1.0 },
-                                if s3_active { Color32::from_rgb(129, 140, 248) } else { Color32::from_rgb(39, 49, 70) },
-                            ))
-                            .corner_radius(8.0);
-
-                            if ui.add(s3_btn).clicked() && self.theater_slide != 2 {
-                                self.theater_slide = 2;
-                                self.theater_turn = 0;
-                                self.theater_turn_timer = 0.0;
-                            }
-
-                            ui.add_space(6.0);
-
-                            let s4_active = self.theater_slide == 3;
-                            let s4_btn = egui::Button::new(
-                                egui::RichText::new("4. Now Playing, Osiloskop & Antrean")
-                                    .size(11.5)
-                                    .strong()
-                                    .color(if s4_active { Color32::WHITE } else { Color32::from_rgb(148, 163, 184) }),
-                            )
-                            .fill(if s4_active { Color32::from_rgb(49, 46, 129) } else { Color32::from_rgb(18, 24, 38) })
-                            .stroke(Stroke::new(
-                                if s4_active { 1.2 } else { 1.0 },
-                                if s4_active { Color32::from_rgb(129, 140, 248) } else { Color32::from_rgb(39, 49, 70) },
-                            ))
-                            .corner_radius(8.0);
-
-                            if ui.add(s4_btn).clicked() && self.theater_slide != 3 {
-                                self.theater_slide = 3;
-                                self.theater_turn = 0;
-                                self.theater_turn_timer = 0.0;
-                            }
-
-                            ui.add_space(6.0);
-
-                            let s5_active = self.theater_slide == 4;
-                            let s5_btn = egui::Button::new(
-                                egui::RichText::new("5. Music Library & Koleksi Lokal")
-                                    .size(11.5)
-                                    .strong()
-                                    .color(if s5_active { Color32::WHITE } else { Color32::from_rgb(148, 163, 184) }),
-                            )
-                            .fill(if s5_active { Color32::from_rgb(49, 46, 129) } else { Color32::from_rgb(18, 24, 38) })
-                            .stroke(Stroke::new(
-                                if s5_active { 1.2 } else { 1.0 },
-                                if s5_active { Color32::from_rgb(129, 140, 248) } else { Color32::from_rgb(39, 49, 70) },
-                            ))
-                            .corner_radius(8.0);
-
-                            if ui.add(s5_btn).clicked() && self.theater_slide != 4 {
-                                self.theater_slide = 4;
-                                self.theater_turn = 0;
-                                self.theater_turn_timer = 0.0;
+                                if ui.add(btn).clicked() && self.theater_slide != idx {
+                                    self.theater_slide = idx;
+                                    self.theater_turn = 0;
+                                    self.theater_turn_timer = 0.0;
+                                }
                             }
                         });
 
@@ -516,8 +451,8 @@ impl LunulaApp {
                         ui.add_space(4.0);
 
                         // --- 3. DYNAMIC STAGE AREA (Guaranteed room for bottom bar!) ---
-                        let bottom_bar_reserved = 50.0;
-                        let stage_h = (ui.available_height() - bottom_bar_reserved).max(280.0);
+                        let bottom_bar_reserved = if content_w < 640.0 { 76.0 } else { 48.0 };
+                        let stage_h = (ui.available_height() - bottom_bar_reserved).max(180.0);
                         let (stage_rect, stage_resp) = ui.allocate_exact_size(Vec2::new(content_w, stage_h), egui::Sense::click());
                         let stage_p = ui.painter().with_clip_rect(stage_rect);
 
@@ -600,21 +535,15 @@ impl LunulaApp {
                         let is_lu_talking = is_typing && (current_turn.speaker == Speaker::Lu || current_turn.speaker == Speaker::Both);
                         let is_nu_talking = is_typing && (current_turn.speaker == Speaker::Nu || current_turn.speaker == Speaker::Both);
 
-                        // --- RENDER STAGE DIAGRAM (LOWER HALF OF STAGE) ---
-                        let diagram_center = Pos2::new(st_c.x, stage_rect.min.y + 190.0 + (stage_h - 260.0) * 0.45);
-                        self.render_slide_diagram(
-                            &stage_p,
-                            ui,
-                            diagram_center,
-                            stage_rect,
-                            time,
-                        );
-
                         // --- RENDER SPEECH BUBBLE (UPPER HALF OF STAGE) ---
-                        let bubble_w = (stage_rect.width() - 220.0).clamp(420.0, 720.0);
+                        let is_narrow_stage = stage_rect.width() < 640.0;
+                        let mascot_reserve = if is_narrow_stage { 75.0 } else { 110.0 };
+                        let bubble_w = (stage_rect.width() - mascot_reserve - 20.0).clamp(240.0, 720.0);
+                        let bubble_h = (stage_h * 0.33).clamp(86.0, 108.0);
+                        let bubble_cx = stage_rect.min.x + mascot_reserve + (stage_rect.width() - mascot_reserve) * 0.5;
                         let bubble_rect = Rect::from_center_size(
-                            Pos2::new(st_c.x + 35.0, stage_rect.min.y + 60.0),
-                            Vec2::new(bubble_w, 94.0),
+                            Pos2::new(bubble_cx.min(stage_rect.max.x - bubble_w * 0.5 - 10.0), stage_rect.min.y + 10.0 + bubble_h * 0.5),
+                            Vec2::new(bubble_w, bubble_h),
                         );
 
                         // Bubble background with stylish border matching speaker color
@@ -625,7 +554,7 @@ impl LunulaApp {
                         let tail_p = vec![
                             Pos2::new(bubble_rect.min.x, bubble_rect.min.y + 36.0),
                             Pos2::new(bubble_rect.min.x, bubble_rect.min.y + 54.0),
-                            Pos2::new(bubble_rect.min.x - 14.0, bubble_rect.min.y + 45.0),
+                            Pos2::new(bubble_rect.min.x - 12.0, bubble_rect.min.y + 45.0),
                         ];
                         stage_p.add(egui::Shape::convex_polygon(
                             tail_p,
@@ -638,14 +567,14 @@ impl LunulaApp {
                             Pos2::new(bubble_rect.min.x + 14.0, bubble_rect.min.y + 16.0),
                             egui::Align2::LEFT_CENTER,
                             current_turn.speaker.badge(),
-                            egui::FontId::proportional(12.0),
+                            egui::FontId::proportional(11.5),
                             current_turn.speaker.color(),
                         );
                         stage_p.text(
                             Pos2::new(bubble_rect.max.x - 14.0, bubble_rect.min.y + 16.0),
                             egui::Align2::RIGHT_CENTER,
                             format!("Bagian {} / {}", turn_idx + 1, total_turns),
-                            egui::FontId::proportional(10.5),
+                            egui::FontId::proportional(10.0),
                             Color32::from_rgb(148, 163, 184),
                         );
 
@@ -659,11 +588,11 @@ impl LunulaApp {
                         let text_wrap_w = bubble_w - 28.0;
                         let galley = stage_p.layout(
                             display_str,
-                            egui::FontId::proportional(12.0),
+                            egui::FontId::proportional(11.5),
                             Color32::from_rgb(241, 245, 249),
                             text_wrap_w,
                         );
-                        stage_p.galley(Pos2::new(bubble_rect.min.x + 14.0, bubble_rect.min.y + 30.0), galley, Color32::from_rgb(241, 245, 249));
+                        stage_p.galley(Pos2::new(bubble_rect.min.x + 14.0, bubble_rect.min.y + 28.0), galley, Color32::from_rgb(241, 245, 249));
 
                         // Helpful footer cue inside bubble
                         let hint_text = if is_typing {
@@ -685,20 +614,22 @@ impl LunulaApp {
                             Pos2::new(bubble_rect.max.x - 14.0, bubble_rect.max.y - 12.0),
                             egui::Align2::RIGHT_CENTER,
                             hint_text,
-                            egui::FontId::proportional(10.0),
+                            egui::FontId::proportional(9.5),
                             Color32::from_rgb(100, 116, 139),
                         );
 
                         // --- RENDER FLYING MASCOT (CLEAR AIRSPACE, NO BLOCKING) ---
-                        let mascot_x = bubble_rect.min.x - 70.0 + (t * 2.0).sin() * 8.0;
-                        let mascot_y = bubble_rect.min.y + 45.0 + (t * 2.5).cos() * 5.0;
-                        let mascot_pos = Pos2::new(mascot_x.max(stage_rect.min.x + 55.0), mascot_y);
+                        let mascot_cx = (bubble_rect.min.x - 48.0).max(stage_rect.min.x + 40.0);
+                        let mascot_pos = Pos2::new(
+                            mascot_cx + (t * 2.0).sin() * 5.0,
+                            bubble_rect.center().y + (t * 2.5).cos() * 4.0,
+                        );
 
-                        // Draw procedural beamed pair with animated talking mouth & NO background circle!
+                        let mascot_scale = if is_narrow_stage { 0.90 } else { 1.05 };
                         draw_beamed_pair_mascot_ex(
                             &stage_p,
                             mascot_pos,
-                            1.05,
+                            mascot_scale,
                             time,
                             current_turn.expression,
                             is_lu_talking,
@@ -707,15 +638,28 @@ impl LunulaApp {
 
                         ui.ctx().request_repaint();
 
+                        // --- RENDER STAGE DIAGRAM (LOWER HALF OF STAGE) ---
+                        let diagram_top = bubble_rect.max.y + 8.0;
+                        let diagram_avail_h = (stage_rect.max.y - diagram_top).max(60.0);
+                        let diagram_center = Pos2::new(st_c.x, diagram_top + diagram_avail_h * 0.45);
+                        self.render_slide_diagram(
+                            &stage_p,
+                            ui,
+                            diagram_center,
+                            stage_rect,
+                            time,
+                        );
+
                         ui.add_space(8.0);
 
                         // --- 4. BOTTOM CONTROL BAR (Cohesive, Modern Studio Styling) ---
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            let is_compact_bar = content_w < 720.0;
                             // Auto-play Toggle Button (Procedural icon centered with text)
                             let (play_text, play_icon) = if self.theater_is_playing {
-                                ("Jeda Otomatis", ButtonIcon::Pause)
+                                if is_compact_bar { ("Jeda", ButtonIcon::Pause) } else { ("Jeda Otomatis", ButtonIcon::Pause) }
                             } else {
-                                ("Putar Otomatis", ButtonIcon::Play)
+                                if is_compact_bar { ("Putar", ButtonIcon::Play) } else { ("Putar Otomatis", ButtonIcon::Play) }
                             };
                             let play_resp = render_studio_button(
                                 ui,
@@ -733,12 +677,13 @@ impl LunulaApp {
                                 self.theater_is_playing = !self.theater_is_playing;
                             }
 
-                            ui.add_space(8.0);
+                            ui.add_space(6.0);
 
                             // Turn Step Button: Previous Turn (Procedural ◀ centered with text)
+                            let prev_text = if is_compact_bar { "◀ Balas" } else { "Balas Sebelumnya" };
                             let prev_resp = render_studio_button(
                                 ui,
-                                "Balas Sebelumnya",
+                                prev_text,
                                 ButtonIcon::Prev,
                                 IconPosition::Left,
                                 self.theater_turn > 0,
@@ -753,12 +698,13 @@ impl LunulaApp {
                                 self.theater_turn_timer = 0.0;
                             }
 
-                            ui.add_space(8.0);
+                            ui.add_space(6.0);
 
                             // Turn Step Button: Next Turn (Modern Dark Studio Slate + Procedural ▶ centered with text)
+                            let next_text = if is_compact_bar { "Lanjut ▶" } else { "Lanjut Dialog" };
                             let next_resp = render_studio_button(
                                 ui,
-                                "Lanjut Dialog",
+                                next_text,
                                 ButtonIcon::Play,
                                 IconPosition::Right,
                                 self.theater_turn + 1 < total_turns,
@@ -776,9 +722,10 @@ impl LunulaApp {
                             // Right-aligned Actions: Next Slide or Enter Studio
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if self.theater_slide == 0 {
+                                    let s2_text = if is_compact_bar { "Slide 2 ▶" } else { "Lanjut ke Slide 2 (Canvas DAG)" };
                                     let s2_resp = render_studio_button(
                                         ui,
-                                        "Lanjut ke Slide 2 (Canvas DAG)",
+                                        s2_text,
                                         ButtonIcon::Play,
                                         IconPosition::Right,
                                         true,
@@ -794,9 +741,10 @@ impl LunulaApp {
                                         self.theater_turn_timer = 0.0;
                                     }
                                 } else if self.theater_slide == 1 {
+                                    let s3_text = if is_compact_bar { "Slide 3 ▶" } else { "Lanjut ke Slide 3 (Filter & DAG)" };
                                     let s3_resp = render_studio_button(
                                         ui,
-                                        "Lanjut ke Slide 3 (Filter & DAG)",
+                                        s3_text,
                                         ButtonIcon::Play,
                                         IconPosition::Right,
                                         true,
@@ -812,11 +760,12 @@ impl LunulaApp {
                                         self.theater_turn_timer = 0.0;
                                     }
 
-                                    ui.add_space(8.0);
+                                    ui.add_space(6.0);
 
+                                    let b1_text = if is_compact_bar { "◀ Slide 1" } else { "Kembali ke Slide 1" };
                                     let back_s1_resp = render_studio_button(
                                         ui,
-                                        "Kembali ke Slide 1",
+                                        b1_text,
                                         ButtonIcon::Prev,
                                         IconPosition::Left,
                                         true,
@@ -832,9 +781,10 @@ impl LunulaApp {
                                         self.theater_turn_timer = 0.0;
                                     }
                                 } else if self.theater_slide == 2 {
+                                    let s4_text = if is_compact_bar { "Slide 4 ▶" } else { "Lanjut ke Slide 4 (Now Playing & Antrean)" };
                                     let s4_resp = render_studio_button(
                                         ui,
-                                        "Lanjut ke Slide 4 (Now Playing & Antrean)",
+                                        s4_text,
                                         ButtonIcon::Play,
                                         IconPosition::Right,
                                         true,
@@ -850,11 +800,12 @@ impl LunulaApp {
                                         self.theater_turn_timer = 0.0;
                                     }
 
-                                    ui.add_space(8.0);
+                                    ui.add_space(6.0);
 
+                                    let b2_text = if is_compact_bar { "◀ Slide 2" } else { "Kembali ke Slide 2" };
                                     let back_s2_resp = render_studio_button(
                                         ui,
-                                        "Kembali ke Slide 2",
+                                        b2_text,
                                         ButtonIcon::Prev,
                                         IconPosition::Left,
                                         true,
@@ -870,9 +821,10 @@ impl LunulaApp {
                                         self.theater_turn_timer = 0.0;
                                     }
                                 } else if self.theater_slide == 3 {
+                                    let s5_text = if is_compact_bar { "Slide 5 ▶" } else { "Lanjut ke Slide 5 (Music Library)" };
                                     let s5_resp = render_studio_button(
                                         ui,
-                                        "Lanjut ke Slide 5 (Music Library)",
+                                        s5_text,
                                         ButtonIcon::Play,
                                         IconPosition::Right,
                                         true,
@@ -888,11 +840,12 @@ impl LunulaApp {
                                         self.theater_turn_timer = 0.0;
                                     }
 
-                                    ui.add_space(8.0);
+                                    ui.add_space(6.0);
 
+                                    let b3_text = if is_compact_bar { "◀ Slide 3" } else { "Kembali ke Slide 3" };
                                     let back_s3_resp = render_studio_button(
                                         ui,
-                                        "Kembali ke Slide 3",
+                                        b3_text,
                                         ButtonIcon::Prev,
                                         IconPosition::Left,
                                         true,
@@ -908,9 +861,10 @@ impl LunulaApp {
                                         self.theater_turn_timer = 0.0;
                                     }
                                 } else {
+                                    let studio_text = if is_compact_bar { "Masuk Studio 🚀" } else { "Selesai & Buka Signal Chain Studio" };
                                     let studio_resp = render_studio_button(
                                         ui,
-                                        "Selesai & Buka Signal Chain Studio",
+                                        studio_text,
                                         ButtonIcon::Rocket,
                                         IconPosition::Left,
                                         true,
@@ -924,11 +878,12 @@ impl LunulaApp {
                                         self.show_interactive_theater = false;
                                     }
 
-                                    ui.add_space(8.0);
+                                    ui.add_space(6.0);
 
+                                    let b4_text = if is_compact_bar { "◀ Slide 4" } else { "Kembali ke Slide 4" };
                                     let back_s4_resp = render_studio_button(
                                         ui,
-                                        "Kembali ke Slide 4",
+                                        b4_text,
                                         ButtonIcon::Prev,
                                         IconPosition::Left,
                                         true,
@@ -1141,10 +1096,12 @@ impl LunulaApp {
         painter: &egui::Painter,
         ui: &mut egui::Ui,
         center: Pos2,
-        _stage_rect: Rect,
+        stage_rect: Rect,
         time: f64,
     ) {
         let t = time as f32;
+        let stage_w = stage_rect.width();
+        let max_diagram_w = (stage_w - 24.0).clamp(260.0, 520.0);
 
         // --- UNIFORM CABLE ANIMATION HELPER ---
         // Moves pulses at a strictly constant physical velocity (110.0 px/s) along any polyline path.
@@ -1199,8 +1156,9 @@ impl LunulaApp {
 
         if self.theater_slide == 0 {
             // --- SLIDE 1 DIAGRAM: DUAL-ENGINE (BIT-PERFECT vs DSP ACTIVE) ---
-            let src_pos = Pos2::new(center.x - 220.0, center.y);
-            let dac_pos = Pos2::new(center.x + 220.0, center.y);
+            let half_span = ((stage_w - 140.0) * 0.44).clamp(95.0, 220.0);
+            let src_pos = Pos2::new(center.x - half_span, center.y);
+            let dac_pos = Pos2::new(center.x + half_span, center.y);
             let dsp_node_pos = Pos2::new(center.x, center.y + 60.0);
 
             let bp_active = !self.theater_dsp_active;
@@ -1232,7 +1190,7 @@ impl LunulaApp {
                 // Active golden wire with uniform flowing pulses
                 draw_flowing_cable(&[bp_p1, bp_mid, bp_p2], Color32::from_rgb(245, 158, 11), Color32::WHITE, 3);
 
-                let bp_badge_rect = Rect::from_center_size(bp_mid, Vec2::new(215.0, 20.0));
+                let bp_badge_rect = Rect::from_center_size(bp_mid, Vec2::new(max_diagram_w.min(215.0), 20.0));
                 painter.rect_filled(bp_badge_rect, 4.0, Color32::from_rgb(254, 243, 199));
                 painter.text(
                     bp_badge_rect.center(),
@@ -1247,7 +1205,7 @@ impl LunulaApp {
                 painter.line_segment([bp_p1, bp_mid], bp_stroke);
                 painter.line_segment([bp_mid, bp_p2], bp_stroke);
 
-                let bp_badge_rect = Rect::from_center_size(bp_mid, Vec2::new(170.0, 18.0));
+                let bp_badge_rect = Rect::from_center_size(bp_mid, Vec2::new(max_diagram_w.min(170.0), 18.0));
                 painter.rect_filled(bp_badge_rect, 4.0, Color32::from_rgb(17, 24, 39));
                 painter.text(
                     bp_badge_rect.center(),
@@ -1273,7 +1231,7 @@ impl LunulaApp {
                 draw_card(dsp_node_pos, "🎛️ DSP 64-BIT ENGINE", "10-Band EQ + Tabung 12AX7", true, Color32::from_rgb(56, 189, 248));
 
                 // Active badge
-                let dsp_badge_rect = Rect::from_center_size(Pos2::new(center.x, dsp_node_pos.y + 36.0), Vec2::new(210.0, 18.0));
+                let dsp_badge_rect = Rect::from_center_size(Pos2::new(center.x, dsp_node_pos.y + 36.0), Vec2::new(max_diagram_w.min(210.0), 18.0));
                 painter.rect_filled(dsp_badge_rect, 4.0, Color32::from_rgb(19, 42, 60));
                 painter.text(
                     dsp_badge_rect.center(),
@@ -1292,7 +1250,8 @@ impl LunulaApp {
             }
 
             // --- Center Interactive Mode Selector Button ---
-            let btn_rect = Rect::from_center_size(Pos2::new(center.x, center.y - 2.0), Vec2::new(220.0, 32.0));
+            let btn_w = max_diagram_w.min(220.0);
+            let btn_rect = Rect::from_center_size(Pos2::new(center.x, center.y - 2.0), Vec2::new(btn_w, 32.0));
             let btn_hov = ui.rect_contains_pointer(btn_rect);
             let btn_bg = if self.theater_dsp_active {
                 Color32::from_rgb(18, 38, 60)
@@ -1320,13 +1279,15 @@ impl LunulaApp {
             }
         } else if self.theater_slide == 1 {
             // --- SLIDE 2 DIAGRAM: MODULAR CANVAS, SPLITTING, LPF & SUMMING (DRY-WET PARALLEL) ---
-            let card_src_pos = Pos2::new(center.x - 270.0, center.y);
-            let card_buf_pos = Pos2::new(center.x - 160.0, center.y);
-            let card_dac_pos = Pos2::new(center.x + 285.0, center.y);
+            let s2_scale = (stage_w / 640.0).clamp(0.68, 1.0);
+            let card_src_pos = Pos2::new(center.x - 270.0 * s2_scale, center.y);
+            let card_buf_pos = Pos2::new(center.x - 160.0 * s2_scale, center.y);
+            let card_dac_pos = Pos2::new(center.x + 280.0 * s2_scale, center.y);
 
             // Card drawing helper
             let draw_compact_card = |pos: Pos2, title: &str, sub: &str, w: f32, is_accent: bool, accent_col: Color32| {
-                let r = Rect::from_center_size(pos, Vec2::new(w, 44.0));
+                let eff_w = (w * s2_scale).max(65.0);
+                let r = Rect::from_center_size(pos, Vec2::new(eff_w, 44.0));
                 let bg = if is_accent { Color32::from_rgb(18, 25, 42) } else { Color32::from_rgb(14, 18, 28) };
                 painter.rect_filled(r, 6.0, bg);
                 painter.rect_stroke(
@@ -1344,28 +1305,46 @@ impl LunulaApp {
             draw_compact_card(card_dac_pos, "OUTPUT DAC", "32-bit Float", 90.0, true, Color32::from_rgb(168, 85, 247));
 
             // Cable 1: Source to RAM Buffer (always connected with uniform pulse velocity)
-            let p_src_out = Pos2::new(card_src_pos.x + 45.0, card_src_pos.y);
-            let p_buf_in = Pos2::new(card_buf_pos.x - 42.5, card_buf_pos.y);
+            let p_src_out = Pos2::new(card_src_pos.x + 45.0 * s2_scale, card_src_pos.y);
+            let p_buf_in = Pos2::new(card_buf_pos.x - 42.5 * s2_scale, card_buf_pos.y);
             draw_flowing_cable(&[p_src_out, p_buf_in], Color32::from_rgb(56, 189, 248), Color32::WHITE, 1);
 
-            let p_buf_out = Pos2::new(card_buf_pos.x + 42.5, card_buf_pos.y);
+            let p_buf_out = Pos2::new(card_buf_pos.x + 42.5 * s2_scale, card_buf_pos.y);
 
             if !self.theater_split_sum_active {
-                // --- Initial Linear Chain (Turns 0 & 1) ---
-                let card_dsp_pos = Pos2::new(center.x + 60.0, center.y);
-                draw_compact_card(card_dsp_pos, "DSP ENGINE", "64-bit Router", 110.0, true, Color32::from_rgb(99, 102, 241));
+                // --- Initial Direct Cable (Turns 0 & 1): RAM BUFFER -> OUTPUT DAC (No fake DSP Engine node) ---
+                let p_dac_in = Pos2::new(card_dac_pos.x - 45.0 * s2_scale, card_dac_pos.y);
+                draw_flowing_cable(&[p_buf_out, p_dac_in], Color32::from_rgb(56, 189, 248), Color32::WHITE, 2);
 
-                let p_dsp_in = Pos2::new(card_dsp_pos.x - 55.0, card_dsp_pos.y);
-                let p_dsp_out = Pos2::new(card_dsp_pos.x + 55.0, card_dsp_pos.y);
-                let p_dac_in = Pos2::new(card_dac_pos.x - 45.0, card_dac_pos.y);
+                // Informational badge centered above the direct wire
+                let wire_mid_x = (p_buf_out.x + p_dac_in.x) * 0.5;
+                let wire_badge = Rect::from_center_size(Pos2::new(wire_mid_x, center.y - 18.0), Vec2::new(175.0, 20.0));
+                painter.rect_filled(wire_badge, 4.0, Color32::from_rgb(18, 38, 60));
+                painter.rect_stroke(wire_badge, 4.0, Stroke::new(1.0, Color32::from_rgb(56, 189, 248)), egui::StrokeKind::Outside);
+                painter.text(
+                    wire_badge.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "KABEL LANGSUNG KE DAC (SERI)",
+                    egui::FontId::proportional(9.0),
+                    Color32::from_rgb(56, 189, 248),
+                );
 
-                draw_flowing_cable(&[p_buf_out, p_dsp_in], Color32::from_rgb(56, 189, 248), Color32::WHITE, 1);
-                draw_flowing_cable(&[p_dsp_out, p_dac_in], Color32::from_rgb(56, 189, 248), Color32::WHITE, 1);
+                // Subtle cut point indicator below the direct wire (preparing for Splitter & Summing Mixer)
+                let cut_badge = Rect::from_center_size(Pos2::new(wire_mid_x, center.y + 18.0), Vec2::new(195.0, 18.0));
+                painter.rect_filled(cut_badge, 4.0, Color32::from_rgb(14, 18, 28));
+                painter.rect_stroke(cut_badge, 4.0, Stroke::new(1.0, Color32::from_rgb(45, 55, 78)), egui::StrokeKind::Outside);
+                painter.text(
+                    cut_badge.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "✂️ Titik Potong Kabel untuk Modul Paralel",
+                    egui::FontId::proportional(8.5),
+                    Color32::from_rgb(148, 163, 184),
+                );
             } else {
                 // --- Full Dynamic Parallel DAG Network (Turns 2, 3, 4, 5): Splitter + LPF Filter + Summing Mixer ---
-                let card_split_pos = Pos2::new(center.x - 50.0, center.y);
-                let card_lpf_pos = Pos2::new(center.x + 60.0, center.y + 36.0);
-                let card_mixer_pos = Pos2::new(center.x + 170.0, center.y);
+                let card_split_pos = Pos2::new(center.x - 50.0 * s2_scale, center.y);
+                let card_lpf_pos = Pos2::new(center.x + 60.0 * s2_scale, center.y + 36.0);
+                let card_mixer_pos = Pos2::new(center.x + 170.0 * s2_scale, center.y);
 
                 // 1. SPLITTER Module Card (clean text without broken arrow glyphs)
                 draw_compact_card(card_split_pos, "SPLITTER 1:2", "Pencabang Sinyal", 85.0, true, Color32::from_rgb(56, 189, 248));
@@ -1377,19 +1356,19 @@ impl LunulaApp {
                 draw_compact_card(card_mixer_pos, "SUMMING MIXER", "Phase Aligned", 90.0, true, Color32::from_rgb(168, 85, 247));
 
                 // Cable: Buffer -> Splitter (with uniform flowing pulse!)
-                let p_split_in = Pos2::new(card_split_pos.x - 42.5, card_split_pos.y);
+                let p_split_in = Pos2::new(card_split_pos.x - 42.5 * s2_scale, card_split_pos.y);
                 draw_flowing_cable(&[p_buf_out, p_split_in], Color32::from_rgb(56, 189, 248), Color32::WHITE, 1);
 
-                let p_split_out_top = Pos2::new(card_split_pos.x + 42.5, card_split_pos.y - 10.0);
-                let p_split_out_bot = Pos2::new(card_split_pos.x + 42.5, card_split_pos.y + 10.0);
+                let p_split_out_top = Pos2::new(card_split_pos.x + 42.5 * s2_scale, card_split_pos.y - 10.0);
+                let p_split_out_bot = Pos2::new(card_split_pos.x + 42.5 * s2_scale, card_split_pos.y + 10.0);
 
-                let p_mixer_in_top = Pos2::new(card_mixer_pos.x - 45.0, card_mixer_pos.y - 10.0);
-                let p_mixer_in_bot = Pos2::new(card_mixer_pos.x - 45.0, card_mixer_pos.y + 10.0);
+                let p_mixer_in_top = Pos2::new(card_mixer_pos.x - 45.0 * s2_scale, card_mixer_pos.y - 10.0);
+                let p_mixer_in_bot = Pos2::new(card_mixer_pos.x - 45.0 * s2_scale, card_mixer_pos.y + 10.0);
 
                 // --- PATH A: DRY SOUND (Direct clean bypass to Summing Mixer) ---
                 let dry_wire_y = center.y - 32.0;
-                let dry_corner1 = Pos2::new(card_split_pos.x + 55.0, dry_wire_y);
-                let dry_corner2 = Pos2::new(card_mixer_pos.x - 55.0, dry_wire_y);
+                let dry_corner1 = Pos2::new(card_split_pos.x + 55.0 * s2_scale, dry_wire_y);
+                let dry_corner2 = Pos2::new(card_mixer_pos.x - 55.0 * s2_scale, dry_wire_y);
                 draw_flowing_cable(
                     &[p_split_out_top, dry_corner1, dry_corner2, p_mixer_in_top],
                     Color32::from_rgb(56, 189, 248),
@@ -1405,8 +1384,8 @@ impl LunulaApp {
                 painter.text(dry_badge.center(), egui::Align2::CENTER_CENTER, "DRY SOUND (MURNI)", egui::FontId::proportional(9.0), Color32::from_rgb(56, 189, 248));
 
                 // --- PATH B: WET SOUND (Passing into LPF, filtered, then into Summing Mixer) ---
-                let p_lpf_in = Pos2::new(card_lpf_pos.x - 47.5, card_lpf_pos.y);
-                let p_lpf_out = Pos2::new(card_lpf_pos.x + 47.5, card_lpf_pos.y);
+                let p_lpf_in = Pos2::new(card_lpf_pos.x - 47.5 * s2_scale, card_lpf_pos.y);
+                let p_lpf_out = Pos2::new(card_lpf_pos.x + 47.5 * s2_scale, card_lpf_pos.y);
 
                 draw_flowing_cable(&[p_split_out_bot, p_lpf_in], Color32::from_rgb(251, 146, 60), Color32::from_rgb(251, 146, 60), 1);
                 draw_flowing_cable(&[p_lpf_out, p_mixer_in_bot], Color32::from_rgb(251, 146, 60), Color32::from_rgb(251, 146, 60), 1);
@@ -1419,8 +1398,8 @@ impl LunulaApp {
                 painter.text(wet_badge.center(), egui::Align2::CENTER_CENTER, "WET SOUND (FILTER LPF)", egui::FontId::proportional(9.0), Color32::from_rgb(251, 146, 60));
 
                 // --- SUMMING MIXER TO OUTPUT DAC (Phase Aligned Combined Signal) ---
-                let p_mixer_out = Pos2::new(card_mixer_pos.x + 45.0, card_mixer_pos.y);
-                let p_dac_in = Pos2::new(card_dac_pos.x - 45.0, card_dac_pos.y);
+                let p_mixer_out = Pos2::new(card_mixer_pos.x + 45.0 * s2_scale, card_mixer_pos.y);
+                let p_dac_in = Pos2::new(card_dac_pos.x - 45.0 * s2_scale, card_dac_pos.y);
 
                 draw_flowing_cable(&[p_mixer_out, p_dac_in], Color32::from_rgb(52, 211, 153), Color32::from_rgb(52, 211, 153), 1);
 
@@ -1433,7 +1412,8 @@ impl LunulaApp {
             }
 
             // Interactive Splitting & Summing toggle button: Positioned at center.y + 92.0 (plenty of room below wet badge!)
-            let btn_rect = Rect::from_center_size(Pos2::new(center.x, center.y + 92.0), Vec2::new(290.0, 32.0));
+            let btn_w = max_diagram_w.min(290.0);
+            let btn_rect = Rect::from_center_size(Pos2::new(center.x, center.y + 92.0), Vec2::new(btn_w, 32.0));
             let btn_hov = ui.rect_contains_pointer(btn_rect);
             let btn_bg = if self.theater_split_sum_active {
                 Color32::from_rgb(32, 24, 48)
@@ -1451,7 +1431,7 @@ impl LunulaApp {
             let btn_lbl = if self.theater_split_sum_active {
                 "⚡ Mode Alur: [PARALEL DRY-WET (SPLIT & SUM)]"
             } else {
-                "⚡ Mode Alur: [JALUR SERI TUNGGAL] (Klik untuk Coba Split)"
+                "⚡ Mode Alur: [KABEL LANGSUNG KE DAC] (Klik untuk Coba Split)"
             };
             let text_col = if self.theater_split_sum_active {
                 Color32::from_rgb(216, 180, 254)
@@ -1484,9 +1464,11 @@ impl LunulaApp {
                 // BAGIAN 1 - 4: EKOSISTEM FILTER & GRAFIK TELEMETRI REAL-TIME
                 // =========================================================================
                 let rack_y = center.y - 68.0;
-                let c_eq = Pos2::new(center.x - 170.0, rack_y);
+                let rack_spacing = ((max_diagram_w - 60.0) / 3.0).clamp(80.0, 170.0);
+                let card_w = (rack_spacing * 0.85).clamp(80.0, 140.0);
+                let c_eq = Pos2::new(center.x - rack_spacing, rack_y);
                 let c_tube = Pos2::new(center.x, rack_y);
-                let c_lpf = Pos2::new(center.x + 170.0, rack_y);
+                let c_lpf = Pos2::new(center.x + rack_spacing, rack_y);
 
                 let sel = self.theater_s3_selected_filter;
 
@@ -1494,12 +1476,12 @@ impl LunulaApp {
                 draw_compact_card(
                     c_eq,
                     "10-BAND EQ",
-                    "Bode Plot (31Hz-16kHz)",
-                    140.0,
+                    "Bode Plot",
+                    card_w,
                     sel == 0,
                     Color32::from_rgb(56, 189, 248),
                 );
-                let eq_click_rect = Rect::from_center_size(c_eq, Vec2::new(140.0, 42.0));
+                let eq_click_rect = Rect::from_center_size(c_eq, Vec2::new(card_w, 42.0));
                 if ui.rect_contains_pointer(eq_click_rect) && ui.input(|i| i.pointer.any_pressed()) {
                     self.theater_s3_selected_filter = 0;
                 }
@@ -1507,13 +1489,13 @@ impl LunulaApp {
                 // Card 1: Tube Warmer 12AX7
                 draw_compact_card(
                     c_tube,
-                    "TUBE WARMER 12AX7",
-                    "Spektrum FFT Harmonik",
-                    145.0,
+                    "TUBE 12AX7",
+                    "FFT Harmonik",
+                    card_w,
                     sel == 1,
                     Color32::from_rgb(251, 146, 60),
                 );
-                let tube_click_rect = Rect::from_center_size(c_tube, Vec2::new(145.0, 42.0));
+                let tube_click_rect = Rect::from_center_size(c_tube, Vec2::new(card_w, 42.0));
                 if ui.rect_contains_pointer(tube_click_rect) && ui.input(|i| i.pointer.any_pressed()) {
                     self.theater_s3_selected_filter = 1;
                 }
@@ -1521,19 +1503,19 @@ impl LunulaApp {
                 // Card 2: Low-Pass Filter (LPF)
                 draw_compact_card(
                     c_lpf,
-                    "LOW-PASS (LPF)",
-                    "Kurva -12dB/oktaf",
-                    140.0,
+                    "LOW-PASS",
+                    "Kurva -12dB",
+                    card_w,
                     sel == 2,
                     Color32::from_rgb(52, 211, 153),
                 );
-                let lpf_click_rect = Rect::from_center_size(c_lpf, Vec2::new(140.0, 42.0));
+                let lpf_click_rect = Rect::from_center_size(c_lpf, Vec2::new(card_w, 42.0));
                 if ui.rect_contains_pointer(lpf_click_rect) && ui.input(|i| i.pointer.any_pressed()) {
                     self.theater_s3_selected_filter = 2;
                 }
 
                 // --- TELEMETRIC OSCILLOSCOPE / ANALYZER SCOPE DISPLAY ---
-                let scope_w = 520.0;
+                let scope_w = max_diagram_w;
                 let scope_h = 104.0;
                 let scope_center = Pos2::new(center.x, center.y + 16.0);
                 let scope_rect = Rect::from_center_size(scope_center, Vec2::new(scope_w, scope_h));
@@ -1726,15 +1708,16 @@ impl LunulaApp {
                 }
 
                 // Interactive Filter Selector Pill at bottom (center.y + 88.0)
-                let btn_rect = Rect::from_center_size(Pos2::new(center.x, center.y + 88.0), Vec2::new(340.0, 30.0));
+                let btn_w = max_diagram_w.min(340.0);
+                let btn_rect = Rect::from_center_size(Pos2::new(center.x, center.y + 88.0), Vec2::new(btn_w, 30.0));
                 let btn_hov = ui.rect_contains_pointer(btn_rect);
                 painter.rect_filled(btn_rect, 6.0, Color32::from_rgb(18, 25, 42));
                 painter.rect_stroke(btn_rect, 6.0, Stroke::new(if btn_hov { 1.5 } else { 1.0 }, scope_border_col), egui::StrokeKind::Outside);
 
                 let sel_label = match sel {
-                    0 => "🔍 Telemetri Aktif: [10-Band EQ] (Klik untuk ganti ke Tabung)",
-                    1 => "🔍 Telemetri Aktif: [Tabung 12AX7] (Klik untuk ganti ke LPF)",
-                    _ => "🔍 Telemetri Aktif: [Low-Pass Filter] (Klik untuk ganti ke EQ)",
+                    0 => "🔍 Telemetri Aktif: [10-Band EQ] (Klik ganti ke Tabung)",
+                    1 => "🔍 Telemetri Aktif: [Tabung 12AX7] (Klik ganti ke LPF)",
+                    _ => "🔍 Telemetri Aktif: [Low-Pass Filter] (Klik ganti ke EQ)",
                 };
                 painter.text(btn_rect.center(), egui::Align2::CENTER_CENTER, sel_label, egui::FontId::proportional(10.0), scope_border_col);
 
@@ -1745,28 +1728,29 @@ impl LunulaApp {
                 // =========================================================================
                 // BAGIAN 5 & 6: KONSEP DAG - POSISI FILTER BERPENGARUH KE SUARA
                 // =========================================================================
-                let src_pos = Pos2::new(center.x - 225.0, center.y - 12.0);
-                let f1_pos = Pos2::new(center.x - 75.0, center.y - 12.0);
-                let f2_pos = Pos2::new(center.x + 75.0, center.y - 12.0);
-                let dac_pos = Pos2::new(center.x + 225.0, center.y - 12.0);
+                let f_spacing = (max_diagram_w * 0.28).clamp(70.0, 150.0);
+                let src_pos = Pos2::new(center.x - f_spacing * 1.5, center.y - 12.0);
+                let f1_pos = Pos2::new(center.x - f_spacing * 0.5, center.y - 12.0);
+                let f2_pos = Pos2::new(center.x + f_spacing * 0.5, center.y - 12.0);
+                let dac_pos = Pos2::new(center.x + f_spacing * 1.5, center.y - 12.0);
 
                 let is_swapped = self.theater_s3_order_swapped;
 
                 // Top Order Impact Badge
                 let badge_pos = Pos2::new(center.x, center.y - 66.0);
-                let badge_rect = Rect::from_center_size(badge_pos, Vec2::new(510.0, 24.0));
+                let badge_rect = Rect::from_center_size(badge_pos, Vec2::new(max_diagram_w.min(510.0), 24.0));
                 let (badge_bg, badge_strk, badge_txt, badge_col) = if !is_swapped {
                     (
                         Color32::from_rgb(18, 38, 60),
                         Color32::from_rgb(56, 189, 248),
-                        "✨ URUTAN A: [TABUNG -> EQ] • Karakter: Harmonik Analog Halus Disuntik Duluan, Lalu Diukir EQ",
+                        "✨ URUTAN A: [TABUNG -> EQ] • Harmonik Analog Halus, Lalu Diukir EQ",
                         Color32::from_rgb(224, 242, 254),
                     )
                 } else {
                     (
                         Color32::from_rgb(45, 28, 18),
                         Color32::from_rgb(251, 146, 60),
-                        "🔥 URUTAN B: [EQ -> TABUNG] • Karakter: Bass Di-boost Dulu -> Tabung Tersaturasi Tebal & Menggigit!",
+                        "🔥 URUTAN B: [EQ -> TABUNG] • Bass Boost -> Tabung Tersaturasi Tebal!",
                         Color32::from_rgb(255, 237, 213),
                     )
                 };
@@ -1784,7 +1768,7 @@ impl LunulaApp {
                 } else {
                     // Filter 1: 10-Band EQ, Filter 2: Tube 12AX7
                     draw_compact_card(f1_pos, "10-BAND EQ", "Bass Boost +6dB!", 100.0, true, Color32::from_rgb(56, 189, 248));
-                    draw_compact_card(f2_pos, "TUBE 12AX7", "Drive Menjerit (Overdrive)", 105.0, true, Color32::from_rgb(251, 146, 60));
+                    draw_compact_card(f2_pos, "TUBE 12AX7", "Drive Overdrive", 105.0, true, Color32::from_rgb(251, 146, 60));
                 }
 
                 draw_compact_card(dac_pos, "OUTPUT DAC", "32-bit Float", 85.0, true, Color32::from_rgb(168, 85, 247));
@@ -1803,25 +1787,26 @@ impl LunulaApp {
                 draw_flowing_cable(&[p_f2_out, p_dac_in], cable_col, Color32::WHITE, 1);
 
                 // Telemetry summary pill below nodes
-                let summary_rect = Rect::from_center_size(Pos2::new(center.x, center.y + 36.0), Vec2::new(450.0, 22.0));
+                let summary_rect = Rect::from_center_size(Pos2::new(center.x, center.y + 36.0), Vec2::new(max_diagram_w.min(450.0), 22.0));
                 painter.rect_filled(summary_rect, 4.0, Color32::from_rgb(14, 18, 28));
                 painter.rect_stroke(summary_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(45, 55, 78)), egui::StrokeKind::Outside);
                 let desc_txt = if !is_swapped {
                     "Hasil: Vokal hangat empuk, detail treble tetap jernih dan terkontrol rapi"
                 } else {
-                    "Hasil: Tabung distorsi tebal karena sinyal bass yang diperkuat mendrive tabung lebih keras"
+                    "Hasil: Tabung distorsi tebal karena sinyal bass mendrive tabung lebih keras"
                 };
                 painter.text(summary_rect.center(), egui::Align2::CENTER_CENTER, desc_txt, egui::FontId::proportional(9.0), Color32::from_rgb(203, 213, 225));
 
                 // Interactive Order Toggle Button (center.y + 88.0)
-                let btn_rect = Rect::from_center_size(Pos2::new(center.x, center.y + 88.0), Vec2::new(320.0, 32.0));
+                let btn_w = max_diagram_w.min(320.0);
+                let btn_rect = Rect::from_center_size(Pos2::new(center.x, center.y + 88.0), Vec2::new(btn_w, 32.0));
                 let btn_hov = ui.rect_contains_pointer(btn_rect);
                 painter.rect_filled(btn_rect, 8.0, if is_swapped { Color32::from_rgb(45, 28, 18) } else { Color32::from_rgb(18, 38, 60) });
                 painter.rect_stroke(btn_rect, 8.0, Stroke::new(if btn_hov { 1.6 } else { 1.0 }, badge_strk), egui::StrokeKind::Outside);
                 let btn_lbl = if !is_swapped {
-                    "🔀 Klik untuk Uji: [Tukar Menjadi EQ -> Tube]"
+                    "🔀 Klik Uji: [Tukar Jadi EQ -> Tube]"
                 } else {
-                    "🔀 Klik untuk Uji: [Kembalikan ke Tube -> EQ]"
+                    "🔀 Klik Uji: [Kembalikan ke Tube -> EQ]"
                 };
                 painter.text(btn_rect.center(), egui::Align2::CENTER_CENTER, btn_lbl, egui::FontId::proportional(10.5), badge_col);
 
@@ -1832,8 +1817,9 @@ impl LunulaApp {
                 // =========================================================================
                 // BAGIAN 7: HUKUM SAKRAL DAG - ACYCLIC (DILARANG FEEDBACK LOOP)
                 // =========================================================================
-                let f1_pos = Pos2::new(center.x - 120.0, center.y - 25.0);
-                let f2_pos = Pos2::new(center.x + 120.0, center.y - 25.0);
+                let f_spacing = (max_diagram_w * 0.25).clamp(70.0, 120.0);
+                let f1_pos = Pos2::new(center.x - f_spacing, center.y - 25.0);
+                let f2_pos = Pos2::new(center.x + f_spacing, center.y - 25.0);
 
                 draw_compact_card(f1_pos, "MODUL A: TABUNG", "DSP Input/Output", 120.0, true, Color32::from_rgb(251, 146, 60));
                 draw_compact_card(f2_pos, "MODUL B: EQUALIZER", "DSP Input/Output", 125.0, true, Color32::from_rgb(56, 189, 248));
@@ -1889,7 +1875,7 @@ impl LunulaApp {
                 painter.line_segment([Pos2::new(c_barrier.x - bx_r, c_barrier.y + bx_r), Pos2::new(c_barrier.x + bx_r, c_barrier.y - bx_r)], Stroke::new(1.8, Color32::WHITE));
 
                 // Barrier Shield Badge
-                let banner_rect = Rect::from_center_size(Pos2::new(center.x, center.y + 78.0), Vec2::new(510.0, 34.0));
+                let banner_rect = Rect::from_center_size(Pos2::new(center.x, center.y + 78.0), Vec2::new(max_diagram_w.min(510.0), 34.0));
                 painter.rect_filled(banner_rect, 6.0, Color32::from_rgb(45, 18, 24));
                 painter.rect_stroke(banner_rect, 6.0, Stroke::new(1.4, Color32::from_rgb(239, 68, 68)), egui::StrokeKind::Outside);
                 painter.text(
@@ -1902,7 +1888,7 @@ impl LunulaApp {
                 painter.text(
                     Pos2::new(banner_rect.center().x, banner_rect.center().y + 8.0),
                     egui::Align2::CENTER_CENTER,
-                    "DAG melarang output dihubungkan kembali ke modul sebelumnya demi melindungi speaker & DAC",
+                    "DAG melarang output dihubungkan kembali ke modul sebelumnya demi melindungi audio",
                     egui::FontId::proportional(8.5),
                     Color32::from_rgb(248, 113, 113),
                 );
@@ -1911,11 +1897,12 @@ impl LunulaApp {
                 // BAGIAN 8: KASKADE MULTI-FILTER SERI (100% LEGAL & DIDUKUNG PENUH)
                 // =========================================================================
                 let node_y = center.y - 12.0;
-                let c_src = Pos2::new(center.x - 230.0, node_y);
-                let c_tube = Pos2::new(center.x - 115.0, node_y);
+                let c_spacing = (max_diagram_w * 0.22).clamp(50.0, 115.0);
+                let c_src = Pos2::new(center.x - c_spacing * 2.0, node_y);
+                let c_tube = Pos2::new(center.x - c_spacing, node_y);
                 let c_eq = Pos2::new(center.x, node_y);
-                let c_lpf = Pos2::new(center.x + 115.0, node_y);
-                let c_dac = Pos2::new(center.x + 230.0, node_y);
+                let c_lpf = Pos2::new(center.x + c_spacing, node_y);
+                let c_dac = Pos2::new(center.x + c_spacing * 2.0, node_y);
 
                 draw_compact_card(c_src, "FILE SOURCE", "FLAC 24-bit", 80.0, true, Color32::from_rgb(56, 189, 248));
                 draw_compact_card(c_tube, "TUBE 12AX7", "Harmonik Empuk", 85.0, true, Color32::from_rgb(251, 146, 60));
@@ -1940,7 +1927,7 @@ impl LunulaApp {
                 draw_flowing_cable(&[p4_out, p5_in], em_col, Color32::WHITE, 1);
 
                 // Top Cascade Badge
-                let top_badge = Rect::from_center_size(Pos2::new(center.x, center.y - 66.0), Vec2::new(510.0, 24.0));
+                let top_badge = Rect::from_center_size(Pos2::new(center.x, center.y - 66.0), Vec2::new(max_diagram_w.min(510.0), 24.0));
                 painter.rect_filled(top_badge, 6.0, Color32::from_rgb(18, 42, 32));
                 painter.rect_stroke(top_badge, 6.0, Stroke::new(1.2, em_col), egui::StrokeKind::Outside);
                 painter.text(
@@ -1952,7 +1939,7 @@ impl LunulaApp {
                 );
 
                 // Bottom Tech Specifications
-                let bot_badge = Rect::from_center_size(Pos2::new(center.x, center.y + 40.0), Vec2::new(480.0, 22.0));
+                let bot_badge = Rect::from_center_size(Pos2::new(center.x, center.y + 40.0), Vec2::new(max_diagram_w.min(480.0), 22.0));
                 painter.rect_filled(bot_badge, 4.0, Color32::from_rgb(14, 18, 28));
                 painter.rect_stroke(bot_badge, 4.0, Stroke::new(1.0, Color32::from_rgb(45, 55, 78)), egui::StrokeKind::Outside);
                 painter.text(
@@ -1964,7 +1951,8 @@ impl LunulaApp {
                 );
 
                 // Lanjut ke Slide 4 Action Button
-                let btn_rect = Rect::from_center_size(Pos2::new(center.x, center.y + 84.0), Vec2::new(340.0, 32.0));
+                let btn_w = max_diagram_w.min(340.0);
+                let btn_rect = Rect::from_center_size(Pos2::new(center.x, center.y + 84.0), Vec2::new(btn_w, 32.0));
                 let btn_hov = ui.rect_contains_pointer(btn_rect);
                 painter.rect_filled(btn_rect, 8.0, Color32::from_rgb(22, 48, 40));
                 painter.rect_stroke(btn_rect, 8.0, Stroke::new(if btn_hov { 1.6 } else { 1.2 }, Color32::from_rgb(52, 211, 153)), egui::StrokeKind::Outside);
