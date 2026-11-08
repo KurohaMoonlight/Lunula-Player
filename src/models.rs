@@ -249,15 +249,16 @@ pub enum OnboardingQuestStep {
     Completed,         // Misi 7: Selesai! Quest Complete Certificate
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub enum StudioMode {
+    #[default]
     Simple,
     Advance,
 }
 
 pub use crate::audio::{ChainMode, ResamplerSettings, RollOffProfile, SincQuality};
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum NodeType {
     Source,
     Buffer,
@@ -462,6 +463,7 @@ pub struct Track {
     pub replay_gain: ReplayGainData,
     pub cue_offset_sec: Option<f32>,
     pub cue_duration_sec: Option<f32>,
+    pub genre: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -501,6 +503,8 @@ pub struct TrackData {
     pub cue_offset_sec: Option<f32>,
     #[serde(default)]
     pub cue_duration_sec: Option<f32>,
+    #[serde(default)]
+    pub genre: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -576,6 +580,7 @@ impl From<TrackData> for Track {
             replay_gain: data.replay_gain.unwrap_or_default(),
             cue_offset_sec: data.cue_offset_sec,
             cue_duration_sec: data.cue_duration_sec,
+            genre: data.genre,
         }
     }
 }
@@ -597,6 +602,7 @@ impl From<&Track> for TrackData {
             replay_gain: Some(track.replay_gain),
             cue_offset_sec: track.cue_offset_sec,
             cue_duration_sec: track.cue_duration_sec,
+            genre: track.genre.clone(),
         }
     }
 }

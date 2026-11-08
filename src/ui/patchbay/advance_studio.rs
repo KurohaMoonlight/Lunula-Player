@@ -102,6 +102,7 @@ impl LunulaApp {
 
     /// Minimized bar when the user collapses the telemetry desk to maximize canvas space
     fn render_minimized_desk_strip(&mut self, ui: &mut egui::Ui) {
+        let avail_w = ui.available_width();
         egui::Frame::NONE
             .fill(Color32::from_rgb(15, 23, 42))
             .corner_radius(6.0)
@@ -111,20 +112,23 @@ impl LunulaApp {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("📊 STUDIO TELEMETRY DESK").strong().size(11.0).color(Color32::from_rgb(148, 163, 184)));
 
-                    let status_desc = if let Some(node_id) = self.selected_node {
-                        let title = self.nodes.iter().find(|n| n.id == node_id).map(|n| n.title.as_str()).unwrap_or("Node");
-                        format!("Target: {} (#{}) • Ready for circuit inspection", title, node_id)
-                    } else if let Some(cable_idx) = self.advance_studio_state.selected_cable_idx {
-                        format!("Target: Cable Probe #{} • Real-time wire analysis", cable_idx)
-                    } else {
-                        "Target: Global Cumulative Response • Real-time net curve".to_string()
-                    };
+                    if avail_w >= 640.0 {
+                        let status_desc = if let Some(node_id) = self.selected_node {
+                            let title = self.nodes.iter().find(|n| n.id == node_id).map(|n| n.title.as_str()).unwrap_or("Node");
+                            format!("Target: {} (#{}) • Ready for circuit inspection", title, node_id)
+                        } else if let Some(cable_idx) = self.advance_studio_state.selected_cable_idx {
+                            format!("Target: Cable Probe #{} • Real-time wire analysis", cable_idx)
+                        } else {
+                            "Target: Global Cumulative Response • Real-time net curve".to_string()
+                        };
 
-                    ui.label(egui::RichText::new(status_desc).size(10.5).color(Color32::from_rgb(100, 116, 139)));
+                        ui.label(egui::RichText::new(status_desc).size(10.5).color(Color32::from_rgb(100, 116, 139)));
+                    }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let btn_txt = if avail_w < 550.0 { "▴ Buka Desk" } else { "▴ Buka Telemetry Desk" };
                         let restore_btn = egui::Button::new(
-                            egui::RichText::new("▴ Buka Telemetry Desk")
+                            egui::RichText::new(btn_txt)
                                 .strong()
                                 .size(11.0)
                                 .color(Color32::from_rgb(165, 180, 252)),
@@ -143,30 +147,74 @@ impl LunulaApp {
 
     /// Header bar inside the expanded Telemetry Desk
     fn render_desk_control_bar(&mut self, ui: &mut egui::Ui) {
+        let avail_w = ui.available_width();
+        let is_compact = avail_w < 920.0;
+        let is_ultra_compact = avail_w < 700.0;
+
         ui.horizontal(|ui| {
             // Target Badge
             if let Some(node_id) = self.selected_node {
                 let title = self.nodes.iter().find(|n| n.id == node_id).map(|n| n.title.clone()).unwrap_or_else(|| format!("Node #{}", node_id));
-                ui.label(egui::RichText::new(format!("🔬 INSPECT: {} (#{})", title, node_id)).strong().size(11.0).color(Color32::from_rgb(129, 140, 248)));
+                let badge_txt = if avail_w >= 1050.0 {
+                    format!("🔬 INSPECT: {} (#{})", title, node_id)
+                } else if avail_w >= 850.0 {
+                    let short_t = if title.len() > 14 { format!("{}...", &title[..12]) } else { title.clone() };
+                    format!("🔬 #{} {}", node_id, short_t)
+                } else {
+                    format!("🔬 #{}", node_id)
+                };
+                ui.label(egui::RichText::new(badge_txt).strong().size(11.0).color(Color32::from_rgb(129, 140, 248)))
+                    .on_hover_text(format!("Inspeksi Sirkuit Modul #{} ({})", node_id, title));
             } else if let Some(c_idx) = self.advance_studio_state.selected_cable_idx {
-                ui.label(egui::RichText::new(format!("⚡ CABLE PROBE: Cable #{}", c_idx)).strong().size(11.0).color(Color32::from_rgb(52, 211, 153)));
+                let badge_txt = if avail_w >= 900.0 {
+                    format!("⚡ CABLE PROBE: Cable #{}", c_idx)
+                } else {
+                    format!("⚡ Probe #{}", c_idx)
+                };
+                ui.label(egui::RichText::new(badge_txt).strong().size(11.0).color(Color32::from_rgb(52, 211, 153)));
             } else {
-                ui.label(egui::RichText::new("📈 GLOBAL CUMULATIVE NET CURVE").strong().size(11.0).color(Color32::from_rgb(251, 191, 36)));
+                let badge_txt = if avail_w >= 980.0 {
+                    "📈 GLOBAL CUMULATIVE NET CURVE"
+                } else if avail_w >= 780.0 {
+                    "📈 GLOBAL NET CURVE"
+                } else {
+                    "📈 Global"
+                };
+                ui.label(egui::RichText::new(badge_txt).strong().size(11.0).color(Color32::from_rgb(251, 191, 36)))
+                    .on_hover_text("Respons frekuensi gabungan seluruh rantai sinyal DSP");
             }
 
             ui.separator();
 
             // Telemetry Tabs
             let cur_tab = self.advance_studio_state.telemetry_tab;
-            let tabs = [
-                (TelemetryTab::AutoInspect, "🎯 Auto-Inspect"),
-                (TelemetryTab::CumulativeNet, "📈 Net EQ Curve"),
-                (TelemetryTab::StereoVectorscope, "🌊 Lissajous Scope"),
-                (TelemetryTab::MasterMetering, "🎚️ Master EBU R128"),
-                (TelemetryTab::WaveformHeatmap, "🔥 Saturation Heatmap"),
-            ];
+            let tabs: &[(TelemetryTab, &str, &str)] = if avail_w >= 1080.0 {
+                &[
+                    (TelemetryTab::AutoInspect, "🎯 Auto-Inspect", "Otomatis menginspeksi modul atau kabel yang dipilih"),
+                    (TelemetryTab::CumulativeNet, "📈 Net EQ Curve", "Kurva respons kumulatif gabungan seluruh rantai filter"),
+                    (TelemetryTab::StereoVectorscope, "🌊 Lissajous Scope", "Vectorscope Lissajous stereo real-time dan korelasi fase"),
+                    (TelemetryTab::MasterMetering, "🎚️ Master EBU R128", "Loudness terintegrasi EBU R128, True-Peak dan Dynamic Range"),
+                    (TelemetryTab::WaveformHeatmap, "🔥 Saturation Heatmap", "Heatmap saturasi waveform dan deteksi clipping real-time"),
+                ]
+            } else if avail_w >= 840.0 {
+                &[
+                    (TelemetryTab::AutoInspect, "🎯 Auto", "Otomatis menginspeksi modul/kabel terpilih"),
+                    (TelemetryTab::CumulativeNet, "📈 Net EQ", "Kurva respons kumulatif seluruh filter"),
+                    (TelemetryTab::StereoVectorscope, "🌊 Lissajous", "Lissajous stereo scope & korelasi fase"),
+                    (TelemetryTab::MasterMetering, "🎚️ EBU R128", "EBU R128 LUFS & True-Peak metering"),
+                    (TelemetryTab::WaveformHeatmap, "🔥 Heatmap", "Waveform saturation heatmap & clipping"),
+                ]
+            } else {
+                &[
+                    (TelemetryTab::AutoInspect, "🎯", "Auto-Inspect Modul"),
+                    (TelemetryTab::CumulativeNet, "📈", "Net EQ Curve"),
+                    (TelemetryTab::StereoVectorscope, "🌊", "Lissajous Scope"),
+                    (TelemetryTab::MasterMetering, "🎚️", "Master EBU R128"),
+                    (TelemetryTab::WaveformHeatmap, "🔥", "Saturation Heatmap"),
+                ]
+            };
 
-            for (tab, label) in tabs {
+            for &(tab, label, tip) in tabs {
                 let is_sel = cur_tab == tab;
                 let text = if is_sel {
                     egui::RichText::new(label).strong().size(10.5).color(Color32::WHITE)
@@ -174,7 +222,7 @@ impl LunulaApp {
                     egui::RichText::new(label).size(10.5).color(Color32::from_rgb(148, 163, 184))
                 };
                 let bg = if is_sel { Color32::from_rgb(79, 70, 229) } else { Color32::from_rgb(24, 32, 47) };
-                if ui.add(egui::Button::new(text).fill(bg).corner_radius(4.0)).clicked() {
+                if ui.add(egui::Button::new(text).fill(bg).corner_radius(4.0)).on_hover_text(tip).clicked() {
                     self.advance_studio_state.telemetry_tab = tab;
                 }
             }
@@ -182,9 +230,17 @@ impl LunulaApp {
             // Right-aligned controls (Sleek dark theme buttons with responsive hover feedback)
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // 1. Sembunyikan / Minimize Button
+                let min_lbl = if is_ultra_compact {
+                    "▾"
+                } else if is_compact {
+                    "▾ Tutup"
+                } else {
+                    "▾ Sembunyikan Desk"
+                };
                 let min_btn = egui::Button::new(
-                    egui::RichText::new("▾ Sembunyikan Desk")
+                    egui::RichText::new(min_lbl)
                         .size(10.5)
+                        .strong()
                         .color(Color32::from_rgb(203, 213, 225)),
                 )
                 .fill(Color32::from_rgb(24, 32, 47))
@@ -202,16 +258,19 @@ impl LunulaApp {
 
                 // 2. Freeze Toggle Button
                 let is_frozen = self.advance_studio_state.freeze_analyzer;
-                let (freeze_lbl, freeze_bg, freeze_stroke, freeze_fg) = if is_frozen {
+                let freeze_lbl = if is_frozen {
+                    if is_ultra_compact { "❄ Beku" } else { "❄ Analyzer Beku" }
+                } else {
+                    if is_ultra_compact { "❄ Live" } else { "❄ Freeze" }
+                };
+                let (freeze_bg, freeze_stroke, freeze_fg) = if is_frozen {
                     (
-                        "❄ Analyzer Beku",
                         Color32::from_rgba_premultiplied(14, 165, 233, 40),
                         Color32::from_rgb(56, 189, 248),
                         Color32::from_rgb(186, 230, 253),
                     )
                 } else {
                     (
-                        "❄ Freeze",
                         Color32::from_rgb(24, 32, 47),
                         Color32::from_rgb(51, 65, 85),
                         Color32::from_rgb(148, 163, 184),
@@ -241,8 +300,15 @@ impl LunulaApp {
 
                 // 3. Deselect Target Button if a node or cable is selected
                 if self.selected_node.is_some() || self.advance_studio_state.selected_cable_idx.is_some() {
+                    let reset_lbl = if is_ultra_compact {
+                        "✕"
+                    } else if is_compact {
+                        "✕ Reset"
+                    } else {
+                        "✕ Reset Target"
+                    };
                     let reset_btn = egui::Button::new(
-                        egui::RichText::new("✕ Reset Target")
+                        egui::RichText::new(reset_lbl)
                             .size(10.5)
                             .strong()
                             .color(Color32::from_rgb(252, 165, 165)),
@@ -299,9 +365,11 @@ impl LunulaApp {
 
     /// Circuit inspector for Tube Warmer 12AX7: Non-linear transfer curve + animated harmonic spectrum (FFT)
     fn draw_tube_warmer_inspector(&self, painter: &egui::Painter, rect: Rect, _node_id: usize, t: f32) {
-        let left_w = (rect.width() * 0.48).clamp(240.0, 480.0);
-        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(left_w - 15.0, rect.height() - 20.0));
-        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + left_w + 5.0, rect.min.y + 10.0), Vec2::new(rect.width() - left_w - 15.0, rect.height() - 20.0));
+        let avail_w = rect.width();
+        let c2_w = (avail_w * 0.32).clamp(260.0, 360.0).min(avail_w * 0.48);
+        let c1_w = (avail_w - c2_w - 20.0).max(180.0);
+        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(c1_w, rect.height() - 20.0));
+        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + c1_w + 15.0, rect.min.y + 10.0), Vec2::new(avail_w - c1_w - 25.0, rect.height() - 20.0));
 
         // Column 1: Non-linear transfer curve (Vin vs Vout)
         painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
@@ -385,8 +453,14 @@ impl LunulaApp {
             painter.line_segment([pair[0], pair[1]], Stroke::new(0.8, Color32::from_rgba_premultiplied(100, 116, 139, 80)));
         }
 
-        // Metrik readout
-        let metric_text = "THD: 1.4% • Even H2: -18.2 dB (Kehangatan Analog) • Bias: -1.2V DC";
+        // Metrik readout (responsive to column width)
+        let metric_text = if c2_rect.width() >= 330.0 {
+            "THD: 1.4% • Even H2: -18.2 dB (Kehangatan Analog) • Bias: -1.2V DC"
+        } else if c2_rect.width() >= 240.0 {
+            "THD: 1.4% • H2: -18.2 dB • Bias: -1.2V"
+        } else {
+            "THD: 1.4% • H2: -18dB"
+        };
         painter.text(c2_rect.min + Vec2::new(10.0, c2_rect.height() - 10.0), egui::Align2::LEFT_BOTTOM, metric_text, egui::FontId::monospace(9.0), Color32::from_rgb(52, 211, 153));
     }
 
@@ -395,11 +469,7 @@ impl LunulaApp {
         let padding = 8.0;
         let gap = 10.0;
         let avail_w = (rect.width() - (padding * 2.0) - gap).max(100.0);
-        let c2_w = if avail_w < 640.0 {
-            (avail_w * 0.48).max(160.0)
-        } else {
-            (avail_w * 0.38).clamp(320.0, 420.0)
-        };
+        let c2_w = (avail_w * 0.32).clamp(270.0, 350.0).min(avail_w * 0.48);
         let c1_w = avail_w - c2_w;
         let c1_rect = Rect::from_min_size(rect.min + Vec2::new(padding, padding), Vec2::new(c1_w, rect.height() - (padding * 2.0)));
         let c2_rect = Rect::from_min_size(Pos2::new(c1_rect.max.x + gap, rect.min.y + padding), Vec2::new(c2_w, rect.height() - (padding * 2.0)));
@@ -420,7 +490,12 @@ impl LunulaApp {
         painter.rect_stroke(c1_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
 
         let slope_lbl = match current_slope { 48 => "-48 dB/oct (8-Pole)", 24 => "-24 dB/oct (4-Pole)", _ => "-12 dB/oct (2-Pole)" };
-        painter.text(c1_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, format!("📉 LOW-PASS ROLL-OFF ({})", slope_lbl), egui::FontId::proportional(10.5), accent_col);
+        let title_txt = if c1_w < 400.0 {
+            format!("📉 LOW-PASS (-{} dB/oct)", current_slope)
+        } else {
+            format!("📉 LOW-PASS ROLL-OFF ({})", slope_lbl)
+        };
+        painter.text(c1_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, title_txt, egui::FontId::proportional(10.5), accent_col);
 
         let g_left = c1_rect.min.x + 36.0;
         let g_right = c1_rect.max.x - 12.0;
@@ -497,12 +572,14 @@ impl LunulaApp {
         painter.rect_stroke(hud_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(51, 65, 85)), egui::StrokeKind::Inside);
         let q_note = if current_fringe > 1.0 { format!("(Peak +{:.1}dB)", (current_fringe - 1.0) * 4.0) } else { "(Butterworth Flat)".to_string() };
         let hw = hud_rect.width();
-        let hud_txt = if hw >= 620.0 {
+        let hud_txt = if hw >= 680.0 {
             format!("📡 Cutoff: {}   •   📐 Slope: -{} dB/oct   •   ⚡ Q: {:.2} {}   •   🛡️ Atenuasi @ 1-Oct: -{}.0 dB", freq_str, current_slope, current_fringe, q_note, current_slope)
-        } else if hw >= 420.0 {
+        } else if hw >= 480.0 {
             format!("📡 Cutoff: {}   •   📐 -{} dB/oct   •   ⚡ Q: {:.2}   •   🛡️ -{}.0 dB", freq_str, current_slope, current_fringe, current_slope)
-        } else {
+        } else if hw >= 320.0 {
             format!("📡 {}   •   -{} dB/oct   •   Q: {:.2}", freq_str, current_slope, current_fringe)
+        } else {
+            format!("{} -{}dB", freq_str, current_slope)
         };
         painter.text(
             hud_rect.center(),
@@ -523,26 +600,26 @@ impl LunulaApp {
         let mut new_slope = current_slope;
         let mut new_fringe = current_fringe;
 
-        child_ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("CUTOFF FREKUENSI:").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
-            ui.label(egui::RichText::new(&freq_str).strong().size(13.5).color(accent_col));
-            ui.label(egui::RichText::new(format!("• Slope: -{} dB/oct", current_slope)).strong().size(11.0).color(Color32::WHITE));
+        child_ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("CUTOFF FREKUENSI:").strong().size(10.5).color(Color32::from_rgb(241, 245, 249)));
+            ui.label(egui::RichText::new(&freq_str).strong().size(13.0).color(accent_col));
+            ui.label(egui::RichText::new(format!("• -{} dB/oct", current_slope)).strong().size(10.0).color(Color32::WHITE));
         });
 
         let mut log_val = (new_cutoff / 20.0).log10();
         let log_slider = egui::Slider::new(&mut log_val, 0.0..=3.0).show_value(false);
-        if child_ui.add_sized(Vec2::new(controls_rect.width(), 16.0), log_slider).changed() {
+        if child_ui.add_sized(Vec2::new(child_ui.available_width(), 16.0), log_slider).changed() {
             new_cutoff = (20.0 * 10.0_f32.powf(log_val)).clamp(20.0, 20000.0);
         }
 
-        child_ui.horizontal(|ui| {
+        child_ui.horizontal_wrapped(|ui| {
             let presets = [("300 Hz", 300.0), ("800 Hz", 800.0), ("2.5 kHz", 2500.0), ("8.0 kHz", 8000.0)];
             for (name, val) in presets {
                 let is_sel = (new_cutoff - val).abs() < 20.0;
                 let bg = if is_sel { accent_col } else { Color32::from_rgb(30, 41, 59) };
                 let text_col = if is_sel { Color32::from_rgb(15, 23, 42) } else { Color32::from_rgb(241, 245, 249) };
                 let stroke_col = if is_sel { Color32::WHITE } else { Color32::from_rgb(100, 116, 139) };
-                let btn = egui::Button::new(egui::RichText::new(name).size(10.5).strong().color(text_col))
+                let btn = egui::Button::new(egui::RichText::new(name).size(10.0).strong().color(text_col))
                     .fill(bg)
                     .stroke(Stroke::new(1.2, stroke_col))
                     .corner_radius(4.0);
@@ -553,15 +630,15 @@ impl LunulaApp {
         });
 
         child_ui.add_space(5.0);
-        child_ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Kemiringan Slope:").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
+        child_ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Slope:").strong().size(10.5).color(Color32::from_rgb(241, 245, 249)));
             for &sl in &[12, 24, 48] {
                 let lbl = format!("-{} dB/oct", sl);
                 let is_sel = new_slope == sl;
                 let bg = if is_sel { accent_col } else { Color32::from_rgb(30, 41, 59) };
                 let text_col = if is_sel { Color32::from_rgb(15, 23, 42) } else { Color32::from_rgb(241, 245, 249) };
                 let stroke_col = if is_sel { Color32::WHITE } else { Color32::from_rgb(100, 116, 139) };
-                let btn = egui::Button::new(egui::RichText::new(lbl).size(10.5).strong().color(text_col))
+                let btn = egui::Button::new(egui::RichText::new(lbl).size(10.0).strong().color(text_col))
                     .fill(bg)
                     .stroke(Stroke::new(1.2, stroke_col))
                     .corner_radius(4.0);
@@ -572,13 +649,13 @@ impl LunulaApp {
         });
 
         child_ui.add_space(5.0);
-        child_ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Fringe Q (Resonansi):").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
+        child_ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Fringe Q:").strong().size(10.5).color(Color32::from_rgb(241, 245, 249)));
             let q_desc = if new_fringe > 1.2 { "(Peak Punchy)" } else if new_fringe >= 0.70 { "(Butterworth)" } else { "(Gentle)" };
-            ui.label(egui::RichText::new(format!("{:.2} {}", new_fringe, q_desc)).strong().size(11.0).color(accent_col));
+            ui.label(egui::RichText::new(format!("{:.2} {}", new_fringe, q_desc)).strong().size(10.5).color(accent_col));
         });
         let q_slider = egui::Slider::new(&mut new_fringe, 0.20..=4.00).show_value(false);
-        child_ui.add_sized(Vec2::new(controls_rect.width(), 16.0), q_slider);
+        child_ui.add_sized(Vec2::new(child_ui.available_width(), 16.0), q_slider);
 
         // Apply parameter updates
         let cutoff_changed = (new_cutoff - current_cutoff).abs() > 1.0;
@@ -604,11 +681,7 @@ impl LunulaApp {
         let padding = 8.0;
         let gap = 10.0;
         let avail_w = (rect.width() - (padding * 2.0) - gap).max(100.0);
-        let c2_w = if avail_w < 640.0 {
-            (avail_w * 0.48).max(160.0)
-        } else {
-            (avail_w * 0.38).clamp(320.0, 420.0)
-        };
+        let c2_w = (avail_w * 0.32).clamp(270.0, 350.0).min(avail_w * 0.48);
         let c1_w = avail_w - c2_w;
         let c1_rect = Rect::from_min_size(rect.min + Vec2::new(padding, padding), Vec2::new(c1_w, rect.height() - (padding * 2.0)));
         let c2_rect = Rect::from_min_size(Pos2::new(c1_rect.max.x + gap, rect.min.y + padding), Vec2::new(c2_w, rect.height() - (padding * 2.0)));
@@ -629,7 +702,12 @@ impl LunulaApp {
         painter.rect_stroke(c1_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
 
         let slope_lbl = match current_slope { 48 => "+48 dB/oct (8-Pole)", 24 => "+24 dB/oct (4-Pole)", _ => "+12 dB/oct (2-Pole)" };
-        painter.text(c1_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, format!("🏔️ HIGH-PASS ROLL-OFF ({})", slope_lbl), egui::FontId::proportional(10.5), accent_col);
+        let title_txt = if c1_w < 400.0 {
+            format!("🏔️ HIGH-PASS (+{} dB/oct)", current_slope)
+        } else {
+            format!("🏔️ HIGH-PASS ROLL-OFF ({})", slope_lbl)
+        };
+        painter.text(c1_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, title_txt, egui::FontId::proportional(10.5), accent_col);
 
         let g_left = c1_rect.min.x + 36.0;
         let g_right = c1_rect.max.x - 12.0;
@@ -706,12 +784,14 @@ impl LunulaApp {
         painter.rect_stroke(hud_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(51, 65, 85)), egui::StrokeKind::Inside);
         let q_note = if current_fringe > 1.0 { format!("(Peak +{:.1}dB)", (current_fringe - 1.0) * 4.0) } else { "(Sub-Sonic Clean)".to_string() };
         let hw = hud_rect.width();
-        let hud_txt = if hw >= 620.0 {
+        let hud_txt = if hw >= 680.0 {
             format!("📡 Cutoff: {}   •   📐 Slope: +{} dB/oct   •   ⚡ Q: {:.2} {}   •   🛡️ Reduksi @ 1/2-Oct: -{}.0 dB", freq_str, current_slope, current_fringe, q_note, current_slope)
-        } else if hw >= 420.0 {
+        } else if hw >= 480.0 {
             format!("📡 Cutoff: {}   •   📐 +{} dB/oct   •   ⚡ Q: {:.2}   •   🛡️ -{}.0 dB", freq_str, current_slope, current_fringe, current_slope)
-        } else {
+        } else if hw >= 320.0 {
             format!("📡 {}   •   +{} dB/oct   •   Q: {:.2}", freq_str, current_slope, current_fringe)
+        } else {
+            format!("{} +{}dB", freq_str, current_slope)
         };
         painter.text(
             hud_rect.center(),
@@ -732,26 +812,26 @@ impl LunulaApp {
         let mut new_slope = current_slope;
         let mut new_fringe = current_fringe;
 
-        child_ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("CUTOFF SUB-BASS:").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
-            ui.label(egui::RichText::new(&freq_str).strong().size(13.5).color(accent_col));
-            ui.label(egui::RichText::new(format!("• Slope: +{} dB/oct", current_slope)).strong().size(11.0).color(Color32::WHITE));
+        child_ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("CUTOFF SUB-BASS:").strong().size(10.5).color(Color32::from_rgb(241, 245, 249)));
+            ui.label(egui::RichText::new(&freq_str).strong().size(13.0).color(accent_col));
+            ui.label(egui::RichText::new(format!("• +{} dB/oct", current_slope)).strong().size(10.0).color(Color32::WHITE));
         });
 
         let mut log_val = (new_cutoff / 20.0).log10();
         let log_slider = egui::Slider::new(&mut log_val, 0.0..=3.0).show_value(false);
-        if child_ui.add_sized(Vec2::new(controls_rect.width(), 16.0), log_slider).changed() {
+        if child_ui.add_sized(Vec2::new(child_ui.available_width(), 16.0), log_slider).changed() {
             new_cutoff = (20.0 * 10.0_f32.powf(log_val)).clamp(20.0, 20000.0);
         }
 
-        child_ui.horizontal(|ui| {
+        child_ui.horizontal_wrapped(|ui| {
             let presets = [("40 Hz", 40.0), ("80 Hz (Vocal)", 80.0), ("160 Hz", 160.0), ("500 Hz", 500.0)];
             for (name, val) in presets {
                 let is_sel = (new_cutoff - val).abs() < 5.0;
                 let bg = if is_sel { accent_col } else { Color32::from_rgb(30, 41, 59) };
                 let text_col = if is_sel { Color32::from_rgb(15, 23, 42) } else { Color32::from_rgb(241, 245, 249) };
                 let stroke_col = if is_sel { Color32::WHITE } else { Color32::from_rgb(100, 116, 139) };
-                let btn = egui::Button::new(egui::RichText::new(name).size(10.5).strong().color(text_col))
+                let btn = egui::Button::new(egui::RichText::new(name).size(10.0).strong().color(text_col))
                     .fill(bg)
                     .stroke(Stroke::new(1.2, stroke_col))
                     .corner_radius(4.0);
@@ -762,15 +842,15 @@ impl LunulaApp {
         });
 
         child_ui.add_space(5.0);
-        child_ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Kemiringan Slope:").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
+        child_ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Slope:").strong().size(10.5).color(Color32::from_rgb(241, 245, 249)));
             for &sl in &[12, 24, 48] {
                 let lbl = format!("+{} dB/oct", sl);
                 let is_sel = new_slope == sl;
                 let bg = if is_sel { accent_col } else { Color32::from_rgb(30, 41, 59) };
                 let text_col = if is_sel { Color32::from_rgb(15, 23, 42) } else { Color32::from_rgb(241, 245, 249) };
                 let stroke_col = if is_sel { Color32::WHITE } else { Color32::from_rgb(100, 116, 139) };
-                let btn = egui::Button::new(egui::RichText::new(lbl).size(10.5).strong().color(text_col))
+                let btn = egui::Button::new(egui::RichText::new(lbl).size(10.0).strong().color(text_col))
                     .fill(bg)
                     .stroke(Stroke::new(1.2, stroke_col))
                     .corner_radius(4.0);
@@ -781,13 +861,13 @@ impl LunulaApp {
         });
 
         child_ui.add_space(5.0);
-        child_ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Fringe Q (Resonansi):").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
+        child_ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Fringe Q:").strong().size(10.5).color(Color32::from_rgb(241, 245, 249)));
             let q_desc = if new_fringe > 1.2 { "(Peak Punchy)" } else if new_fringe >= 0.70 { "(Butterworth)" } else { "(Sub-Sonic Clean)" };
-            ui.label(egui::RichText::new(format!("{:.2} {}", new_fringe, q_desc)).strong().size(11.0).color(accent_col));
+            ui.label(egui::RichText::new(format!("{:.2} {}", new_fringe, q_desc)).strong().size(10.5).color(accent_col));
         });
         let q_slider = egui::Slider::new(&mut new_fringe, 0.20..=4.00).show_value(false);
-        child_ui.add_sized(Vec2::new(controls_rect.width(), 16.0), q_slider);
+        child_ui.add_sized(Vec2::new(child_ui.available_width(), 16.0), q_slider);
 
         let cutoff_changed = (new_cutoff - current_cutoff).abs() > 1.0;
         let slope_changed = new_slope != current_slope;
@@ -812,11 +892,7 @@ impl LunulaApp {
         let padding = 8.0;
         let gap = 10.0;
         let avail_w = (rect.width() - (padding * 2.0) - gap).max(100.0);
-        let c2_w = if avail_w < 640.0 {
-            (avail_w * 0.48).max(160.0)
-        } else {
-            (avail_w * 0.38).clamp(320.0, 420.0)
-        };
+        let c2_w = (avail_w * 0.32).clamp(270.0, 350.0).min(avail_w * 0.48);
         let c1_w = avail_w - c2_w;
         let c1_rect = Rect::from_min_size(rect.min + Vec2::new(padding, padding), Vec2::new(c1_w, rect.height() - (padding * 2.0)));
         let c2_rect = Rect::from_min_size(Pos2::new(c1_rect.max.x + gap, rect.min.y + padding), Vec2::new(c2_w, rect.height() - (padding * 2.0)));
@@ -837,7 +913,12 @@ impl LunulaApp {
         painter.rect_stroke(c1_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
 
         let slope_lbl = if current_slope == 24 { "4-Pole (24 dB/oct)" } else { "2-Pole (12 dB/oct)" };
-        painter.text(c1_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, format!("🎯 BAND-PASS (0 dB PEAK GAIN • {})", slope_lbl), egui::FontId::proportional(10.5), accent_col);
+        let title_txt = if c1_w < 400.0 {
+            format!("🎯 BAND-PASS (±{} dB/oct)", current_slope)
+        } else {
+            format!("🎯 BAND-PASS (0 dB PEAK GAIN • {})", slope_lbl)
+        };
+        painter.text(c1_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, title_txt, egui::FontId::proportional(10.5), accent_col);
 
         let g_left = c1_rect.min.x + 36.0;
         let g_right = c1_rect.max.x - 12.0;
@@ -896,12 +977,14 @@ impl LunulaApp {
         painter.rect_stroke(hud_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(51, 65, 85)), egui::StrokeKind::Inside);
         let bw_oct = 1.0 / current_fringe.max(0.1);
         let hw = hud_rect.width();
-        let hud_txt = if hw >= 620.0 {
+        let hud_txt = if hw >= 680.0 {
             format!("📡 Pusat: {}   •   📐 Kemiringan: ±{} dB/oct   •   ⚡ Q: {:.2} (BW: {:.2} Oct)   •   🛡️ 0.0 dB Normal", freq_str, current_slope, current_fringe, bw_oct)
-        } else if hw >= 420.0 {
+        } else if hw >= 480.0 {
             format!("📡 Pusat: {}   •   📐 ±{} dB/oct   •   ⚡ Q: {:.2} (BW: {:.2} Oct)", freq_str, current_slope, current_fringe, bw_oct)
-        } else {
+        } else if hw >= 320.0 {
             format!("📡 {}   •   ±{} dB/oct   •   Q: {:.2}", freq_str, current_slope, current_fringe)
+        } else {
+            format!("{} ±{}dB", freq_str, current_slope)
         };
         painter.text(
             hud_rect.center(),
@@ -922,26 +1005,26 @@ impl LunulaApp {
         let mut new_slope = current_slope;
         let mut new_fringe = current_fringe;
 
-        child_ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("FREKUENSI PUSAT (f0):").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
-            ui.label(egui::RichText::new(&freq_str).strong().size(13.5).color(accent_col));
-            ui.label(egui::RichText::new(format!("• Slope: ±{} dB/oct", current_slope)).strong().size(11.0).color(Color32::WHITE));
+        child_ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("FREKUENSI PUSAT (f0):").strong().size(10.5).color(Color32::from_rgb(241, 245, 249)));
+            ui.label(egui::RichText::new(&freq_str).strong().size(13.0).color(accent_col));
+            ui.label(egui::RichText::new(format!("• ±{} dB/oct", current_slope)).strong().size(10.0).color(Color32::WHITE));
         });
 
         let mut log_val = (new_center / 20.0).log10();
         let log_slider = egui::Slider::new(&mut log_val, 0.0..=3.0).show_value(false);
-        if child_ui.add_sized(Vec2::new(controls_rect.width(), 16.0), log_slider).changed() {
+        if child_ui.add_sized(Vec2::new(child_ui.available_width(), 16.0), log_slider).changed() {
             new_center = (20.0 * 10.0_f32.powf(log_val)).clamp(20.0, 20000.0);
         }
 
-        child_ui.horizontal(|ui| {
+        child_ui.horizontal_wrapped(|ui| {
             let presets = [("300 Hz", 300.0), ("1.0 kHz (Vocal)", 1000.0), ("3.0 kHz", 3000.0), ("8.0 kHz", 8000.0)];
             for (name, val) in presets {
                 let is_sel = (new_center - val).abs() < 25.0;
                 let bg = if is_sel { accent_col } else { Color32::from_rgb(30, 41, 59) };
                 let text_col = if is_sel { Color32::from_rgb(15, 23, 42) } else { Color32::from_rgb(241, 245, 249) };
                 let stroke_col = if is_sel { Color32::WHITE } else { Color32::from_rgb(100, 116, 139) };
-                let btn = egui::Button::new(egui::RichText::new(name).size(10.5).strong().color(text_col))
+                let btn = egui::Button::new(egui::RichText::new(name).size(10.0).strong().color(text_col))
                     .fill(bg)
                     .stroke(Stroke::new(1.2, stroke_col))
                     .corner_radius(4.0);
@@ -952,15 +1035,15 @@ impl LunulaApp {
         });
 
         child_ui.add_space(5.0);
-        child_ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Kemiringan Slope:").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
+        child_ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Slope:").strong().size(10.5).color(Color32::from_rgb(241, 245, 249)));
             for &sl in &[12, 24] {
                 let lbl = format!("±{} dB/oct", sl);
                 let is_sel = new_slope == sl;
                 let bg = if is_sel { accent_col } else { Color32::from_rgb(30, 41, 59) };
                 let text_col = if is_sel { Color32::from_rgb(15, 23, 42) } else { Color32::from_rgb(241, 245, 249) };
                 let stroke_col = if is_sel { Color32::WHITE } else { Color32::from_rgb(100, 116, 139) };
-                let btn = egui::Button::new(egui::RichText::new(lbl).size(10.5).strong().color(text_col))
+                let btn = egui::Button::new(egui::RichText::new(lbl).size(10.0).strong().color(text_col))
                     .fill(bg)
                     .stroke(Stroke::new(1.2, stroke_col))
                     .corner_radius(4.0);
@@ -971,13 +1054,13 @@ impl LunulaApp {
         });
 
         child_ui.add_space(5.0);
-        child_ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Fringe Q / Bandwidth:").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
+        child_ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Fringe Q / BW:").strong().size(10.5).color(Color32::from_rgb(241, 245, 249)));
             let bw_val = 1.0 / new_fringe.max(0.1);
-            ui.label(egui::RichText::new(format!("{:.2} (BW: {:.2} Oct)", new_fringe, bw_val)).strong().size(11.0).color(accent_col));
+            ui.label(egui::RichText::new(format!("{:.2} ({:.2} Oct)", new_fringe, bw_val)).strong().size(10.5).color(accent_col));
         });
         let q_slider = egui::Slider::new(&mut new_fringe, 0.20..=10.00).show_value(false);
-        child_ui.add_sized(Vec2::new(controls_rect.width(), 16.0), q_slider);
+        child_ui.add_sized(Vec2::new(child_ui.available_width(), 16.0), q_slider);
 
         let center_changed = (new_center - current_center).abs() > 1.0;
         let slope_changed = new_slope != current_slope;
@@ -1004,13 +1087,9 @@ impl LunulaApp {
         let avail_w = (rect.width() - (padding * 2.0) - gap).max(100.0);
 
         // Fully responsive column calculation:
-        // Column 2 (controls) maintains a comfortable 320px..=420px width, while Column 1 (graph)
+        // Column 2 (controls) maintains a comfortable 270px..=350px width, while Column 1 (graph)
         // dynamically fills all remaining width, preventing graph cramping on wide/ultrawide displays.
-        let c2_w = if avail_w < 640.0 {
-            (avail_w * 0.48).max(160.0)
-        } else {
-            (avail_w * 0.38).clamp(320.0, 420.0)
-        };
+        let c2_w = (avail_w * 0.32).clamp(270.0, 350.0).min(avail_w * 0.48);
         let c1_w = avail_w - c2_w;
 
         let c1_rect = Rect::from_min_size(rect.min + Vec2::new(padding, padding), Vec2::new(c1_w, rect.height() - (padding * 2.0)));
@@ -1026,7 +1105,14 @@ impl LunulaApp {
         painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
         painter.rect_stroke(c1_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
 
-        painter.text(c1_rect.min + Vec2::new(10.0, 9.0), egui::Align2::LEFT_TOP, "✂️ LINKWITZ-RILEY LR4 CROSSOVER (-24 dB/oct)", egui::FontId::proportional(10.5), accent_col);
+        let title_txt = if c1_w < 380.0 {
+            "✂️ LR4 CROSSOVER (-24 dB)"
+        } else if c1_w < 500.0 {
+            "✂️ LR4 CROSSOVER (-24 dB/oct)"
+        } else {
+            "✂️ LINKWITZ-RILEY LR4 CROSSOVER (-24 dB/oct)"
+        };
+        painter.text(c1_rect.min + Vec2::new(10.0, 9.0), egui::Align2::LEFT_TOP, title_txt, egui::FontId::proportional(10.5), accent_col);
 
         let g_left = c1_rect.min.x + 36.0;
         let g_right = c1_rect.max.x - 14.0;
@@ -1129,47 +1215,54 @@ impl LunulaApp {
         painter.rect_stroke(hud_rect, 4.0, Stroke::new(0.8, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
 
         let hw = hud_rect.width();
-        let (item_xover, item_slope, item_phase, item_sum) = if hw >= 620.0 {
+        let (item_xover, item_slope, item_phase, item_sum) = if hw >= 680.0 {
             (
                 format!("📡 Titik X-Over: {} (-6dB)", freq_str),
                 "📐 Slope: LR4 24 dB/oct".to_string(),
-                if is_inverted { "⚡ Fasa: 180° Invert (Polaritas Balik)" } else { "⚡ Fasa: 0° Net (In-Phase 360°)" }.to_string(),
+                if is_inverted { "⚡ Fasa: 180° Invert" } else { "⚡ Fasa: 0° In-Phase" }.to_string(),
                 "✨ Sum: 0.0 dB (Flat)".to_string(),
             )
-        } else if hw >= 450.0 {
+        } else if hw >= 480.0 {
             (
                 format!("📡 X-Over: {}", freq_str),
-                "📐 LR4 24 dB/oct".to_string(),
-                if is_inverted { "⚡ Fasa: 180° Invert" } else { "⚡ Fasa: 0° In-Phase" }.to_string(),
-                "✨ Sum: 0.0 dB Flat".to_string(),
-            )
-        } else if hw >= 320.0 {
-            (
-                format!("📡 {}", freq_str),
                 "📐 LR4 24dB".to_string(),
                 if is_inverted { "⚡ 180° Inv" } else { "⚡ 0° In-Phase" }.to_string(),
                 "Sum: 0.0 dB".to_string(),
             )
-        } else {
+        } else if hw >= 320.0 {
             (
                 format!("📡 {}", freq_str),
                 "LR4".to_string(),
                 if is_inverted { "180°" } else { "0°" }.to_string(),
+                "0.0 dB".to_string(),
+            )
+        } else {
+            (
+                freq_str.to_string(),
+                String::new(),
+                String::new(),
                 "0 dB".to_string(),
             )
         };
 
         let mut hud_ui = ui.new_child(egui::UiBuilder::new().max_rect(hud_rect));
+        hud_ui.set_clip_rect(hud_rect);
         hud_ui.with_layout(egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Center), |ui| {
-            ui.spacing_mut().item_spacing = Vec2::new(6.0, 0.0);
+            ui.spacing_mut().item_spacing = Vec2::new(5.0, 0.0);
             ui.label(egui::RichText::new(&item_xover).size(9.0).monospace().color(Color32::from_rgb(192, 132, 252)));
-            ui.label(egui::RichText::new("•").size(8.0).color(Color32::from_rgb(71, 85, 105)));
-            ui.label(egui::RichText::new(&item_slope).size(9.0).monospace().color(Color32::from_rgb(52, 211, 153)));
-            ui.label(egui::RichText::new("•").size(8.0).color(Color32::from_rgb(71, 85, 105)));
-            let phase_col = if is_inverted { Color32::from_rgb(248, 113, 113) } else { Color32::from_rgb(56, 189, 248) };
-            ui.label(egui::RichText::new(&item_phase).size(9.0).monospace().color(phase_col));
-            ui.label(egui::RichText::new("•").size(8.0).color(Color32::from_rgb(71, 85, 105)));
-            ui.label(egui::RichText::new(&item_sum).size(9.0).monospace().strong().color(Color32::from_rgb(251, 191, 36)));
+            if !item_slope.is_empty() {
+                ui.label(egui::RichText::new("•").size(8.0).color(Color32::from_rgb(71, 85, 105)));
+                ui.label(egui::RichText::new(&item_slope).size(9.0).monospace().color(Color32::from_rgb(52, 211, 153)));
+            }
+            if !item_phase.is_empty() {
+                ui.label(egui::RichText::new("•").size(8.0).color(Color32::from_rgb(71, 85, 105)));
+                let phase_col = if is_inverted { Color32::from_rgb(248, 113, 113) } else { Color32::from_rgb(56, 189, 248) };
+                ui.label(egui::RichText::new(&item_phase).size(9.0).monospace().color(phase_col));
+            }
+            if !item_sum.is_empty() {
+                ui.label(egui::RichText::new("•").size(8.0).color(Color32::from_rgb(71, 85, 105)));
+                ui.label(egui::RichText::new(&item_sum).size(9.0).monospace().strong().color(Color32::from_rgb(251, 191, 36)));
+            }
         });
 
         // Column 2: Controls
@@ -1182,10 +1275,10 @@ impl LunulaApp {
         let mut new_xover = current_xover;
         let mut new_invert = is_inverted;
 
-        child_ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("FREKUENSI CROSSOVER:").strong().size(11.0).color(Color32::from_rgb(241, 245, 249)));
-            ui.label(egui::RichText::new(&freq_str).strong().size(13.5).color(accent_col));
-            ui.label(egui::RichText::new("• LR4 24 dB/oct").strong().size(10.5).color(Color32::from_rgb(148, 163, 184)));
+        child_ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("FREKUENSI CROSSOVER:").strong().size(10.5).color(Color32::from_rgb(241, 245, 249)));
+            ui.label(egui::RichText::new(&freq_str).strong().size(13.0).color(accent_col));
+            ui.label(egui::RichText::new("• LR4 24 dB/oct").strong().size(10.0).color(Color32::from_rgb(148, 163, 184)));
         });
 
         let mut log_val = (new_xover / 20.0).log10();
@@ -1197,7 +1290,7 @@ impl LunulaApp {
         child_ui.horizontal_wrapped(|ui| {
             let presets = [("80 Hz Sub", 80.0), ("300 Hz Bass", 300.0), ("500 Hz Mid", 500.0), ("2.5 kHz Treble", 2500.0)];
             let avail_w = ui.available_width();
-            let btn_w = ((avail_w - 18.0) / 4.0).clamp(65.0, 95.0);
+            let btn_w = if avail_w < 260.0 { (avail_w - 6.0) / 2.0 } else { ((avail_w - 18.0) / 4.0).clamp(62.0, 95.0) };
             for (name, val) in presets {
                 let is_sel = (new_xover - val).abs() < 20.0;
                 let bg = if is_sel { accent_col } else { Color32::from_rgb(24, 32, 47) };
@@ -1216,12 +1309,13 @@ impl LunulaApp {
 
         child_ui.add_space(4.0);
         child_ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("Fasa High-Pass:").strong().size(10.5).color(Color32::from_rgb(241, 245, 249)));
+            ui.label(egui::RichText::new("Fasa HP:").strong().size(10.5).color(Color32::from_rgb(241, 245, 249)));
             let is_norm_sel = !new_invert;
             let bg_norm = if is_norm_sel { Color32::from_rgb(79, 70, 229) } else { Color32::from_rgb(24, 32, 47) };
             let txt_norm = if is_norm_sel { Color32::WHITE } else { Color32::from_rgb(148, 163, 184) };
             let stroke_norm = if is_norm_sel { Color32::from_rgb(129, 140, 248) } else { Color32::from_rgb(51, 65, 85) };
-            let btn_norm = egui::Button::new(egui::RichText::new("Normal (0° In-Phase)").size(10.0).strong().color(txt_norm))
+            let norm_lbl = if ui.available_width() < 210.0 { "0° In-Phase" } else { "Normal (0° In-Phase)" };
+            let btn_norm = egui::Button::new(egui::RichText::new(norm_lbl).size(10.0).strong().color(txt_norm))
                 .fill(bg_norm)
                 .stroke(Stroke::new(1.0, stroke_norm))
                 .corner_radius(4.0);
@@ -1233,7 +1327,8 @@ impl LunulaApp {
             let bg_inv = if is_inv_sel { Color32::from_rgb(225, 29, 72) } else { Color32::from_rgb(24, 32, 47) };
             let txt_inv = if is_inv_sel { Color32::WHITE } else { Color32::from_rgb(148, 163, 184) };
             let stroke_inv = if is_inv_sel { Color32::from_rgb(251, 113, 133) } else { Color32::from_rgb(51, 65, 85) };
-            let btn_inv = egui::Button::new(egui::RichText::new("Invert (180° Anti-Phase)").size(10.0).strong().color(txt_inv))
+            let inv_lbl = if ui.available_width() < 210.0 { "180° Invert" } else { "Invert (180° Anti-Phase)" };
+            let btn_inv = egui::Button::new(egui::RichText::new(inv_lbl).size(10.0).strong().color(txt_inv))
                 .fill(bg_inv)
                 .stroke(Stroke::new(1.0, stroke_inv))
                 .corner_radius(4.0);
@@ -1263,9 +1358,11 @@ impl LunulaApp {
 
     /// Circuit inspector for 10-Band EQ & Saved Preset: Bode plot frequency response + direct link to Tab Equalizer
     fn draw_eq_preset_inspector(&mut self, ui: &mut egui::Ui, painter: &egui::Painter, rect: Rect, preset_name: &str, t: f32) {
-        let left_w = (rect.width() * 0.62).clamp(320.0, 640.0);
-        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(left_w - 15.0, rect.height() - 20.0));
-        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + left_w + 5.0, rect.min.y + 10.0), Vec2::new(rect.width() - left_w - 15.0, rect.height() - 20.0));
+        let avail_w = rect.width();
+        let c2_w = (avail_w * 0.30).clamp(260.0, 350.0).min(avail_w * 0.48);
+        let c1_w = (avail_w - c2_w - 20.0).max(180.0);
+        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(c1_w, rect.height() - 20.0));
+        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + c1_w + 15.0, rect.min.y + 10.0), Vec2::new(avail_w - c1_w - 25.0, rect.height() - 20.0));
 
         // Column 1: Bode Plot Frequency Scope
         painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
@@ -1345,8 +1442,8 @@ impl LunulaApp {
 
         let specs = [
             ("Pita Filter:", "10-Band Biquad DF2T"),
-            ("Rentang Frekuensi:", "31 Hz - 16.000 Hz"),
-            ("Presisi Perhitungan:", "64-bit Double Precision"),
+            ("Rentang Frekuensi:", "31 Hz - 16 kHz"),
+            ("Presisi Hitung:", "64-bit Double"),
             ("Headroom Dynamic:", "+6.0 dBFS Anti-Clip"),
             ("Status Jalur:", "Aktif di Signal Chain"),
         ];
@@ -1372,9 +1469,11 @@ impl LunulaApp {
 
     /// Circuit inspector for Dynamic Loudness: ISO 226 equal-loudness phon contour & smile lift
     fn draw_dynamic_loudness_inspector(&self, painter: &egui::Painter, rect: Rect, _node_id: usize, _t: f32) {
-        let left_w = (rect.width() * 0.58).clamp(280.0, 560.0);
-        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(left_w - 15.0, rect.height() - 20.0));
-        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + left_w + 5.0, rect.min.y + 10.0), Vec2::new(rect.width() - left_w - 15.0, rect.height() - 20.0));
+        let avail_w = rect.width();
+        let c2_w = (avail_w * 0.32).clamp(260.0, 360.0).min(avail_w * 0.48);
+        let c1_w = (avail_w - c2_w - 20.0).max(180.0);
+        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(c1_w, rect.height() - 20.0));
+        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + c1_w + 15.0, rect.min.y + 10.0), Vec2::new(avail_w - c1_w - 25.0, rect.height() - 20.0));
 
         // Column 1: ISO 226 Contour Scope
         painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
@@ -1436,11 +1535,11 @@ impl LunulaApp {
         painter.text(c2_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, "LOUDNESS TELEMETRY", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
 
         let specs = [
-            ("Standar Akustik:", "ISO 226 / Fletcher-Munson"),
-            ("Target Persepsi:", "45 Phon (Volume Rendah)"),
-            ("Kompensasi Sub-Bass:", "+5.2 dB @ 50 Hz (Anti-Tipis)"),
-            ("Kompensasi Treble:", "+2.5 dB @ 12 kHz (Preserve Air)"),
-            ("Distorsi Fase:", "0° (Linear Transition)"),
+            ("Standar Akustik:", "ISO 226 Equal-Loudness"),
+            ("Target Persepsi:", "45 Phon (Vol Rendah)"),
+            ("Kompensasi Sub-Bass:", "+5.2 dB @ 50 Hz"),
+            ("Kompensasi Treble:", "+2.5 dB @ 12 kHz"),
+            ("Distorsi Fase:", "0° (Linear Passthrough)"),
         ];
 
         let start_y = c2_rect.min.y + 28.0;
@@ -1453,9 +1552,11 @@ impl LunulaApp {
 
     /// Circuit inspector for Volume Booster: Gain staging & soft-limit ceiling
     fn draw_volume_booster_inspector(&self, painter: &egui::Painter, rect: Rect, _node_id: usize, _t: f32) {
-        let left_w = (rect.width() * 0.52).clamp(260.0, 520.0);
-        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(left_w - 15.0, rect.height() - 20.0));
-        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + left_w + 5.0, rect.min.y + 10.0), Vec2::new(rect.width() - left_w - 15.0, rect.height() - 20.0));
+        let avail_w = rect.width();
+        let c2_w = (avail_w * 0.32).clamp(260.0, 360.0).min(avail_w * 0.48);
+        let c1_w = (avail_w - c2_w - 20.0).max(180.0);
+        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(c1_w, rect.height() - 20.0));
+        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + c1_w + 15.0, rect.min.y + 10.0), Vec2::new(avail_w - c1_w - 25.0, rect.height() - 20.0));
 
         // Column 1: Gain Staging Comparison
         painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
@@ -1465,7 +1566,7 @@ impl LunulaApp {
 
         let meter_y = c1_rect.min.y + 36.0;
         let meter_h = 18.0;
-        let meter_w = c1_rect.width() - 80.0;
+        let meter_w = (c1_rect.width() - 80.0).max(40.0);
 
         let live_level = if self.is_playing {
             ((self.dac_meter_l + self.dac_meter_r) * 0.5).clamp(0.0, 1.0)
@@ -1497,10 +1598,15 @@ impl LunulaApp {
         painter.text(Pos2::new(c1_rect.max.x - 10.0, post_y + meter_h * 0.5), egui::Align2::RIGHT_CENTER, post_text, egui::FontId::monospace(9.0), Color32::WHITE);
 
         // Soft-limit indicator
+        let limit_txt = if c1_rect.width() >= 340.0 {
+            "Soft Limiter Clamping: LINEAR ACTIVE (Anti-Brickwall)"
+        } else {
+            "Soft Limiter: LINEAR ACTIVE"
+        };
         painter.text(
             Pos2::new(c1_rect.min.x + 10.0, c1_rect.max.y - 12.0),
             egui::Align2::LEFT_BOTTOM,
-            "Soft Limiter Clamping: LINEAR ACTIVE (Anti-Brickwall)",
+            limit_txt,
             egui::FontId::monospace(9.0),
             Color32::from_rgb(52, 211, 153),
         );
@@ -1514,9 +1620,9 @@ impl LunulaApp {
         let specs = [
             ("Gain Boost:", "+6.0 dBFS Clean Gain"),
             ("Headroom Dinamis:", "+294 dB (64-bit Float)"),
-            ("Crest Factor Terjaga:", "12.8 dB (Transien Utuh)"),
+            ("Crest Factor Terjaga:", "12.8 dB Transien"),
             ("Distorsi Harmonik:", "0.00001% THD+N"),
-            ("Bypass Otomatis:", "0.0 dB saat disetel nol"),
+            ("Bypass Otomatis:", "0.0 dB saat nol"),
         ];
 
         let start_y = c2_rect.min.y + 28.0;
@@ -1529,9 +1635,11 @@ impl LunulaApp {
 
     /// Circuit inspector for Stepped Attenuator: 64-step discrete ladder & 0.000 dB L/R tracking
     fn draw_stepped_attenuator_inspector(&self, painter: &egui::Painter, rect: Rect, _node_id: usize, _t: f32) {
-        let left_w = (rect.width() * 0.52).clamp(260.0, 520.0);
-        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(left_w - 15.0, rect.height() - 20.0));
-        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + left_w + 5.0, rect.min.y + 10.0), Vec2::new(rect.width() - left_w - 15.0, rect.height() - 20.0));
+        let avail_w = rect.width();
+        let c2_w = (avail_w * 0.32).clamp(260.0, 360.0).min(avail_w * 0.48);
+        let c1_w = (avail_w - c2_w - 20.0).max(180.0);
+        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(c1_w, rect.height() - 20.0));
+        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + c1_w + 15.0, rect.min.y + 10.0), Vec2::new(avail_w - c1_w - 25.0, rect.height() - 20.0));
 
         // Column 1: Staircase Resistor Steps
         painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
@@ -1543,8 +1651,8 @@ impl LunulaApp {
         let g_right = c1_rect.max.x - 25.0;
         let g_top = c1_rect.min.y + 32.0;
         let g_bottom = c1_rect.max.y - 24.0;
-        let g_w = g_right - g_left;
-        let g_h = g_bottom - g_top;
+        let g_w = (g_right - g_left).max(20.0);
+        let g_h = (g_bottom - g_top).max(20.0);
 
         // Draw discrete staircase steps
         let steps_count = 24;
@@ -1577,11 +1685,11 @@ impl LunulaApp {
         painter.text(c2_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, "RESISTOR NETWORK ACCURACY", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
 
         let specs = [
-            ("Topologi:", "Dale RN55 0.1% Discrete Resistor"),
-            ("Step Aktif:", "Step #42 / 64 (-18.0 dB)"),
-            ("Penyimpangan Kanal L/R:", "0.0000 dB (Perfect Tracking)"),
-            ("Distorsi Wiper Kontak:", "0 nV (Zero Wiper Jitter)"),
-            ("Fitur Cepat:", "-20 dB DIM Instant Mute"),
+            ("Topologi:", "Dale RN55 0.1% Resistor"),
+            ("Step Aktif:", "Step #42 / 64 (-18 dB)"),
+            ("Penyimpangan L/R:", "0.0000 dB Tracking"),
+            ("Distorsi Wiper:", "0 nV (Zero Jitter)"),
+            ("Fitur Cepat:", "-20 dB DIM Mute"),
         ];
 
         let start_y = c2_rect.min.y + 28.0;
@@ -1594,9 +1702,11 @@ impl LunulaApp {
 
     /// Circuit inspector for Stereo Balance: Constant Power Pan Law Horizon (-3.0 dB Center Dip) & spatial compass
     fn draw_stereo_balance_inspector(&self, painter: &egui::Painter, rect: Rect, _node_id: usize, _t: f32) {
-        let left_w = (rect.width() * 0.52).clamp(260.0, 520.0);
-        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(left_w - 15.0, rect.height() - 20.0));
-        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + left_w + 5.0, rect.min.y + 10.0), Vec2::new(rect.width() - left_w - 15.0, rect.height() - 20.0));
+        let avail_w = rect.width();
+        let c2_w = (avail_w * 0.32).clamp(260.0, 360.0).min(avail_w * 0.48);
+        let c1_w = (avail_w - c2_w - 20.0).max(180.0);
+        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(c1_w, rect.height() - 20.0));
+        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + c1_w + 15.0, rect.min.y + 10.0), Vec2::new(avail_w - c1_w - 25.0, rect.height() - 20.0));
 
         // Column 1: Pan Law Horizon
         painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
@@ -1631,7 +1741,7 @@ impl LunulaApp {
             0.0
         };
         let needle_x = center_x + bal_offset * (g_right - g_left) * 0.45;
-        let needle_dip = (((needle_x - g_left) / (g_right - g_left)).clamp(0.0, 1.0) * std::f32::consts::PI).sin() * 18.0;
+        let needle_dip = (((needle_x - g_left) / (g_right - g_left).max(1.0)).clamp(0.0, 1.0) * std::f32::consts::PI).sin() * 18.0;
         let needle_pos = Pos2::new(needle_x, center_y + needle_dip);
 
         painter.circle_filled(needle_pos, 5.0, Color32::WHITE);
@@ -1656,11 +1766,11 @@ impl LunulaApp {
         painter.text(c2_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, "PAN & TRIM TELEMETRY", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
 
         let specs = [
-            ("Hukum Pan:", "Constant Power (-3.0 dB Dip)"),
-            ("L/R Micro-Trim:", "Kiri: 0.0 dB  |  Kanan: 0.0 dB"),
+            ("Hukum Pan:", "Constant Power (-3 dB)"),
+            ("L/R Trim:", "L: 0.0 dB | R: 0.0 dB"),
             ("Arah Spasial:", "Dead Center (0.0°)"),
-            ("Korelasi Fasa L/R:", "100% Coherent (+1.00)"),
-            ("Isolasi Kanal Silang:", "-140 dB Cross-talk Immunity"),
+            ("Korelasi Fasa:", "100% Coherent (+1.0)"),
+            ("Isolasi Silang:", "-140 dB Cross-talk"),
         ];
 
         let start_y = c2_rect.min.y + 28.0;
@@ -1673,9 +1783,11 @@ impl LunulaApp {
 
     /// Circuit inspector for Splitter: Active zero-loss distribution buffer & null-test verification
     fn draw_splitter_inspector(&self, painter: &egui::Painter, rect: Rect, _node_id: usize, t: f32) {
-        let left_w = (rect.width() * 0.52).clamp(260.0, 520.0);
-        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(left_w - 15.0, rect.height() - 20.0));
-        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + left_w + 5.0, rect.min.y + 10.0), Vec2::new(rect.width() - left_w - 15.0, rect.height() - 20.0));
+        let avail_w = rect.width();
+        let c2_w = (avail_w * 0.32).clamp(260.0, 360.0).min(avail_w * 0.48);
+        let c1_w = (avail_w - c2_w - 20.0).max(180.0);
+        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(c1_w, rect.height() - 20.0));
+        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + c1_w + 15.0, rect.min.y + 10.0), Vec2::new(avail_w - c1_w - 25.0, rect.height() - 20.0));
 
         // Column 1: Dual-Branch Waveform Distribution Scope
         painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
@@ -1685,7 +1797,7 @@ impl LunulaApp {
 
         let g_left = c1_rect.min.x + 60.0;
         let g_right = c1_rect.max.x - 20.0;
-        let g_w = g_right - g_left;
+        let g_w = (g_right - g_left).max(20.0);
 
         let w1_y = c1_rect.min.y + 40.0;
         let w2_y = c1_rect.min.y + 74.0;
@@ -1719,10 +1831,15 @@ impl LunulaApp {
             painter.line_segment([pair[0], pair[1]], Stroke::new(1.8, Color32::from_rgb(251, 146, 60)));
         }
 
+        let null_text = if c1_rect.width() >= 400.0 {
+            "Null-Test: Output A == Output B (Bit-Identical 1:1, 0.000 dB Loss)"
+        } else {
+            "Null-Test: Out A == B (1:1 Bit-Identical)"
+        };
         painter.text(
             Pos2::new(c1_rect.min.x + 10.0, c1_rect.max.y - 12.0),
             egui::Align2::LEFT_BOTTOM,
-            "Null-Test: Output A == Output B (Bit-Identical 1:1, 0.000 dB Loss)",
+            null_text,
             egui::FontId::monospace(9.0),
             Color32::from_rgb(52, 211, 153),
         );
@@ -1734,11 +1851,11 @@ impl LunulaApp {
         painter.text(c2_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, "SPLITTER SPECIFICATIONS", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
 
         let specs = [
-            ("Topologi Buffer:", "Active Unity-Gain Voltage Follower"),
-            ("Impedansi Virtual:", "0.0 Ω (Bebas Efek Loading)"),
-            ("Isolasi Antar Cabang:", "> 140 dB (Bebas Cross-Talk)"),
-            ("Kehilangan Sinyal:", "0.000 dB (Tanpa Drop Level)"),
-            ("Tujuan Utama:", "Routing Paralel (Dry / Wet Mix)"),
+            ("Topologi Buffer:", "Unity-Gain Voltage Follower"),
+            ("Impedansi Virtual:", "0.0 Ω (Zero Loading)"),
+            ("Isolasi Cabang:", "> 140 dB Cross-Talk"),
+            ("Kehilangan Sinyal:", "0.000 dB (Tanpa Drop)"),
+            ("Tujuan Utama:", "Routing Paralel Dry/Wet"),
         ];
 
         let start_y = c2_rect.min.y + 28.0;
@@ -1751,9 +1868,11 @@ impl LunulaApp {
 
     /// Circuit inspector for Summing Mixer: Phase alignment, summing waveforms & anti-cancellation
     fn draw_mixer_inspector(&self, painter: &egui::Painter, rect: Rect, _node_id: usize, t: f32) {
-        let left_w = (rect.width() * 0.54).clamp(280.0, 540.0);
-        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(left_w - 15.0, rect.height() - 20.0));
-        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + left_w + 5.0, rect.min.y + 10.0), Vec2::new(rect.width() - left_w - 15.0, rect.height() - 20.0));
+        let avail_w = rect.width();
+        let c2_w = (avail_w * 0.32).clamp(260.0, 360.0).min(avail_w * 0.48);
+        let c1_w = (avail_w - c2_w - 20.0).max(180.0);
+        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(c1_w, rect.height() - 20.0));
+        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + c1_w + 15.0, rect.min.y + 10.0), Vec2::new(avail_w - c1_w - 25.0, rect.height() - 20.0));
 
         // Column 1: Summing Waveform Scope
         painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
@@ -1763,7 +1882,7 @@ impl LunulaApp {
 
         let g_left = c1_rect.min.x + 55.0;
         let g_right = c1_rect.max.x - 20.0;
-        let g_w = g_right - g_left;
+        let g_w = (g_right - g_left).max(20.0);
 
         let w1_y = c1_rect.min.y + 36.0;
         let w2_y = c1_rect.min.y + 64.0;
@@ -1815,10 +1934,10 @@ impl LunulaApp {
         let meter_y = c1_rect.max.y - 14.0;
         painter.text(Pos2::new(c1_rect.min.x + 10.0, meter_y), egui::Align2::LEFT_CENTER, "Korelasi Fasa:", egui::FontId::proportional(9.0), Color32::from_rgb(148, 163, 184));
         let bar_x = c1_rect.min.x + 85.0;
-        let bar_w = 120.0;
+        let bar_w = (c1_rect.width() - 190.0).clamp(40.0, 120.0);
         painter.rect_filled(Rect::from_min_size(Pos2::new(bar_x, meter_y - 4.0), Vec2::new(bar_w, 8.0)), 2.0, Color32::from_rgb(30, 41, 59));
         painter.circle_filled(Pos2::new(bar_x + bar_w * 0.95, meter_y), 4.5, Color32::from_rgb(52, 211, 153));
-        painter.text(Pos2::new(bar_x + bar_w + 10.0, meter_y), egui::Align2::LEFT_CENTER, "+0.98 (In-Phase)", egui::FontId::monospace(9.0), Color32::from_rgb(52, 211, 153));
+        painter.text(Pos2::new(bar_x + bar_w + 8.0, meter_y), egui::Align2::LEFT_CENTER, "+0.98", egui::FontId::monospace(9.0), Color32::from_rgb(52, 211, 153));
 
         // Column 2: Parameters
         painter.rect_filled(c2_rect, 6.0, Color32::from_rgb(12, 17, 29));
@@ -1828,10 +1947,10 @@ impl LunulaApp {
 
         let specs = [
             ("Arsitektur:", "Phase-Aligned 64-bit Adder"),
-            ("Hukum Crossfade:", "Equal-Power (Unity Gain 0 dB)"),
-            ("Proteksi Fasa:", "Anti-Comb Filtering Active"),
-            ("Margin Headroom:", "+6.0 dBFS Anti-Clipping"),
-            ("Latency Penjumlahan:", "0.0 ms (Zero Latency Addition)"),
+            ("Hukum Crossfade:", "Equal-Power (Unity Gain)"),
+            ("Proteksi Fasa:", "Anti-Comb Active"),
+            ("Headroom:", "+6.0 dBFS Anti-Clip"),
+            ("Latency:", "0.0 ms Realtime"),
         ];
 
         let start_y = c2_rect.min.y + 28.0;
@@ -1844,9 +1963,11 @@ impl LunulaApp {
 
     /// Circuit inspector for Bass Guard: Subsonic 25 Hz high-pass barrier & DC offset protection
     fn draw_bass_guard_inspector(&self, painter: &egui::Painter, rect: Rect, _node_id: usize, _t: f32) {
-        let left_w = (rect.width() * 0.52).clamp(260.0, 520.0);
-        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(left_w - 15.0, rect.height() - 20.0));
-        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + left_w + 5.0, rect.min.y + 10.0), Vec2::new(rect.width() - left_w - 15.0, rect.height() - 20.0));
+        let avail_w = rect.width();
+        let c2_w = (avail_w * 0.32).clamp(260.0, 360.0).min(avail_w * 0.48);
+        let c1_w = (avail_w - c2_w - 20.0).max(180.0);
+        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(c1_w, rect.height() - 20.0));
+        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + c1_w + 15.0, rect.min.y + 10.0), Vec2::new(avail_w - c1_w - 25.0, rect.height() - 20.0));
 
         // Column 1: Subsonic Barrier Scope
         painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
@@ -1856,7 +1977,7 @@ impl LunulaApp {
 
         let g_left = c1_rect.min.x + 30.0;
         let g_right = c1_rect.max.x - 20.0;
-        let g_w = g_right - g_left;
+        let g_w = (g_right - g_left).max(20.0);
         let center_y = c1_rect.center().y + 8.0;
 
         let cutoff_x = g_left + g_w * 0.28;
@@ -1864,7 +1985,12 @@ impl LunulaApp {
         // Shaded Subsonic Danger Zone (< 25 Hz)
         let danger_rect = Rect::from_min_max(Pos2::new(g_left, c1_rect.min.y + 28.0), Pos2::new(cutoff_x, c1_rect.max.y - 18.0));
         painter.rect_filled(danger_rect, 0.0, Color32::from_rgba_premultiplied(239, 68, 68, 20));
-        painter.text(danger_rect.center(), egui::Align2::CENTER_CENTER, "ZONA SUBSONIK (<25Hz)\nDC OFFSET DIBLOKIR", egui::FontId::proportional(8.0), Color32::from_rgb(248, 113, 113));
+        let danger_label = if (cutoff_x - g_left) >= 65.0 {
+            "ZONA SUBSONIK (<25Hz)\nDC OFFSET DIBLOKIR"
+        } else {
+            "<25Hz\nBLOKIR"
+        };
+        painter.text(danger_rect.center(), egui::Align2::CENTER_CENTER, danger_label, egui::FontId::proportional(8.0), Color32::from_rgb(248, 113, 113));
 
         // High-pass roll-off curve
         let steps = 40;
@@ -1895,11 +2021,11 @@ impl LunulaApp {
         painter.text(c2_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, "BASS GUARD PARAMETERS", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
 
         let specs = [
-            ("Topologi High-Pass:", "4th-Order Butterworth (24dB/oct)"),
+            ("Topologi High-Pass:", "4th-Order Butterworth"),
             ("Frekuensi Cutoff:", "25.0 Hz (-3 dB Point)"),
-            ("Tegangan DC Dihapus:", "0.0 mV (DC Offset Eliminator)"),
-            ("Proteksi Kerucut:", "Cegah Over-excursion Speaker"),
-            ("Karakter Bass:", "Ketat, Padat & Bebas Lumpur"),
+            ("Tegangan DC Dihapus:", "0.0 mV (DC Eliminator)"),
+            ("Proteksi Kerucut:", "Cegah Over-excursion"),
+            ("Karakter Bass:", "Ketat, Bebas Lumpur"),
         ];
 
         let start_y = c2_rect.min.y + 28.0;
@@ -1912,9 +2038,11 @@ impl LunulaApp {
 
     /// Circuit inspector for Optical Leveler: Soft-knee compression transfer curve, Gain Reduction meter & drive control
     fn draw_optical_leveler_inspector(&mut self, ui: &mut egui::Ui, painter: &egui::Painter, rect: Rect, node_id: usize, t: f32) {
-        let left_w = (rect.width() * 0.48).clamp(260.0, 520.0);
-        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(left_w - 15.0, rect.height() - 20.0));
-        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + left_w + 5.0, rect.min.y + 10.0), Vec2::new(rect.width() - left_w - 15.0, rect.height() - 20.0));
+        let avail_w = rect.width();
+        let c2_w = (avail_w * 0.35).clamp(270.0, 370.0).min(avail_w * 0.48);
+        let c1_w = (avail_w - c2_w - 20.0).max(180.0);
+        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(c1_w, rect.height() - 20.0));
+        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + c1_w + 15.0, rect.min.y + 10.0), Vec2::new(avail_w - c1_w - 25.0, rect.height() - 20.0));
 
         let current_drive = self.nodes.iter().find(|n| n.id == node_id).map(|n| n.param_val).unwrap_or(50.0).clamp(0.0, 100.0);
 
@@ -1998,9 +2126,9 @@ impl LunulaApp {
         let slider = egui::Slider::new(&mut new_drive, 0.0..=100.0)
             .show_value(false)
             .suffix("%");
-        child_ui.add_sized(Vec2::new(controls_rect.width(), 16.0), slider);
+        child_ui.add_sized(Vec2::new(child_ui.available_width(), 16.0), slider);
 
-        child_ui.horizontal(|ui| {
+        child_ui.horizontal_wrapped(|ui| {
             if ui.button(egui::RichText::new("➖ Kurangi").size(9.0)).on_hover_text("Kurangi kompresi (-10% drive)").clicked() {
                 new_drive = (new_drive - 10.0).max(0.0);
             }
@@ -2029,9 +2157,11 @@ impl LunulaApp {
 
     /// Circuit inspector for Studio Compressor: Precision VCA curve, Gain Reduction meter & threshold controls
     fn draw_compressor_inspector(&mut self, ui: &mut egui::Ui, painter: &egui::Painter, rect: Rect, node_id: usize, t: f32) {
-        let left_w = (rect.width() * 0.48).clamp(260.0, 520.0);
-        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(left_w - 15.0, rect.height() - 20.0));
-        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + left_w + 5.0, rect.min.y + 10.0), Vec2::new(rect.width() - left_w - 15.0, rect.height() - 20.0));
+        let avail_w = rect.width();
+        let c2_w = (avail_w * 0.35).clamp(270.0, 370.0).min(avail_w * 0.48);
+        let c1_w = (avail_w - c2_w - 20.0).max(180.0);
+        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(c1_w, rect.height() - 20.0));
+        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + c1_w + 15.0, rect.min.y + 10.0), Vec2::new(avail_w - c1_w - 25.0, rect.height() - 20.0));
 
         let current_thresh = self.nodes.iter().find(|n| n.id == node_id).map(|n| n.param_val).unwrap_or(-18.0).clamp(-60.0, 0.0);
 
@@ -2114,9 +2244,9 @@ impl LunulaApp {
         let slider = egui::Slider::new(&mut new_thresh, -60.0..=0.0)
             .show_value(false)
             .suffix(" dBFS");
-        child_ui.add_sized(Vec2::new(controls_rect.width(), 16.0), slider);
+        child_ui.add_sized(Vec2::new(child_ui.available_width(), 16.0), slider);
 
-        child_ui.horizontal(|ui| {
+        child_ui.horizontal_wrapped(|ui| {
             if ui.button(egui::RichText::new("➖ Kurangi").size(9.0)).on_hover_text("Kurangi kompresi (naikkan threshold +3 dB)").clicked() {
                 new_thresh = (new_thresh + 3.0).min(0.0);
             }
@@ -2145,9 +2275,11 @@ impl LunulaApp {
 
     /// Circuit inspector for Stereo Widener: Mid/Side (M/S) matrix & Haas spatial width
     fn draw_stereo_widener_inspector(&self, painter: &egui::Painter, rect: Rect, _node_id: usize, t: f32) {
-        let left_w = (rect.width() * 0.45).clamp(220.0, 420.0);
-        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(left_w - 15.0, rect.height() - 20.0));
-        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + left_w + 5.0, rect.min.y + 10.0), Vec2::new(rect.width() - left_w - 15.0, rect.height() - 20.0));
+        let avail_w = rect.width();
+        let c2_w = (avail_w * 0.35).clamp(260.0, 360.0).min(avail_w * 0.48);
+        let c1_w = (avail_w - c2_w - 20.0).max(180.0);
+        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(c1_w, rect.height() - 20.0));
+        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + c1_w + 15.0, rect.min.y + 10.0), Vec2::new(avail_w - c1_w - 25.0, rect.height() - 20.0));
 
         // Column 1: Lissajous Vectorscope
         painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
@@ -2162,22 +2294,23 @@ impl LunulaApp {
 
         let mid_power = 0.65;
         let side_power = if self.is_playing { 0.45 + (t * 4.0).sin() * 0.1 } else { 0.35 };
+        let bar_max_w = (c2_rect.width() - 110.0).max(40.0);
 
         let m_y = c2_rect.min.y + 32.0;
         painter.text(Pos2::new(c2_rect.min.x + 10.0, m_y), egui::Align2::LEFT_CENTER, "MID (L+R)", egui::FontId::monospace(9.0), Color32::from_rgb(56, 189, 248));
-        let m_rect = Rect::from_min_size(Pos2::new(c2_rect.min.x + 75.0, m_y - 6.0), Vec2::new((c2_rect.width() - 120.0) * mid_power, 12.0));
+        let m_rect = Rect::from_min_size(Pos2::new(c2_rect.min.x + 75.0, m_y - 6.0), Vec2::new(bar_max_w * mid_power, 12.0));
         painter.rect_filled(m_rect, 2.0, Color32::from_rgb(56, 189, 248));
 
         let s_y = c2_rect.min.y + 54.0;
         painter.text(Pos2::new(c2_rect.min.x + 10.0, s_y), egui::Align2::LEFT_CENTER, "SIDE (L-R)", egui::FontId::monospace(9.0), Color32::from_rgb(168, 85, 247));
-        let s_rect = Rect::from_min_size(Pos2::new(c2_rect.min.x + 75.0, s_y - 6.0), Vec2::new((c2_rect.width() - 120.0) * side_power, 12.0));
+        let s_rect = Rect::from_min_size(Pos2::new(c2_rect.min.x + 75.0, s_y - 6.0), Vec2::new(bar_max_w * side_power, 12.0));
         painter.rect_filled(s_rect, 2.0, Color32::from_rgb(168, 85, 247));
 
         let specs = [
-            ("Pelebaran Spasial:", "135% Soundstage Width"),
-            ("Efek Haas:", "0.8 ms Decorrelation Slew"),
-            ("Kompatibilitas Mono:", "100% Safe (Tanpa Phase Cancellation)"),
-            ("Matriks DSP:", "64-bit Floating Point M/S Transform"),
+            ("Pelebaran Spasial:", "135% Soundstage"),
+            ("Efek Haas:", "0.8 ms Decorrelation"),
+            ("Kompatibilitas Mono:", "100% Safe (No Cancel)"),
+            ("Matriks DSP:", "64-bit Float M/S"),
         ];
 
         let start_y = c2_rect.min.y + 74.0;
@@ -2190,9 +2323,11 @@ impl LunulaApp {
 
     /// Circuit inspector for Analog Preamp: Class-A console warmth & input transformer saturation
     fn draw_analog_preamp_inspector(&self, painter: &egui::Painter, rect: Rect, _node_id: usize, _t: f32) {
-        let left_w = (rect.width() * 0.52).clamp(260.0, 520.0);
-        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(left_w - 15.0, rect.height() - 20.0));
-        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + left_w + 5.0, rect.min.y + 10.0), Vec2::new(rect.width() - left_w - 15.0, rect.height() - 20.0));
+        let avail_w = rect.width();
+        let c2_w = (avail_w * 0.32).clamp(260.0, 360.0).min(avail_w * 0.48);
+        let c1_w = (avail_w - c2_w - 20.0).max(180.0);
+        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(c1_w, rect.height() - 20.0));
+        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + c1_w + 15.0, rect.min.y + 10.0), Vec2::new(avail_w - c1_w - 25.0, rect.height() - 20.0));
 
         // Column 1: Class-A Preamp Curve
         painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
@@ -2219,10 +2354,15 @@ impl LunulaApp {
         }
         painter.add(egui::Shape::line(pts, Stroke::new(2.0, Color32::from_rgb(217, 119, 6))));
 
+        let desc = if c1_rect.width() >= 360.0 {
+            "British Console Transformer Saturation • Bobot Vokal Tebal"
+        } else {
+            "Class-A Transformer Saturation"
+        };
         painter.text(
             Pos2::new(c1_rect.min.x + 10.0, c1_rect.max.y - 12.0),
             egui::Align2::LEFT_BOTTOM,
-            "British Console Transformer Saturation • Bobot Vokal Tebal",
+            desc,
             egui::FontId::monospace(8.5),
             Color32::from_rgb(251, 191, 36),
         );
@@ -2234,11 +2374,11 @@ impl LunulaApp {
         painter.text(c2_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, "PREAMP SPECIFICATIONS", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
 
         let specs = [
-            ("Model:", "Discrete British Class-A Console"),
-            ("Drive Sinyal:", "+0.0 dB (Warmth Transparent)"),
-            ("Slew Rate:", "80 V/μs (Transien Gesit)"),
-            ("Noise Floor:", "-130 dBFS (Studio Grade)"),
-            ("Emulasi Trafo:", "Mu-Metal Core Saturation"),
+            ("Model:", "British Class-A Console"),
+            ("Drive Sinyal:", "+0.0 dB Warmth"),
+            ("Slew Rate:", "80 V/μs Gesit"),
+            ("Noise Floor:", "-130 dBFS Studio"),
+            ("Emulasi Trafo:", "Mu-Metal Saturation"),
         ];
 
         let start_y = c2_rect.min.y + 28.0;
@@ -2251,9 +2391,11 @@ impl LunulaApp {
 
     /// Circuit inspector for Volume Attenuator: Digital attenuation ladder & bit-depth headroom expansion
     fn draw_volume_attenuator_inspector(&self, painter: &egui::Painter, rect: Rect, _node_id: usize, _t: f32) {
-        let left_w = (rect.width() * 0.52).clamp(260.0, 520.0);
-        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(left_w - 15.0, rect.height() - 20.0));
-        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + left_w + 5.0, rect.min.y + 10.0), Vec2::new(rect.width() - left_w - 15.0, rect.height() - 20.0));
+        let avail_w = rect.width();
+        let c2_w = (avail_w * 0.32).clamp(260.0, 360.0).min(avail_w * 0.48);
+        let c1_w = (avail_w - c2_w - 20.0).max(180.0);
+        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(c1_w, rect.height() - 20.0));
+        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + c1_w + 15.0, rect.min.y + 10.0), Vec2::new(avail_w - c1_w - 25.0, rect.height() - 20.0));
 
         // Column 1: Attenuation Margin Bar
         painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
@@ -2262,17 +2404,22 @@ impl LunulaApp {
         painter.text(c1_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, "🔉 DIGITAL HEADROOM ATTENUATION", egui::FontId::proportional(10.5), Color32::from_rgb(148, 163, 184));
 
         let m_y = c1_rect.min.y + 40.0;
-        let bar_w = c1_rect.width() - 80.0;
+        let bar_w = (c1_rect.width() - 80.0).max(40.0);
 
         painter.text(Pos2::new(c1_rect.min.x + 10.0, m_y), egui::Align2::LEFT_CENTER, "REDAM", egui::FontId::monospace(9.0), Color32::from_rgb(148, 163, 184));
         let att_rect = Rect::from_min_size(Pos2::new(c1_rect.min.x + 55.0, m_y - 7.0), Vec2::new(bar_w * 0.70, 14.0));
         painter.rect_filled(att_rect, 3.0, Color32::from_rgb(148, 163, 184));
         painter.text(Pos2::new(c1_rect.max.x - 10.0, m_y), egui::Align2::RIGHT_CENTER, "-6.0 dB", egui::FontId::monospace(9.0), Color32::WHITE);
 
+        let desc = if c1_rect.width() >= 360.0 {
+            "Memberi ruang headroom sebelum sinyal masuk modul sensitif"
+        } else {
+            "Headroom Pre-FX Buffer"
+        };
         painter.text(
             Pos2::new(c1_rect.min.x + 10.0, c1_rect.max.y - 12.0),
             egui::Align2::LEFT_BOTTOM,
-            "Memberi ruang headroom sebelum sinyal masuk modul sensitif",
+            desc,
             egui::FontId::monospace(8.5),
             Color32::from_rgb(52, 211, 153),
         );
@@ -2286,9 +2433,9 @@ impl LunulaApp {
         let specs = [
             ("Tingkat Redaman:", "-6.0 dBFS"),
             ("Resolusi Bit:", "64-bit Float Passthrough"),
-            ("Noise Dither Tambahan:", "0.0 dB (Bebas Dither Loss)"),
-            ("Integritas Transien:", "100% Bit-Translucent"),
-            ("Tujuan:", "Ekspansi Headroom Pre-FX"),
+            ("Noise Tambahan:", "0.0 dB Dither-Free"),
+            ("Transien:", "100% Bit-Translucent"),
+            ("Tujuan:", "Ekspansi Headroom"),
         ];
 
         let start_y = c2_rect.min.y + 28.0;
@@ -2314,9 +2461,11 @@ impl LunulaApp {
 
     /// Circuit inspector for App Resampler: Real-time Sinc Reconstruction Kernel & Custom Controls
     fn draw_app_resampler_inspector(&mut self, ui: &mut egui::Ui, painter: &egui::Painter, rect: Rect, _node_id: usize, _t: f32) {
-        let left_w = (rect.width() * 0.52).clamp(260.0, 540.0);
-        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(left_w - 15.0, rect.height() - 20.0));
-        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + left_w + 5.0, rect.min.y + 10.0), Vec2::new(rect.width() - left_w - 15.0, rect.height() - 20.0));
+        let avail_w = rect.width();
+        let c2_w = (avail_w * 0.38).clamp(280.0, 380.0).min(avail_w * 0.48);
+        let c1_w = (avail_w - c2_w - 20.0).max(180.0);
+        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(c1_w, rect.height() - 20.0));
+        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + c1_w + 15.0, rect.min.y + 10.0), Vec2::new(avail_w - c1_w - 25.0, rect.height() - 20.0));
 
         // Column 1: Sinc Kernel Impulse Response & Anti-Aliasing Scope
         painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
@@ -2334,8 +2483,8 @@ impl LunulaApp {
         let g_right = c1_rect.max.x - 14.0;
         let g_top = c1_rect.min.y + 30.0;
         let g_bottom = c1_rect.max.y - 28.0;
-        let g_w = g_right - g_left;
-        let g_h = g_bottom - g_top;
+        let g_w = (g_right - g_left).max(20.0);
+        let g_h = (g_bottom - g_top).max(20.0);
         let mid_y = g_top + g_h * 0.5;
         let mid_x = g_left + g_w * 0.5;
 
@@ -2408,12 +2557,22 @@ impl LunulaApp {
         painter.circle_filled(Pos2::new(mid_x, mid_y - (g_h * 0.44)), 3.5, Color32::WHITE);
         painter.circle_stroke(Pos2::new(mid_x, mid_y - (g_h * 0.44)), 5.5, Stroke::new(1.0, Color32::from_rgb(52, 211, 153)));
 
-        // Readout text at bottom of Column 1
-        let kernel_desc = format!(
-            "Kernel: Sinc {} • Cutoff: {:.2} Nyquist • Stopband Rejection: >144 dB • Window: Blackman-Harris",
-            self.resampler_settings.quality.short_name(),
-            self.resampler_settings.profile.cutoff()
-        );
+        // Readout text at bottom of Column 1 (responsive)
+        let kernel_desc = if c1_rect.width() >= 480.0 {
+            format!(
+                "Kernel: Sinc {} • Cutoff: {:.2} Nyquist • Stopband Rejection: >144 dB • Window: Blackman-Harris",
+                self.resampler_settings.quality.short_name(),
+                self.resampler_settings.profile.cutoff()
+            )
+        } else if c1_rect.width() >= 320.0 {
+            format!(
+                "Sinc {} • Cutoff: {:.2} • >144 dB Stopband",
+                self.resampler_settings.quality.short_name(),
+                self.resampler_settings.profile.cutoff()
+            )
+        } else {
+            format!("Sinc {}", self.resampler_settings.quality.short_name())
+        };
         painter.text(c1_rect.min + Vec2::new(10.0, c1_rect.height() - 10.0), egui::Align2::LEFT_BOTTOM, kernel_desc, egui::FontId::monospace(8.5), Color32::from_rgb(148, 163, 184));
 
         // Column 2: Interactive Controls & Hardware Streaming Telemetry
@@ -2431,11 +2590,11 @@ impl LunulaApp {
         let dac_rate = self.signal_path_report.as_ref().map_or(48000, |r| r.device_rate);
         let dac_str = format!("{:.1} kHz ({})", dac_rate as f32 / 1000.0, if self.signal_path_report.as_ref().map_or(false, |r| r.is_exclusive) { "Exclusive" } else { "Shared" });
         let is_resamp = self.signal_path_report.as_ref().map_or(true, |r| r.is_resampling);
-        let status_str = if is_resamp { "Rubato Sinc SRC Aktif (Interpolasi Sinc)" } else { "1:1 Bit-Perfect Passthrough (Tanpa Resample)" };
+        let status_str = if is_resamp { "Rubato Sinc SRC Aktif" } else { "1:1 Bit-Perfect Passthrough" };
 
         let specs = [
-            ("Format Asli File:", src_str),
-            ("Hardware Endpoint:", dac_str),
+            ("Format Asli:", src_str),
+            ("Endpoint:", dac_str),
             ("Status Konversi:", status_str.to_string()),
         ];
 
@@ -2452,14 +2611,22 @@ impl LunulaApp {
         py += 14.0;
 
         let cur_q = self.resampler_settings.quality;
-        let q_options = [
-            (SincQuality::Fast, "⚡ Fast (64-pt)"),
-            (SincQuality::Studio, "💎 Studio (128-pt)"),
-            (SincQuality::Extreme, "🚀 Extreme (256-pt)"),
-        ];
-
-        let btn_w = ((c2_rect.width() - 24.0 - 8.0 * 2.0) / 3.0).max(60.0);
+        let btn_w = ((c2_rect.width() - 24.0 - 8.0 * 2.0) / 3.0).max(50.0);
         let btn_h = 22.0;
+
+        let q_options = if btn_w >= 85.0 {
+            [
+                (SincQuality::Fast, "⚡ Fast (64-pt)"),
+                (SincQuality::Studio, "💎 Studio (128-pt)"),
+                (SincQuality::Extreme, "🚀 Extreme (256-pt)"),
+            ]
+        } else {
+            [
+                (SincQuality::Fast, "⚡ 64-pt"),
+                (SincQuality::Studio, "💎 128-pt"),
+                (SincQuality::Extreme, "🚀 256-pt"),
+            ]
+        };
 
         for (idx, (q, label)) in q_options.iter().enumerate() {
             let bx = c2_rect.min.x + 12.0 + idx as f32 * (btn_w + 8.0);
@@ -2503,11 +2670,19 @@ impl LunulaApp {
         py += 14.0;
 
         let cur_p = self.resampler_settings.profile;
-        let p_options = [
-            (RollOffProfile::Sharp, "🎯 Sharp (0.95)"),
-            (RollOffProfile::Smooth, "☕ Smooth (0.90)"),
-            (RollOffProfile::Nyquist, "✨ Nyquist (0.98)"),
-        ];
+        let p_options = if btn_w >= 85.0 {
+            [
+                (RollOffProfile::Sharp, "🎯 Sharp (0.95)"),
+                (RollOffProfile::Smooth, "☕ Smooth (0.90)"),
+                (RollOffProfile::Nyquist, "✨ Nyquist (0.98)"),
+            ]
+        } else {
+            [
+                (RollOffProfile::Sharp, "🎯 Sharp"),
+                (RollOffProfile::Smooth, "☕ Smooth"),
+                (RollOffProfile::Nyquist, "✨ Nyquist"),
+            ]
+        };
 
         for (idx, (p, label)) in p_options.iter().enumerate() {
             let bx = c2_rect.min.x + 12.0 + idx as f32 * (btn_w + 8.0);
@@ -2548,59 +2723,83 @@ impl LunulaApp {
 
     /// Inspector for Streaming nodes (Source, RAM Buffer, Resampler, DAC)
     fn draw_streaming_node_inspector(&self, painter: &egui::Painter, rect: Rect, _node_id: usize) {
-        painter.text(rect.min + Vec2::new(16.0, 14.0), egui::Align2::LEFT_TOP, "AUDIO STREAMING PIPELINE TELEMETRY", egui::FontId::proportional(12.0), Color32::WHITE);
+        let title = if rect.width() >= 480.0 {
+            "AUDIO STREAMING PIPELINE TELEMETRY"
+        } else {
+            "STREAMING PIPELINE"
+        };
+        painter.text(rect.min + Vec2::new(16.0, 14.0), egui::Align2::LEFT_TOP, title, egui::FontId::proportional(12.0), Color32::WHITE);
 
         let g_rect = Rect::from_min_max(rect.min + Vec2::new(16.0, 36.0), rect.max - Vec2::new(16.0, 12.0));
         painter.rect_filled(g_rect, 4.0, Color32::from_rgb(12, 17, 29));
         painter.rect_stroke(g_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
 
+        let is_compact = g_rect.width() < 560.0;
+
         let source_format = if self.current_track.duration > 0.0 {
-            format!(
-                "{} Lossless • {:.1} kHz / {}-bit Stereo",
-                self.current_track.format.to_uppercase(),
-                self.current_track.sample_rate as f32 / 1000.0,
-                self.current_track.bit_depth
-            )
+            if is_compact {
+                format!(
+                    "{} • {:.1}kHz/{}-bit",
+                    self.current_track.format.to_uppercase(),
+                    self.current_track.sample_rate as f32 / 1000.0,
+                    self.current_track.bit_depth
+                )
+            } else {
+                format!(
+                    "{} Lossless • {:.1} kHz / {}-bit Stereo",
+                    self.current_track.format.to_uppercase(),
+                    self.current_track.sample_rate as f32 / 1000.0,
+                    self.current_track.bit_depth
+                )
+            }
         } else {
-            "No Track Loaded (Idle)".to_string()
+            "Idle (No Track)".to_string()
         };
 
         let ringbuffer_status = if self.is_playing {
-            "64 KB Lock-Free SPSC • Healthy / Realtime DMA".to_string()
+            if is_compact { "64KB SPSC • Realtime DMA".to_string() } else { "64 KB Lock-Free SPSC • Healthy / Realtime DMA".to_string() }
         } else {
-            "64 KB Lock-Free SPSC • Standby / Zero Jitter".to_string()
+            if is_compact { "64KB SPSC • Standby".to_string() } else { "64 KB Lock-Free SPSC • Standby / Zero Jitter".to_string() }
         };
 
         let resampler_status = if let Some(ref r) = self.signal_path_report {
             if r.is_resampling {
-                format!(
-                    "{} Sinc ➔ {:.1} kHz • {}",
-                    self.resampler_settings.quality.label(),
-                    r.device_rate as f32 / 1000.0,
-                    self.resampler_settings.profile.label()
-                )
+                if is_compact {
+                    format!("{} Sinc ➔ {:.1} kHz", self.resampler_settings.quality.short_name(), r.device_rate as f32 / 1000.0)
+                } else {
+                    format!(
+                        "{} Sinc ➔ {:.1} kHz • {}",
+                        self.resampler_settings.quality.label(),
+                        r.device_rate as f32 / 1000.0,
+                        self.resampler_settings.profile.label()
+                    )
+                }
             } else {
-                format!("Bypassed • Native 1:1 Rate ({:.1} kHz)", r.device_rate as f32 / 1000.0)
+                format!("Native 1:1 Rate ({:.1} kHz)", r.device_rate as f32 / 1000.0)
             }
         } else {
             format!("{} Sinc • Standby", self.resampler_settings.quality.label())
         };
 
         let endpoint_status = if let Some(ref r) = self.signal_path_report {
-            format!(
-                "{} • {:.1} kHz ({})",
-                r.device_name,
-                r.device_rate as f32 / 1000.0,
-                if r.is_exclusive { "WASAPI Exclusive" } else { "WASAPI Shared" }
-            )
+            if is_compact {
+                format!("{:.1} kHz ({})", r.device_rate as f32 / 1000.0, if r.is_exclusive { "Exclusive" } else { "Shared" })
+            } else {
+                format!(
+                    "{} • {:.1} kHz ({})",
+                    r.device_name,
+                    r.device_rate as f32 / 1000.0,
+                    if r.is_exclusive { "WASAPI Exclusive" } else { "WASAPI Shared" }
+                )
+            }
         } else {
-            "Audio Endpoint Initializing...".to_string()
+            "Endpoint Init...".to_string()
         };
 
         let bit_integrity = if self.chain_mode == ChainMode::BitPerfect {
-            "Bit-Perfect Passthrough (All DSP & FX Bypassed)".to_string()
+            if is_compact { "Bit-Perfect Passthrough (1:1)".to_string() } else { "Bit-Perfect Passthrough (All DSP & FX Bypassed)".to_string() }
         } else {
-            "DSP Active Studio Chain (Custom Processing Enabled)".to_string()
+            if is_compact { "DSP Studio Chain Active".to_string() } else { "DSP Active Studio Chain (Custom Processing Enabled)".to_string() }
         };
 
         let telemetry = [
@@ -2613,8 +2812,8 @@ impl LunulaApp {
 
         for (i, (lbl, val)) in telemetry.iter().enumerate() {
             let py = g_rect.min.y + 14.0 + i as f32 * 20.0;
-            painter.text(Pos2::new(g_rect.min.x + 16.0, py), egui::Align2::LEFT_TOP, *lbl, egui::FontId::proportional(10.5), Color32::from_rgb(148, 163, 184));
-            painter.text(Pos2::new(g_rect.max.x - 16.0, py), egui::Align2::RIGHT_TOP, val, egui::FontId::monospace(10.5), Color32::WHITE);
+            painter.text(Pos2::new(g_rect.min.x + 16.0, py), egui::Align2::LEFT_TOP, *lbl, egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
+            painter.text(Pos2::new(g_rect.max.x - 16.0, py), egui::Align2::RIGHT_TOP, val, egui::FontId::monospace(10.0), Color32::WHITE);
         }
     }
 
@@ -2628,10 +2827,17 @@ impl LunulaApp {
         let from_title = self.nodes.iter().find(|n| n.id == conn.from_node).map(|n| n.title.as_str()).unwrap_or("From");
         let to_title = self.nodes.iter().find(|n| n.id == conn.to_node).map(|n| n.title.as_str()).unwrap_or("To");
 
+        let probe_title = if rect.width() >= 620.0 {
+            format!("AUDIO CABLE PROBE: {} ➔ {} (Wire #{})", from_title, to_title, cable_idx)
+        } else if rect.width() >= 420.0 {
+            format!("PROBE: {} ➔ {} (#{})", from_title, to_title, cable_idx)
+        } else {
+            format!("PROBE (#{})", cable_idx)
+        };
         painter.text(
             rect.min + Vec2::new(16.0, 14.0),
             egui::Align2::LEFT_TOP,
-            format!("AUDIO CABLE PROBE: {} ➔ {} (Wire #{})", from_title, to_title, cable_idx),
+            probe_title,
             egui::FontId::proportional(12.0),
             Color32::from_rgb(52, 211, 153),
         );
@@ -2642,7 +2848,7 @@ impl LunulaApp {
 
         // Draw live signal probe waveform / bars
         let bar_count = 36;
-        let bar_w = (g_rect.width() - 40.0) / bar_count as f32;
+        let bar_w = ((g_rect.width() - 40.0) / bar_count as f32).max(2.0);
         let base_y = g_rect.max.y - 20.0;
 
         for b in 0..bar_count {
@@ -2653,7 +2859,7 @@ impl LunulaApp {
             painter.rect_filled(Rect::from_min_size(Pos2::new(bx, base_y - h), Vec2::new(bar_w - 2.0, h)), 1.5, Color32::from_rgb(52, 211, 153));
         }
 
-        let status = if self.is_playing { "Active Flowing" } else { "Idle / Standby" };
+        let status = if self.is_playing { "Active" } else { "Standby" };
         let rms_str = if self.is_playing && self.live_integrated_lufs > -68.0 {
             format!("{:.1} dBFS", self.live_integrated_lufs)
         } else {
@@ -2665,10 +2871,18 @@ impl LunulaApp {
             "-∞ dBFS".to_string()
         };
 
+        let sig_text = if g_rect.width() >= 550.0 {
+            format!("Signal Status: {} • RMS: {} • Peak: {}", status, rms_str, peak_str)
+        } else if g_rect.width() >= 360.0 {
+            format!("RMS: {} • Peak: {}", rms_str, peak_str)
+        } else {
+            format!("Peak: {}", peak_str)
+        };
+
         painter.text(
             Pos2::new(g_rect.max.x - 16.0, g_rect.min.y + 12.0),
             egui::Align2::RIGHT_TOP,
-            format!("Signal Status: {} • RMS: {} • Peak: {}", status, rms_str, peak_str),
+            sig_text,
             egui::FontId::monospace(9.5),
             if self.is_playing { Color32::from_rgb(52, 211, 153) } else { Color32::from_rgb(148, 163, 184) },
         );
@@ -2783,8 +2997,18 @@ impl LunulaApp {
 
     /// Polar Lissajous Goniometer & Phase Correlation Scope
     fn draw_lissajous_vectorscope(&self, painter: &egui::Painter, rect: Rect) {
-        let center = rect.center();
-        let radius = (rect.height() * 0.42).min(80.0);
+        let is_wide = rect.width() >= 340.0;
+        let (center, radius, bar_left, bar_y) = if is_wide {
+            let r = (rect.height() * 0.42).min((rect.width() - 160.0) * 0.45).clamp(35.0, 80.0);
+            let c = Pos2::new(rect.min.x + (rect.width() - 140.0) * 0.5, rect.center().y);
+            let bl = (rect.max.x - 135.0).max(c.x + r + 15.0);
+            (c, r, bl, rect.center().y)
+        } else {
+            let r = ((rect.height() - 36.0) * 0.40).min(rect.width() * 0.38).clamp(24.0, 58.0);
+            let c = Pos2::new(rect.center().x, rect.min.y + (rect.height() - 32.0) * 0.5);
+            let bl = (rect.center().x - 60.0).max(rect.min.x + 8.0);
+            (c, r, bl, rect.max.y - 14.0)
+        };
 
         painter.circle_stroke(center, radius, Stroke::new(1.0, Color32::from_rgb(51, 65, 85)));
         painter.circle_stroke(center, radius * 0.5, Stroke::new(0.8, Color32::from_rgba_premultiplied(51, 65, 85, 100)));
@@ -2841,51 +3065,71 @@ impl LunulaApp {
         }
 
         // Phase correlation bar
-        let bar_left = rect.max.x - 140.0;
-        let bar_y = center.y;
-        painter.text(Pos2::new(bar_left, bar_y - 18.0), egui::Align2::LEFT_CENTER, "Phase Correlation", egui::FontId::proportional(10.0), Color32::WHITE);
-        painter.rect_filled(Rect::from_min_size(Pos2::new(bar_left, bar_y - 6.0), Vec2::new(120.0, 12.0)), 3.0, Color32::from_rgb(30, 41, 59));
+        let bar_width = 115.0f32;
+        if is_wide {
+            painter.text(Pos2::new(bar_left, bar_y - 18.0), egui::Align2::LEFT_CENTER, "Phase Correlation", egui::FontId::proportional(10.0), Color32::WHITE);
+        }
+        painter.rect_filled(Rect::from_min_size(Pos2::new(bar_left, bar_y - 5.0), Vec2::new(bar_width, 10.0)), 3.0, Color32::from_rgb(30, 41, 59));
 
         // Zero mark in the middle
-        painter.line_segment([Pos2::new(bar_left + 60.0, bar_y - 8.0), Pos2::new(bar_left + 60.0, bar_y + 8.0)], Stroke::new(1.0, Color32::from_rgb(148, 163, 184)));
+        let half_bar = bar_width * 0.5;
+        painter.line_segment([Pos2::new(bar_left + half_bar, bar_y - 7.0), Pos2::new(bar_left + half_bar, bar_y + 7.0)], Stroke::new(1.0, Color32::from_rgb(148, 163, 184)));
 
         let corr = if self.is_playing { self.live_phase_correlation.clamp(-1.0, 1.0) } else { 1.0 };
-        let indicator_x = bar_left + 60.0 + corr * 50.0;
+        let indicator_x = bar_left + half_bar + corr * (half_bar - 8.0);
         let (corr_col, corr_desc) = if !self.is_playing {
             (Color32::from_rgb(100, 116, 139), "Idle")
         } else if corr >= 0.5 {
             (Color32::from_rgb(34, 197, 94), "In-Phase")
         } else if corr >= 0.0 {
-            (Color32::from_rgb(56, 189, 248), "Wide Stereo")
+            (Color32::from_rgb(56, 189, 248), "Wide")
         } else if corr >= -0.5 {
-            (Color32::from_rgb(245, 158, 11), "Mono Cancel Risk")
+            (Color32::from_rgb(245, 158, 11), "Cancel")
         } else {
-            (Color32::from_rgb(239, 68, 68), "Anti-Phase (Out)")
+            (Color32::from_rgb(239, 68, 68), "Anti-Phase")
         };
 
-        painter.circle_filled(Pos2::new(indicator_x, bar_y), 5.0, corr_col);
+        painter.circle_filled(Pos2::new(indicator_x, bar_y), 4.5, corr_col);
         let corr_text = if self.is_playing {
             format!("{:+.2} ({})", corr, corr_desc)
         } else {
             "+1.00 (Standby)".to_string()
         };
-        painter.text(Pos2::new(bar_left + 60.0, bar_y + 16.0), egui::Align2::CENTER_CENTER, corr_text, egui::FontId::monospace(9.5), corr_col);
+        if is_wide {
+            painter.text(Pos2::new(bar_left + half_bar, bar_y + 15.0), egui::Align2::CENTER_CENTER, corr_text, egui::FontId::monospace(9.0), corr_col);
+        }
     }
 
     /// Master EBU R128 Loudness, True-Peak (ITU-R BS.1770) & Inter-Sample Clipping Indicator
     fn draw_master_ebu_metering(&mut self, ui: &mut egui::Ui, painter: &egui::Painter, rect: Rect) {
         let left = rect.min.x + 16.0;
         let top = rect.min.y + 12.0;
-        let num_cols = 4.0;
+        let is_grid = rect.width() < 560.0;
         let gap = 10.0;
-        let col_w = (rect.width() - 32.0 - gap * (num_cols - 1.0)) / num_cols;
-        let h = rect.height() - 24.0;
+
+        let (c1, c2, c3, c4) = if is_grid {
+            let col_w = ((rect.width() - 32.0 - gap) / 2.0).max(100.0);
+            let row_h = ((rect.height() - 24.0 - gap) / 2.0).max(50.0);
+            let r1 = Rect::from_min_size(Pos2::new(left, top), Vec2::new(col_w, row_h));
+            let r2 = Rect::from_min_size(Pos2::new(left + col_w + gap, top), Vec2::new(col_w, row_h));
+            let r3 = Rect::from_min_size(Pos2::new(left, top + row_h + gap), Vec2::new(col_w, row_h));
+            let r4 = Rect::from_min_size(Pos2::new(left + col_w + gap, top + row_h + gap), Vec2::new(col_w, row_h));
+            (r1, r2, r3, r4)
+        } else {
+            let col_w = (rect.width() - 32.0 - gap * 3.0) / 4.0;
+            let h = rect.height() - 24.0;
+            let r1 = Rect::from_min_size(Pos2::new(left, top), Vec2::new(col_w, h));
+            let r2 = Rect::from_min_size(Pos2::new(left + (col_w + gap), top), Vec2::new(col_w, h));
+            let r3 = Rect::from_min_size(Pos2::new(left + (col_w + gap) * 2.0, top), Vec2::new(col_w, h));
+            let r4 = Rect::from_min_size(Pos2::new(left + (col_w + gap) * 3.0, top), Vec2::new(col_w, h));
+            (r1, r2, r3, r4)
+        };
 
         // 1. INTEGRATED LUFS
-        let c1 = Rect::from_min_size(Pos2::new(left, top), Vec2::new(col_w, h));
         painter.rect_filled(c1, 6.0, Color32::from_rgb(12, 17, 29));
         painter.rect_stroke(c1, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
-        painter.text(c1.center_top() + Vec2::new(0.0, 10.0), egui::Align2::CENTER_CENTER, "INTEGRATED LUFS", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
+        let lufs_title = if c1.width() >= 130.0 { "INTEGRATED LUFS" } else { "LUFS" };
+        painter.text(c1.center_top() + Vec2::new(0.0, 10.0), egui::Align2::CENTER_CENTER, lufs_title, egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
 
         let lufs_val = if self.is_playing { self.live_integrated_lufs } else { -70.0 };
         let (lufs_str, lufs_col) = if lufs_val <= -68.0 {
@@ -2902,32 +3146,33 @@ impl LunulaApp {
             };
             (format!("{:.1} LUFS", lufs_val), col)
         };
-        painter.text(c1.center() - Vec2::new(0.0, 6.0), egui::Align2::CENTER_CENTER, lufs_str, egui::FontId::monospace(17.0), lufs_col);
-        painter.text(c1.center_bottom() - Vec2::new(0.0, 10.0), egui::Align2::CENTER_CENTER, "Target: -14.0 (EBU R128)", egui::FontId::proportional(9.0), Color32::from_rgb(100, 116, 139));
+        painter.text(c1.center() - Vec2::new(0.0, 4.0), egui::Align2::CENTER_CENTER, lufs_str, egui::FontId::monospace(16.0), lufs_col);
+        let lufs_target_label = if c1.width() >= 140.0 { "Target: -14.0 (EBU R128)" } else { "Target: -14 LUFS" };
+        painter.text(c1.center_bottom() - Vec2::new(0.0, 8.0), egui::Align2::CENTER_CENTER, lufs_target_label, egui::FontId::proportional(8.5), Color32::from_rgb(100, 116, 139));
 
         // 2. DYNAMIC RANGE (DR)
-        let c2 = Rect::from_min_size(Pos2::new(left + (col_w + gap), top), Vec2::new(col_w, h));
         painter.rect_filled(c2, 6.0, Color32::from_rgb(12, 17, 29));
         painter.rect_stroke(c2, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
-        painter.text(c2.center_top() + Vec2::new(0.0, 10.0), egui::Align2::CENTER_CENTER, "DYNAMIC RANGE (DR)", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
+        let dr_title = if c2.width() >= 130.0 { "DYNAMIC RANGE (DR)" } else { "DR METER" };
+        painter.text(c2.center_top() + Vec2::new(0.0, 10.0), egui::Align2::CENTER_CENTER, dr_title, egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
 
         let dr_val = if self.is_playing { self.live_dynamic_range } else { 0.0 };
+        let is_compact_dr = c2.width() < 145.0;
         let (dr_str, dr_sub, dr_col) = if dr_val < 1.0 {
             ("DR 0".to_string(), "Idle / Silence".to_string(), Color32::from_rgb(100, 116, 139))
         } else if dr_val >= 14.0 {
-            (format!("DR {:.0}", dr_val), "Audiophile Uncompressed".to_string(), Color32::from_rgb(56, 189, 248))
+            (format!("DR {:.0}", dr_val), if is_compact_dr { "Audiophile" } else { "Audiophile Uncompressed" }.to_string(), Color32::from_rgb(56, 189, 248))
         } else if dr_val >= 9.0 {
-            (format!("DR {:.0}", dr_val), "Balanced Studio Master".to_string(), Color32::from_rgb(34, 197, 94))
+            (format!("DR {:.0}", dr_val), if is_compact_dr { "Studio Master" } else { "Balanced Studio Master" }.to_string(), Color32::from_rgb(34, 197, 94))
         } else if dr_val >= 6.0 {
-            (format!("DR {:.0}", dr_val), "Modern Compressed".to_string(), Color32::from_rgb(245, 158, 11))
+            (format!("DR {:.0}", dr_val), if is_compact_dr { "Compressed" } else { "Modern Compressed" }.to_string(), Color32::from_rgb(245, 158, 11))
         } else {
-            (format!("DR {:.0}", dr_val), "Heavy Brickwall Limiting".to_string(), Color32::from_rgb(239, 68, 68))
+            (format!("DR {:.0}", dr_val), if is_compact_dr { "Brickwall" } else { "Heavy Brickwall Limiting" }.to_string(), Color32::from_rgb(239, 68, 68))
         };
-        painter.text(c2.center() - Vec2::new(0.0, 6.0), egui::Align2::CENTER_CENTER, dr_str, egui::FontId::monospace(17.0), dr_col);
-        painter.text(c2.center_bottom() - Vec2::new(0.0, 10.0), egui::Align2::CENTER_CENTER, dr_sub, egui::FontId::proportional(9.0), Color32::from_rgb(100, 116, 139));
+        painter.text(c2.center() - Vec2::new(0.0, 4.0), egui::Align2::CENTER_CENTER, dr_str, egui::FontId::monospace(16.0), dr_col);
+        painter.text(c2.center_bottom() - Vec2::new(0.0, 8.0), egui::Align2::CENTER_CENTER, dr_sub, egui::FontId::proportional(8.5), Color32::from_rgb(100, 116, 139));
 
         // 3. TRUE-PEAK (dBTP) & INTER-SAMPLE CLIPPING (P2!)
-        let c3 = Rect::from_min_size(Pos2::new(left + (col_w + gap) * 2.0, top), Vec2::new(col_w, h));
         painter.rect_filled(c3, 6.0, Color32::from_rgb(12, 17, 29));
         let tp_stroke = if self.live_isp_clip_detected {
             Stroke::new(1.2, Color32::from_rgb(239, 68, 68))
@@ -2935,7 +3180,8 @@ impl LunulaApp {
             Stroke::new(1.0, Color32::from_rgb(30, 41, 59))
         };
         painter.rect_stroke(c3, 6.0, tp_stroke, egui::StrokeKind::Inside);
-        painter.text(c3.center_top() + Vec2::new(0.0, 10.0), egui::Align2::CENTER_CENTER, "TRUE-PEAK & ISP CLIP", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
+        let tp_title = if c3.width() >= 135.0 { "TRUE-PEAK & ISP CLIP" } else { "TRUE-PEAK" };
+        painter.text(c3.center_top() + Vec2::new(0.0, 10.0), egui::Align2::CENTER_CENTER, tp_title, egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
 
         let tp_val = if self.is_playing { self.live_true_peak_db } else { -96.0 };
         let (tp_str, tp_col) = if tp_val <= -90.0 {
@@ -2947,29 +3193,30 @@ impl LunulaApp {
         } else {
             (format!("{:+.1} dBTP", tp_val), Color32::from_rgb(34, 197, 94))
         };
-        painter.text(c3.center() - Vec2::new(0.0, 12.0), egui::Align2::CENTER_CENTER, tp_str, egui::FontId::monospace(17.0), tp_col);
+        painter.text(c3.center() - Vec2::new(0.0, 8.0), egui::Align2::CENTER_CENTER, tp_str, egui::FontId::monospace(16.0), tp_col);
 
         // Inter-Sample Clip Warning + Reset Button
-        let reset_btn_rect = Rect::from_min_size(Pos2::new(c3.min.x + 10.0, c3.max.y - 28.0), Vec2::new(c3.width() - 20.0, 20.0));
+        let reset_btn_rect = Rect::from_min_size(Pos2::new(c3.min.x + 8.0, c3.max.y - 24.0), Vec2::new(c3.width() - 16.0, 18.0));
         if self.live_isp_clip_detected {
             let is_hov = ui.rect_contains_pointer(reset_btn_rect);
-            painter.rect_filled(reset_btn_rect, 4.0, if is_hov { Color32::from_rgb(185, 28, 28) } else { Color32::from_rgb(127, 29, 29) });
-            painter.rect_stroke(reset_btn_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(248, 113, 113)), egui::StrokeKind::Inside);
-            painter.text(reset_btn_rect.center(), egui::Align2::CENTER_CENTER, format!("⚠️ CLIP ({}) • Reset ✕", self.live_isp_clip_count), egui::FontId::proportional(9.0), Color32::WHITE);
+            painter.rect_filled(reset_btn_rect, 3.0, if is_hov { Color32::from_rgb(185, 28, 28) } else { Color32::from_rgb(127, 29, 29) });
+            painter.rect_stroke(reset_btn_rect, 3.0, Stroke::new(1.0, Color32::from_rgb(248, 113, 113)), egui::StrokeKind::Inside);
+            let clip_label = if c3.width() >= 130.0 { format!("⚠️ CLIP ({}) • Reset ✕", self.live_isp_clip_count) } else { format!("CLIP ({}) ✕", self.live_isp_clip_count) };
+            painter.text(reset_btn_rect.center(), egui::Align2::CENTER_CENTER, clip_label, egui::FontId::proportional(8.5), Color32::WHITE);
             if ui.input(|i| i.pointer.any_pressed()) && is_hov {
                 self.live_isp_clip_detected = false;
                 self.live_isp_clip_count = 0;
                 self.live_isp_max_over_db = 0.0;
             }
         } else {
-            painter.text(c3.center_bottom() - Vec2::new(0.0, 10.0), egui::Align2::CENTER_CENTER, "✅ Inter-Sample Safe", egui::FontId::proportional(9.0), Color32::from_rgb(34, 197, 94));
+            painter.text(c3.center_bottom() - Vec2::new(0.0, 8.0), egui::Align2::CENTER_CENTER, "✅ Inter-Sample Safe", egui::FontId::proportional(8.5), Color32::from_rgb(34, 197, 94));
         }
 
         // 4. MASTER GAIN REDUCTION (P1 in Master View!)
-        let c4 = Rect::from_min_size(Pos2::new(left + (col_w + gap) * 3.0, top), Vec2::new(col_w, h));
         painter.rect_filled(c4, 6.0, Color32::from_rgb(12, 17, 29));
         painter.rect_stroke(c4, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
-        painter.text(c4.center_top() + Vec2::new(0.0, 10.0), egui::Align2::CENTER_CENTER, "GAIN REDUCTION", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
+        let gr_title = if c4.width() >= 130.0 { "GAIN REDUCTION" } else { "GAIN RED." };
+        painter.text(c4.center_top() + Vec2::new(0.0, 10.0), egui::Align2::CENTER_CENTER, gr_title, egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
 
         let gr_val = if self.is_playing { self.live_gain_reduction_db } else { 0.0 };
         let gr_color = if gr_val > 6.0 {
@@ -2984,16 +3231,17 @@ impl LunulaApp {
         } else {
             "0.0 dB".to_string()
         };
-        painter.text(c4.center() - Vec2::new(0.0, 10.0), egui::Align2::CENTER_CENTER, gr_text, egui::FontId::monospace(17.0), gr_color);
+        painter.text(c4.center() - Vec2::new(0.0, 8.0), egui::Align2::CENTER_CENTER, gr_text, egui::FontId::monospace(16.0), gr_color);
 
         // GR Horizontal Meter Bar
-        let gr_bar_rect = Rect::from_min_size(Pos2::new(c4.min.x + 12.0, c4.max.y - 24.0), Vec2::new(c4.width() - 24.0, 8.0));
+        let gr_bar_rect = Rect::from_min_size(Pos2::new(c4.min.x + 10.0, c4.max.y - 20.0), Vec2::new(c4.width() - 20.0, 8.0));
         painter.rect_filled(gr_bar_rect, 2.0, Color32::from_rgb(24, 32, 47));
         if gr_val > 0.05 {
             let active_w = (gr_bar_rect.width() * (gr_val / 18.0).clamp(0.0, 1.0)).max(2.0);
             painter.rect_filled(Rect::from_min_size(gr_bar_rect.min, Vec2::new(active_w, gr_bar_rect.height())), 2.0, gr_color);
         }
-        painter.text(c4.center_bottom() - Vec2::new(0.0, 28.0), egui::Align2::CENTER_CENTER, if gr_val > 0.05 { "Active Leveling" } else { "Linear Passthrough" }, egui::FontId::proportional(9.0), Color32::from_rgb(100, 116, 139));
+        let gr_sub = if gr_val > 0.05 { "Active Leveling" } else { "Linear Passthrough" };
+        painter.text(c4.center_bottom() - Vec2::new(0.0, 24.0), egui::Align2::CENTER_CENTER, gr_sub, egui::FontId::proportional(8.5), Color32::from_rgb(100, 116, 139));
     }
 
     /// Waveform Saturation Heatmap: Visualizes waveform amplitude with color-coded saturation & clipping zones
@@ -3005,8 +3253,13 @@ impl LunulaApp {
         painter.rect_filled(c_rect, 6.0, Color32::from_rgb(8, 12, 20));
         painter.rect_stroke(c_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
 
-        // 1. Header with Live Metrics
-        painter.text(c_rect.min + Vec2::new(12.0, 10.0), egui::Align2::LEFT_TOP, "🔥 WAVEFORM SATURATION HEATMAP", egui::FontId::proportional(11.0), Color32::from_rgb(245, 158, 11));
+        // 1. Header with Live Metrics (adaptive)
+        let header_title = if c_rect.width() >= 480.0 {
+            "🔥 WAVEFORM SATURATION HEATMAP"
+        } else {
+            "🔥 SATURATION HEATMAP"
+        };
+        painter.text(c_rect.min + Vec2::new(12.0, 10.0), egui::Align2::LEFT_TOP, header_title, egui::FontId::proportional(11.0), Color32::from_rgb(245, 158, 11));
 
         // Calculate saturation statistics over the 1024 stereo samples
         let mut clean_count = 0usize;
@@ -3032,8 +3285,18 @@ impl LunulaApp {
         let warm_pct = (warm_count as f32 / 1024.0) * 100.0;
         let clip_pct = (clip_count as f32 / 1024.0) * 100.0;
 
-        let stats_text = format!("Clean (< -6dB): {:.0}% • Warm (-6..0dB): {:.0}% • Clip (0dBFS): {:.1}%", clean_pct, warm_pct, clip_pct);
-        painter.text(Pos2::new(c_rect.max.x - 12.0, c_rect.min.y + 10.0), egui::Align2::RIGHT_TOP, stats_text, egui::FontId::monospace(9.5), Color32::from_rgb(148, 163, 184));
+        let stats_text = if c_rect.width() >= 660.0 {
+            format!("Clean (< -6dB): {:.0}% • Warm (-6..0dB): {:.0}% • Clip (0dBFS): {:.1}%", clean_pct, warm_pct, clip_pct)
+        } else if c_rect.width() >= 480.0 {
+            format!("Clean: {:.0}% • Warm: {:.0}% • Clip: {:.1}%", clean_pct, warm_pct, clip_pct)
+        } else if c_rect.width() >= 340.0 {
+            format!("{:.0}% / {:.0}% / {:.1}%", clean_pct, warm_pct, clip_pct)
+        } else {
+            String::new()
+        };
+        if !stats_text.is_empty() {
+            painter.text(Pos2::new(c_rect.max.x - 12.0, c_rect.min.y + 10.0), egui::Align2::RIGHT_TOP, stats_text, egui::FontId::monospace(9.5), Color32::from_rgb(148, 163, 184));
+        }
 
         // 2. Waveform Canvas Bounds
         let scope_rect = Rect::from_min_max(Pos2::new(c_rect.min.x + 12.0, c_rect.min.y + 28.0), Pos2::new(c_rect.max.x - 12.0, c_rect.max.y - 12.0));

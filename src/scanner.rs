@@ -107,7 +107,7 @@ pub fn parse_single_audio_file(path: &Path) -> Option<Track> {
     let file_size_mb = std::fs::metadata(path).map(|m| m.len() as f32 / (1024.0 * 1024.0)).unwrap_or(0.0);
     let fallback_title = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Unknown Title").to_string();
 
-    let (title, artist, album, duration, sample_rate, bit_depth, bitrate_kbps, replay_gain) = match lofty::read_from_path(path) {
+    let (title, artist, album, genre, duration, sample_rate, bit_depth, bitrate_kbps, replay_gain) = match lofty::read_from_path(path) {
         Ok(tagged_file) => {
             let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag());
             let title = tag.and_then(|t| t.title()).map(|s| s.to_string()).unwrap_or_else(|| fallback_title.clone());
@@ -115,6 +115,7 @@ pub fn parse_single_audio_file(path: &Path) -> Option<Track> {
             let album = tag.and_then(|t| t.album()).map(|s| s.to_string()).unwrap_or_else(|| {
                 path.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()).unwrap_or("Single").to_string()
             });
+            let genre = tag.and_then(|t| t.genre()).map(|s| s.to_string());
 
             let props = tagged_file.properties();
             let duration = props.duration().as_secs_f32().max(1.0);
@@ -123,10 +124,10 @@ pub fn parse_single_audio_file(path: &Path) -> Option<Track> {
             let bitrate = props.audio_bitrate().or_else(|| props.overall_bitrate());
             let rg = extract_replay_gain(tag);
 
-            (title, artist, album, duration, sample_rate, bit_depth, bitrate, rg)
+            (title, artist, album, genre, duration, sample_rate, bit_depth, bitrate, rg)
         }
         Err(_) => {
-            (fallback_title.clone(), "Unknown Artist".to_string(), "Single".to_string(), 180.0, 44100, 0, None, ReplayGainData::default())
+            (fallback_title.clone(), "Unknown Artist".to_string(), "Single".to_string(), None, 180.0, 44100, 0, None, ReplayGainData::default())
         }
     };
 
@@ -152,6 +153,7 @@ pub fn parse_single_audio_file(path: &Path) -> Option<Track> {
         replay_gain,
         cue_offset_sec: None,
         cue_duration_sec: None,
+        genre,
     })
 }
 

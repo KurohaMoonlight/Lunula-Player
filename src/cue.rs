@@ -162,6 +162,7 @@ impl CueSheet {
                 replay_gain,
                 cue_offset_sec: Some(start),
                 cue_duration_sec: Some(duration),
+                genre: None,
             });
         }
 

@@ -2,6 +2,7 @@ use eframe::egui;
 use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 use crate::models::{CustomPlaylist, LibraryCategory, Track};
 use crate::app::LunulaApp;
+use crate::preset::{list_local_presets, PresetBindingType};
 use crate::ui::components::{draw_album_art, draw_artist_avatar, format_time, lerp_color, open_file_in_explorer, render_card_frame, render_stat_box};
 
 impl LunulaApp {
@@ -54,33 +55,54 @@ impl LunulaApp {
         let mut switch_to_all_tracks = false;
         let mut clear_entire_library = false;
 
+        let available_presets = list_local_presets();
+        let available_preset_names: Vec<String> = available_presets.iter().map(|p| p.metadata.name.clone()).collect();
+        let mut track_bind_to_preset: Option<(PresetBindingType, String, String, String)> = None;
+        let mut track_unbind_rule: Option<(PresetBindingType, String)> = None;
+        let mut open_binding_manager = false;
+
         render_card_frame(ui, |ui| {
             ui.vertical(|ui| {
-                // 1. Header Bar
+                // 1. Header Bar (Adaptive Responsive Layout)
+                let header_avail_w = ui.available_width();
+                let is_header_compact = header_avail_w < 760.0;
+
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("📁 MUSIC LIBRARY").strong().size(15.5).color(Color32::from_rgb(15, 23, 42)));
-                    let count_text = format!("• {} Lagu Terdaftar", self.playlist.len());
+                    let count_text = if is_header_compact {
+                        format!("• {}", self.playlist.len())
+                    } else {
+                        format!("• {} Lagu Terdaftar", self.playlist.len())
+                    };
                     ui.label(egui::RichText::new(count_text).size(12.0).color(Color32::from_rgb(100, 116, 139)));
 
-                    if !self.playlist.is_empty() {
-                        if ui.button(egui::RichText::new("🗑️ Kosongkan Library").size(11.0).color(Color32::from_rgb(239, 68, 68))).on_hover_text("Hapus semua lagu dari library").clicked() {
+                    if !self.playlist.is_empty() && !is_header_compact {
+                        if ui.button(egui::RichText::new("🗑️ Kosongkan").size(11.0).color(Color32::from_rgb(239, 68, 68))).on_hover_text("Hapus semua lagu dari library").clicked() {
                             clear_entire_library = true;
                         }
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button(egui::RichText::new("➕ Scan Folder Musik").strong()).on_hover_text("Buka dialog untuk memilih folder musik di komputer").clicked() {
+                        let scan_btn_txt = if is_header_compact { "📁 Scan" } else { "➕ Scan Folder Musik" };
+                        if ui.button(egui::RichText::new(scan_btn_txt).strong()).on_hover_text("Buka dialog untuk memilih folder musik di komputer").clicked() {
                             self.start_folder_scan();
                         }
-                        if ui.button(egui::RichText::new("📄 Tambah File").strong()).on_hover_text("Pilih satu atau beberapa file audio").clicked() {
+
+                        let add_btn_txt = if is_header_compact { "📄 File" } else { "📄 Tambah File" };
+                        if ui.button(egui::RichText::new(add_btn_txt).strong()).on_hover_text("Pilih satu atau beberapa file audio").clicked() {
                             self.start_files_scan();
                         }
 
-                        // Search box
+                        // Responsive Search box
+                        let search_w = if is_header_compact {
+                            (header_avail_w - 240.0).clamp(100.0, 160.0)
+                        } else {
+                            190.0
+                        };
                         ui.add(
                             egui::TextEdit::singleline(&mut self.search_query)
-                                .hint_text("🔍 Cari judul, artis, album...")
-                                .desired_width(190.0),
+                                .hint_text("🔍 Cari lagu, artis, album...")
+                                .desired_width(search_w),
                         );
                     });
                 });
@@ -122,7 +144,7 @@ impl LunulaApp {
                     format!("{:.1} MB", total_mb)
                 };
 
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     render_stat_box(ui, "🎵", "TOTAL LAGU", &format!("{} Lagu", total_tracks), "Koleksi Aktif", Color32::from_rgb(15, 23, 42));
                     ui.add_space(6.0);
                     render_stat_box(ui, "💿", "ALBUM", &format!("{} Album", total_albums), "Diskografi", Color32::from_rgb(15, 23, 42));
@@ -136,8 +158,8 @@ impl LunulaApp {
 
                 ui.add_space(10.0);
 
-                // 3. Category Navigation Pills
-                ui.horizontal(|ui| {
+                // 3. Category Navigation Pills (Wrapped for responsive layout)
+                ui.horizontal_wrapped(|ui| {
                     let categories = [
                         (LibraryCategory::AllTracks, "📋 Semua Lagu"),
                         (LibraryCategory::Albums, "💿 Album"),
@@ -291,7 +313,7 @@ impl LunulaApp {
                                                     ui.vertical(|ui| {
                                                         // Vinyl Art Box or Embedded Cover Art
                                                         let (art_rect, _) = ui.allocate_exact_size(Vec2::new(card_w - 28.0, 110.0), egui::Sense::hover());
-                                                        let painter = ui.painter_at(art_rect);
+                                                        let painter = ui.painter();
                                                         let cover_tex = self.get_album_cover_texture(ui.ctx(), alb_name, tracks[0].file_path.as_deref());
                                                         if let Some(ref tex) = cover_tex {
                                                              painter.rect_filled(art_rect, 8.0, Color32::from_rgb(15, 23, 42));
@@ -366,6 +388,43 @@ impl LunulaApp {
                                                     switch_to_all_tracks = true;
                                                     ui.close();
                                                 }
+                                                ui.separator();
+
+                                                // Auto-Binding for Entire Album (Weight 200)
+                                                let has_album_binding = self.preset_bindings.iter().any(|b| b.target_type == PresetBindingType::Album && b.target_key.trim().eq_ignore_ascii_case(alb_name.trim()));
+
+                                                ui.menu_button("🔗 Tautkan Preset ke Album (Weight 200)", |ui| {
+                                                    ui.label(egui::RichText::new("Preset yang otomatis dimuat untuk album ini:").size(10.5).color(Color32::from_rgb(100, 116, 139)));
+                                                    ui.separator();
+                                                    if available_preset_names.is_empty() {
+                                                        ui.label(egui::RichText::new("Belum ada preset studio tersimpan").italics().size(11.0).color(Color32::from_rgb(148, 163, 184)));
+                                                    }
+                                                    for p_name in &available_preset_names {
+                                                        if ui.button(p_name).clicked() {
+                                                            track_bind_to_preset = Some((
+                                                                PresetBindingType::Album,
+                                                                alb_name.trim().to_string(),
+                                                                alb_name.trim().to_string(),
+                                                                p_name.clone(),
+                                                            ));
+                                                            ui.close();
+                                                        }
+                                                    }
+                                                    ui.separator();
+                                                    if ui.button("⚙️ Buka Manajer Auto-Binding...").clicked() {
+                                                        open_binding_manager = true;
+                                                        ui.close();
+                                                    }
+                                                });
+
+                                                if has_album_binding {
+                                                    if ui.button(egui::RichText::new("✕ Lepas Binding Album Ini").color(Color32::from_rgb(225, 29, 72))).clicked() {
+                                                        track_unbind_rule = Some((PresetBindingType::Album, alb_name.trim().to_string()));
+                                                        ui.close();
+                                                    }
+                                                }
+
+                                                ui.separator();
                                                 if ui.button("🗑️ Hapus Seluruh Album dari Library").clicked() {
                                                     album_to_delete_from_library = Some(alb_name.clone());
                                                     ui.close();
@@ -422,7 +481,7 @@ impl LunulaApp {
                                                     ui.vertical_centered(|ui| {
                                                         // Artist Avatar Circle
                                                         let (avatar_rect, _) = ui.allocate_exact_size(Vec2::new(56.0, 56.0), egui::Sense::hover());
-                                                        let painter = ui.painter_at(avatar_rect);
+                                                        let painter = ui.painter();
                                                         draw_artist_avatar(&painter, avatar_rect.center(), 28.0, art_name);
 
                                                         ui.add_space(8.0);
@@ -615,7 +674,7 @@ impl LunulaApp {
                                                     };
                                                     let thumb_tex = self.get_album_cover_texture(ui.ctx(), cover_key, song.file_path.as_deref());
                                                     let (thumb_rect, _) = ui.allocate_exact_size(Vec2::new(30.0, 30.0), egui::Sense::hover());
-                                                    let painter = ui.painter_at(thumb_rect);
+                                                    let painter = ui.painter();
                                                     if let Some(ref tex) = thumb_tex {
                                                         painter.rect_filled(thumb_rect, 4.0, Color32::from_rgb(15, 23, 42));
                                                         painter.image(
@@ -633,8 +692,28 @@ impl LunulaApp {
                                                     }
                                                     ui.add_space(6.0);
 
+                                                    let binding_eval = self.evaluate_auto_binding(song);
                                                     ui.vertical(|ui| {
-                                                        ui.label(egui::RichText::new(&song.title).strong().size(13.5).color(Color32::from_rgb(15, 23, 42)));
+                                                        ui.horizontal(|ui| {
+                                                            ui.spacing_mut().item_spacing.x = 4.0;
+                                                            if let Some((ref bind_type, ref preset_name, ref label)) = binding_eval {
+                                                                let (bg, fg) = bind_type.colors();
+                                                                let badge_resp = egui::Frame::new()
+                                                                    .fill(bg)
+                                                                    .stroke(Stroke::new(1.0, fg))
+                                                                    .corner_radius(4.0)
+                                                                    .inner_margin(egui::Margin::symmetric(4, 1))
+                                                                    .show(ui, |ui| {
+                                                                        ui.label(egui::RichText::new(bind_type.badge_label()).size(8.5).strong().color(fg));
+                                                                    });
+                                                                badge_resp.response.on_hover_ui(|ui| {
+                                                                    ui.label(egui::RichText::new(format!("🔗 Preset Studio: '{}'", preset_name)).strong().size(12.0).color(Color32::from_rgb(15, 23, 42)));
+                                                                    ui.add_space(2.0);
+                                                                    ui.label(egui::RichText::new(format!("Tingkat: {} ({})\nTarget: {}\n{}", bind_type.weight_badge(), bind_type.badge_label(), label, bind_type.precedence_note())).size(10.5).color(Color32::from_rgb(71, 85, 105)));
+                                                                });
+                                                            }
+                                                            ui.label(egui::RichText::new(&song.title).strong().size(13.5).color(Color32::from_rgb(15, 23, 42)));
+                                                        });
                                                         ui.label(egui::RichText::new(format!("{} • {}", song.artist, song.album)).size(11.5).color(Color32::from_rgb(71, 85, 105)));
                                                     });
 
@@ -689,6 +768,100 @@ impl LunulaApp {
                                                     }
                                                 }
                                             });
+
+                                            // Auto-Binding Studio Presets
+                                            let has_indiv_track = self.preset_bindings.iter().any(|b| b.target_type == PresetBindingType::Track && b.target_key.trim().eq_ignore_ascii_case(song.title.trim()));
+                                            let has_album_bind = !song.album.trim().is_empty() && self.preset_bindings.iter().any(|b| b.target_type == PresetBindingType::Album && b.target_key.trim().eq_ignore_ascii_case(song.album.trim()));
+
+                                            ui.menu_button("🔗 Tautkan Preset Studio", |ui| {
+                                                ui.label(egui::RichText::new("Tingkat Precedence Auto-Binding:").size(10.5).color(Color32::from_rgb(100, 116, 139)));
+                                                ui.separator();
+
+                                                // 1. Trek individual (Weight 300)
+                                                ui.menu_button(egui::RichText::new("🎵 Tautkan Trek Ini (Weight 300)").color(Color32::from_rgb(16, 185, 129)), |ui| {
+                                                    ui.label(egui::RichText::new("Prioritas tertinggi: selalu menang atas Album & Genre").size(10.0).color(Color32::from_rgb(100, 116, 139)));
+                                                    ui.separator();
+                                                    if available_preset_names.is_empty() {
+                                                        ui.label(egui::RichText::new("Belum ada preset studio tersimpan").italics().size(11.0).color(Color32::from_rgb(148, 163, 184)));
+                                                    }
+                                                    for preset_name in &available_preset_names {
+                                                        if ui.button(preset_name).clicked() {
+                                                            track_bind_to_preset = Some((
+                                                                PresetBindingType::Track,
+                                                                song.title.trim().to_string(),
+                                                                format!("{} - {}", song.artist.trim(), song.title.trim()),
+                                                                preset_name.clone(),
+                                                            ));
+                                                            ui.close();
+                                                        }
+                                                    }
+                                                });
+
+                                                // 2. Album (Weight 200)
+                                                if !song.album.trim().is_empty() {
+                                                    ui.menu_button(egui::RichText::new(format!("💿 Tautkan Album \"{}\" (Weight 200)", song.album.trim())).color(Color32::from_rgb(79, 70, 229)), |ui| {
+                                                        ui.label(egui::RichText::new("Berlaku untuk semua trek dalam album ini").size(10.0).color(Color32::from_rgb(100, 116, 139)));
+                                                        ui.separator();
+                                                        if available_preset_names.is_empty() {
+                                                            ui.label(egui::RichText::new("Belum ada preset studio tersimpan").italics().size(11.0).color(Color32::from_rgb(148, 163, 184)));
+                                                        }
+                                                        for preset_name in &available_preset_names {
+                                                            if ui.button(preset_name).clicked() {
+                                                                track_bind_to_preset = Some((
+                                                                    PresetBindingType::Album,
+                                                                    song.album.trim().to_string(),
+                                                                    song.album.trim().to_string(),
+                                                                    preset_name.clone(),
+                                                                ));
+                                                                ui.close();
+                                                            }
+                                                        }
+                                                    });
+                                                }
+
+                                                // 3. Genre (Weight 100)
+                                                if let Some(ref genre) = song.genre {
+                                                    let clean_genre = genre.trim();
+                                                    if !clean_genre.is_empty() {
+                                                        ui.menu_button(egui::RichText::new(format!("🎭 Tautkan Genre \"{}\" (Weight 100)", clean_genre)).color(Color32::from_rgb(124, 58, 237)), |ui| {
+                                                            ui.label(egui::RichText::new("Preset payung untuk semua musik dengan genre ini").size(10.0).color(Color32::from_rgb(100, 116, 139)));
+                                                            ui.separator();
+                                                            if available_preset_names.is_empty() {
+                                                                ui.label(egui::RichText::new("Belum ada preset studio tersimpan").italics().size(11.0).color(Color32::from_rgb(148, 163, 184)));
+                                                            }
+                                                            for preset_name in &available_preset_names {
+                                                                if ui.button(preset_name).clicked() {
+                                                                    track_bind_to_preset = Some((
+                                                                        PresetBindingType::Genre,
+                                                                        clean_genre.to_string(),
+                                                                        clean_genre.to_string(),
+                                                                        preset_name.clone(),
+                                                                    ));
+                                                                    ui.close();
+                                                                }
+                                                            }
+                                                        });
+                                                    }
+                                                }
+
+                                                ui.separator();
+                                                if ui.button("⚙️ Buka Manajer Auto-Binding...").clicked() {
+                                                    open_binding_manager = true;
+                                                    ui.close();
+                                                }
+                                            });
+
+                                            if has_indiv_track {
+                                                if ui.button(egui::RichText::new("✕ Lepas Binding Lagu Ini").color(Color32::from_rgb(225, 29, 72))).clicked() {
+                                                    track_unbind_rule = Some((PresetBindingType::Track, song.title.trim().to_string()));
+                                                    ui.close();
+                                                }
+                                            } else if has_album_bind {
+                                                if ui.button(egui::RichText::new("✕ Lepas Binding Album Ini").color(Color32::from_rgb(225, 29, 72))).clicked() {
+                                                    track_unbind_rule = Some((PresetBindingType::Album, song.album.trim().to_string()));
+                                                    ui.close();
+                                                }
+                                            }
                                             if ui.button("🗑️ Hapus Lagu dari Library").clicked() {
                                                 track_to_delete_from_library = Some((song.title.clone(), song.artist.clone()));
                                                 ui.close();
@@ -934,6 +1107,24 @@ impl LunulaApp {
                             });
                         }
                         LibraryCategory::AllTracks => {
+                            let table_avail_w = ui.available_width();
+                            let is_table_compact = table_avail_w < 840.0;
+                            let is_table_ultra_compact = table_avail_w < 600.0;
+
+                            let col_num_w = 26.0;
+                            let col_art_w = 34.0;
+                            let col_fav_w = 26.0;
+                            let col_right_w = if is_table_compact { 65.0 } else { 120.0 };
+                            let col_rem_w = (table_avail_w - col_num_w - col_art_w - col_fav_w - col_right_w - 32.0).max(120.0);
+
+                            let (col_title_w, col_album_w, col_fmt_w) = if is_table_ultra_compact {
+                                (col_rem_w, 0.0, 0.0)
+                            } else if is_table_compact {
+                                (col_rem_w * 0.58, col_rem_w * 0.42, 0.0)
+                            } else {
+                                (col_rem_w * 0.44, col_rem_w * 0.32, col_rem_w * 0.24)
+                            };
+
                             // Column Headers with soft Slate-100 container
                             egui::Frame::new()
                                 .fill(Color32::from_rgb(241, 245, 249))
@@ -941,28 +1132,34 @@ impl LunulaApp {
                                 .inner_margin(egui::Margin::symmetric(10, 7))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
-                                        ui.allocate_ui(Vec2::new(28.0, 18.0), |ui| {
+                                        ui.allocate_ui(Vec2::new(col_num_w, 18.0), |ui| {
                                             ui.label(egui::RichText::new("#").strong().size(11.5).color(Color32::from_rgb(71, 85, 105)));
                                         });
-                                        ui.allocate_ui(Vec2::new(34.0, 18.0), |ui| {
+                                        ui.allocate_ui(Vec2::new(col_art_w, 18.0), |ui| {
                                             ui.label(egui::RichText::new("ART").strong().size(10.5).color(Color32::from_rgb(71, 85, 105)));
                                         });
-                                        ui.allocate_ui(Vec2::new(28.0, 18.0), |ui| {
+                                        ui.allocate_ui(Vec2::new(col_fav_w, 18.0), |ui| {
                                             ui.label(egui::RichText::new("FAV").strong().size(11.0).color(Color32::from_rgb(71, 85, 105)));
                                         });
-                                        ui.allocate_ui(Vec2::new(290.0, 18.0), |ui| {
+                                        ui.allocate_ui(Vec2::new(col_title_w, 18.0), |ui| {
                                             ui.label(egui::RichText::new("JUDUL & ARTIS").strong().size(11.5).color(Color32::from_rgb(71, 85, 105)));
                                         });
-                                        ui.allocate_ui(Vec2::new(220.0, 18.0), |ui| {
-                                            ui.label(egui::RichText::new("ALBUM").strong().size(11.5).color(Color32::from_rgb(71, 85, 105)));
-                                        });
-                                        ui.allocate_ui(Vec2::new(170.0, 18.0), |ui| {
-                                            ui.label(egui::RichText::new("FORMAT / RESOLUSI").strong().size(11.5).color(Color32::from_rgb(71, 85, 105)));
-                                        });
+                                        if col_album_w > 0.0 {
+                                            ui.allocate_ui(Vec2::new(col_album_w, 18.0), |ui| {
+                                                ui.label(egui::RichText::new("ALBUM").strong().size(11.5).color(Color32::from_rgb(71, 85, 105)));
+                                            });
+                                        }
+                                        if col_fmt_w > 0.0 {
+                                            ui.allocate_ui(Vec2::new(col_fmt_w, 18.0), |ui| {
+                                                ui.label(egui::RichText::new("FORMAT").strong().size(11.5).color(Color32::from_rgb(71, 85, 105)));
+                                            });
+                                        }
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                             ui.label(egui::RichText::new("DURASI").strong().size(11.5).color(Color32::from_rgb(71, 85, 105)));
-                                            ui.add_space(20.0);
-                                            ui.label(egui::RichText::new("UKURAN").strong().size(11.5).color(Color32::from_rgb(71, 85, 105)));
+                                            if !is_table_compact {
+                                                ui.add_space(16.0);
+                                                ui.label(egui::RichText::new("UKURAN").strong().size(11.5).color(Color32::from_rgb(71, 85, 105)));
+                                            }
                                         });
                                     });
                                 });
@@ -1040,7 +1237,7 @@ impl LunulaApp {
                                 });
                             } else {
                                 // Track Rows Virtual Scroll: Only renders visible rows for instant 0ms latency
-                                egui::ScrollArea::vertical().show_rows(ui, 48.0, matching_tracks.len(), |ui, row_range| {
+                                egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 46.0, matching_tracks.len(), |ui, row_range| {
                                     for row_idx in row_range {
                                         let (idx, song) = matching_tracks[row_idx];
                                         let is_current = self.current_track.title == song.title && self.current_track.artist == song.artist;
@@ -1090,7 +1287,7 @@ impl LunulaApp {
                                         .show(ui, |ui| {
                                             ui.horizontal(|ui| {
                                                 // Track number / Play indicator
-                                                ui.allocate_ui(Vec2::new(28.0, 34.0), |ui| {
+                                                ui.allocate_ui(Vec2::new(col_num_w, 34.0), |ui| {
                                                     ui.centered_and_justified(|ui| {
                                                         if is_current {
                                                             ui.colored_label(Color32::from_rgb(5, 150, 105), "▶");
@@ -1101,7 +1298,7 @@ impl LunulaApp {
                                                 });
 
                                                 // Cover Art Thumbnail
-                                                ui.allocate_ui(Vec2::new(34.0, 34.0), |ui| {
+                                                ui.allocate_ui(Vec2::new(col_art_w, 34.0), |ui| {
                                                     let cover_key = if !song.album.trim().is_empty() {
                                                         &song.album
                                                     } else {
@@ -1109,7 +1306,7 @@ impl LunulaApp {
                                                     };
                                                     let thumb_tex = self.get_album_cover_texture(ui.ctx(), cover_key, song.file_path.as_deref());
                                                     let (thumb_rect, _) = ui.allocate_exact_size(Vec2::new(30.0, 30.0), egui::Sense::hover());
-                                                    let painter = ui.painter_at(thumb_rect);
+                                                    let painter = ui.painter();
                                                     if let Some(ref tex) = thumb_tex {
                                                         painter.rect_filled(thumb_rect, 4.0, Color32::from_rgb(15, 23, 42));
                                                         painter.image(
@@ -1128,7 +1325,7 @@ impl LunulaApp {
                                                 });
 
                                                 // Favorite Heart Toggle
-                                                ui.allocate_ui(Vec2::new(28.0, 34.0), |ui| {
+                                                ui.allocate_ui(Vec2::new(col_fav_w, 34.0), |ui| {
                                                     ui.centered_and_justified(|ui| {
                                                         let icon = if song.is_favorite { "❤️" } else { "🤍" };
                                                         if ui.button(egui::RichText::new(icon).size(13.0)).clicked() {
@@ -1137,61 +1334,92 @@ impl LunulaApp {
                                                     });
                                                 });
 
-                                                // Title & Artist
-                                                ui.allocate_ui(Vec2::new(290.0, 34.0), |ui| {
+                                                // Title & Artist (Adaptive subtitle)
+                                                let binding_eval = self.evaluate_auto_binding(song);
+                                                ui.allocate_ui(Vec2::new(col_title_w, 34.0), |ui| {
                                                     ui.vertical(|ui| {
                                                         let title_color = if is_current { Color32::from_rgb(5, 150, 105) } else { Color32::from_rgb(15, 23, 42) };
-                                                        ui.add(egui::Label::new(egui::RichText::new(&song.title).strong().size(13.5).color(title_color)).truncate());
-                                                        ui.add(egui::Label::new(egui::RichText::new(&song.artist).size(11.5).color(Color32::from_rgb(71, 85, 105))).truncate());
+                                                        ui.horizontal(|ui| {
+                                                            ui.spacing_mut().item_spacing.x = 4.0;
+                                                            if let Some((ref bind_type, ref preset_name, ref label)) = binding_eval {
+                                                                let (bg, fg) = bind_type.colors();
+                                                                let badge_resp = egui::Frame::new()
+                                                                    .fill(bg)
+                                                                    .stroke(Stroke::new(1.0, fg))
+                                                                    .corner_radius(4.0)
+                                                                    .inner_margin(egui::Margin::symmetric(4, 1))
+                                                                    .show(ui, |ui| {
+                                                                        ui.label(egui::RichText::new(bind_type.badge_label()).size(8.5).strong().color(fg));
+                                                                    });
+                                                                badge_resp.response.on_hover_ui(|ui| {
+                                                                    ui.label(egui::RichText::new(format!("🔗 Preset Studio: '{}'", preset_name)).strong().size(12.0).color(Color32::from_rgb(15, 23, 42)));
+                                                                    ui.add_space(2.0);
+                                                                    ui.label(egui::RichText::new(format!("Tingkat: {} ({})\nTarget: {}\n{}", bind_type.weight_badge(), bind_type.badge_label(), label, bind_type.precedence_note())).size(10.5).color(Color32::from_rgb(71, 85, 105)));
+                                                                });
+                                                            }
+                                                            ui.add(egui::Label::new(egui::RichText::new(&song.title).strong().size(13.5).color(title_color)).truncate());
+                                                        });
+                                                        let sub_artist = if col_album_w == 0.0 {
+                                                            format!("{} • {}", song.artist, song.album)
+                                                        } else {
+                                                            song.artist.clone()
+                                                        };
+                                                        ui.add(egui::Label::new(egui::RichText::new(sub_artist).size(11.5).color(Color32::from_rgb(71, 85, 105))).truncate());
                                                     });
                                                 });
 
-                                                // Album
-                                                ui.allocate_ui(Vec2::new(220.0, 34.0), |ui| {
-                                                    ui.add(egui::Label::new(egui::RichText::new(&song.album).size(12.0).color(Color32::from_rgb(51, 65, 85))).truncate());
-                                                });
+                                                // Album (if shown)
+                                                if col_album_w > 0.0 {
+                                                    ui.allocate_ui(Vec2::new(col_album_w, 34.0), |ui| {
+                                                        ui.add(egui::Label::new(egui::RichText::new(&song.album).size(12.0).color(Color32::from_rgb(51, 65, 85))).truncate());
+                                                    });
+                                                }
 
-                                                // Format / Quality Badge
-                                                ui.allocate_ui(Vec2::new(170.0, 34.0), |ui| {
-                                                    let is_hi_res = song.sample_rate >= 88200 || song.bit_depth >= 24;
-                                                    let fmt = song.format.to_uppercase();
-                                                    let (badge_bg, badge_border, badge_text) = if is_hi_res {
-                                                        (Color32::from_rgb(236, 253, 245), Color32::from_rgb(167, 243, 208), Color32::from_rgb(4, 120, 87))
-                                                    } else if fmt == "FLAC" || fmt == "ALAC" {
-                                                        (Color32::from_rgb(239, 246, 255), Color32::from_rgb(191, 219, 254), Color32::from_rgb(29, 78, 216))
-                                                    } else if fmt == "WAV" || fmt == "AIFF" || fmt == "DSD" || fmt == "DSF" {
-                                                        (Color32::from_rgb(245, 243, 255), Color32::from_rgb(221, 214, 254), Color32::from_rgb(109, 40, 217))
-                                                    } else {
-                                                        (Color32::from_rgb(241, 245, 249), Color32::from_rgb(226, 232, 240), Color32::from_rgb(71, 85, 105))
-                                                    };
+                                                // Format / Quality Badge (if shown)
+                                                if col_fmt_w > 0.0 {
+                                                    ui.allocate_ui(Vec2::new(col_fmt_w, 34.0), |ui| {
+                                                        let is_hi_res = song.sample_rate >= 88200 || song.bit_depth >= 24;
+                                                        let fmt = song.format.to_uppercase();
+                                                        let (badge_bg, badge_border, badge_text) = if is_hi_res {
+                                                            (Color32::from_rgb(236, 253, 245), Color32::from_rgb(167, 243, 208), Color32::from_rgb(4, 120, 87))
+                                                        } else if fmt == "FLAC" || fmt == "ALAC" {
+                                                            (Color32::from_rgb(239, 246, 255), Color32::from_rgb(191, 219, 254), Color32::from_rgb(29, 78, 216))
+                                                        } else if fmt == "WAV" || fmt == "AIFF" || fmt == "DSD" || fmt == "DSF" {
+                                                            (Color32::from_rgb(245, 243, 255), Color32::from_rgb(221, 214, 254), Color32::from_rgb(109, 40, 217))
+                                                        } else {
+                                                            (Color32::from_rgb(241, 245, 249), Color32::from_rgb(226, 232, 240), Color32::from_rgb(71, 85, 105))
+                                                        };
 
-                                                    let rate_khz = song.sample_rate as f32 / 1000.0;
-                                                    let quality_str = if song.bit_depth > 0 {
-                                                        format!("{} {:.1}k/{}b", song.format, rate_khz, song.bit_depth)
-                                                    } else if let Some(br) = song.bitrate_kbps {
-                                                        format!("{} {}k", song.format, br)
-                                                    } else {
-                                                        format!("{} {:.1}k", song.format, rate_khz)
-                                                    };
+                                                        let rate_khz = song.sample_rate as f32 / 1000.0;
+                                                        let quality_str = if song.bit_depth > 0 {
+                                                            format!("{} {:.1}k/{}b", song.format, rate_khz, song.bit_depth)
+                                                        } else if let Some(br) = song.bitrate_kbps {
+                                                            format!("{} {}k", song.format, br)
+                                                        } else {
+                                                            format!("{} {:.1}k", song.format, rate_khz)
+                                                        };
 
-                                                    egui::Frame::new()
-                                                        .fill(badge_bg)
-                                                        .stroke(Stroke::new(1.0, badge_border))
-                                                        .corner_radius(4.0)
-                                                        .inner_margin(egui::Margin::symmetric(7, 3))
-                                                        .show(ui, |ui| {
-                                                            ui.label(egui::RichText::new(quality_str).size(10.5).strong().color(badge_text));
-                                                        });
-                                                });
+                                                        egui::Frame::new()
+                                                            .fill(badge_bg)
+                                                            .stroke(Stroke::new(1.0, badge_border))
+                                                            .corner_radius(4.0)
+                                                            .inner_margin(egui::Margin::symmetric(7, 3))
+                                                            .show(ui, |ui| {
+                                                                ui.label(egui::RichText::new(quality_str).size(10.5).strong().color(badge_text));
+                                                            });
+                                                    });
+                                                }
 
                                                 // File size & Duration
                                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                     ui.label(egui::RichText::new(format_time(song.duration)).strong().size(12.5).color(Color32::from_rgb(30, 41, 59)));
-                                                    ui.add_space(20.0);
-                                                    if song.file_size_mb > 0.0 {
-                                                        ui.label(egui::RichText::new(format!("{:.1} MB", song.file_size_mb)).size(11.5).color(Color32::from_rgb(71, 85, 105)));
-                                                    } else {
-                                                        ui.label(egui::RichText::new("-").size(11.5).color(Color32::from_rgb(100, 116, 139)));
+                                                    if !is_table_compact {
+                                                        ui.add_space(16.0);
+                                                        if song.file_size_mb > 0.0 {
+                                                            ui.label(egui::RichText::new(format!("{:.1} MB", song.file_size_mb)).size(11.5).color(Color32::from_rgb(71, 85, 105)));
+                                                        } else {
+                                                            ui.label(egui::RichText::new("-").size(11.5).color(Color32::from_rgb(100, 116, 139)));
+                                                        }
                                                     }
                                                 });
                                             });
@@ -1249,6 +1477,100 @@ impl LunulaApp {
                                         if let Some(ref pl_name) = self.selected_playlist_filter {
                                             if ui.button(format!("🗑️ Hapus dari Playlist \"{}\"", pl_name)).clicked() {
                                                 track_remove_from_playlist = Some((pl_name.clone(), track_id));
+                                                ui.close();
+                                            }
+                                        }
+
+                                        // Auto-Binding Studio Presets
+                                        let has_indiv_track = self.preset_bindings.iter().any(|b| b.target_type == PresetBindingType::Track && b.target_key.trim().eq_ignore_ascii_case(song.title.trim()));
+                                        let has_album_bind = !song.album.trim().is_empty() && self.preset_bindings.iter().any(|b| b.target_type == PresetBindingType::Album && b.target_key.trim().eq_ignore_ascii_case(song.album.trim()));
+
+                                        ui.menu_button("🔗 Tautkan Preset Studio", |ui| {
+                                            ui.label(egui::RichText::new("Tingkat Precedence Auto-Binding:").size(10.5).color(Color32::from_rgb(100, 116, 139)));
+                                            ui.separator();
+
+                                            // 1. Trek individual (Weight 300)
+                                            ui.menu_button(egui::RichText::new("🎵 Tautkan Trek Ini (Weight 300)").color(Color32::from_rgb(16, 185, 129)), |ui| {
+                                                ui.label(egui::RichText::new("Prioritas tertinggi: selalu menang atas Album & Genre").size(10.0).color(Color32::from_rgb(100, 116, 139)));
+                                                ui.separator();
+                                                if available_preset_names.is_empty() {
+                                                    ui.label(egui::RichText::new("Belum ada preset studio tersimpan").italics().size(11.0).color(Color32::from_rgb(148, 163, 184)));
+                                                }
+                                                for preset_name in &available_preset_names {
+                                                    if ui.button(preset_name).clicked() {
+                                                        track_bind_to_preset = Some((
+                                                            PresetBindingType::Track,
+                                                            song.title.trim().to_string(),
+                                                            format!("{} - {}", song.artist.trim(), song.title.trim()),
+                                                            preset_name.clone(),
+                                                        ));
+                                                        ui.close();
+                                                    }
+                                                }
+                                            });
+
+                                            // 2. Album (Weight 200)
+                                            if !song.album.trim().is_empty() {
+                                                ui.menu_button(egui::RichText::new(format!("💿 Tautkan Album \"{}\" (Weight 200)", song.album.trim())).color(Color32::from_rgb(79, 70, 229)), |ui| {
+                                                    ui.label(egui::RichText::new("Berlaku untuk semua trek dalam album ini").size(10.0).color(Color32::from_rgb(100, 116, 139)));
+                                                    ui.separator();
+                                                    if available_preset_names.is_empty() {
+                                                        ui.label(egui::RichText::new("Belum ada preset studio tersimpan").italics().size(11.0).color(Color32::from_rgb(148, 163, 184)));
+                                                    }
+                                                    for preset_name in &available_preset_names {
+                                                        if ui.button(preset_name).clicked() {
+                                                            track_bind_to_preset = Some((
+                                                                PresetBindingType::Album,
+                                                                song.album.trim().to_string(),
+                                                                song.album.trim().to_string(),
+                                                                preset_name.clone(),
+                                                            ));
+                                                            ui.close();
+                                                        }
+                                                    }
+                                                });
+                                            }
+
+                                            // 3. Genre (Weight 100)
+                                            if let Some(ref genre) = song.genre {
+                                                let clean_genre = genre.trim();
+                                                if !clean_genre.is_empty() {
+                                                    ui.menu_button(egui::RichText::new(format!("🎭 Tautkan Genre \"{}\" (Weight 100)", clean_genre)).color(Color32::from_rgb(124, 58, 237)), |ui| {
+                                                        ui.label(egui::RichText::new("Preset payung untuk semua musik dengan genre ini").size(10.0).color(Color32::from_rgb(100, 116, 139)));
+                                                        ui.separator();
+                                                        if available_preset_names.is_empty() {
+                                                            ui.label(egui::RichText::new("Belum ada preset studio tersimpan").italics().size(11.0).color(Color32::from_rgb(148, 163, 184)));
+                                                        }
+                                                        for preset_name in &available_preset_names {
+                                                            if ui.button(preset_name).clicked() {
+                                                                track_bind_to_preset = Some((
+                                                                    PresetBindingType::Genre,
+                                                                    clean_genre.to_string(),
+                                                                    clean_genre.to_string(),
+                                                                    preset_name.clone(),
+                                                                ));
+                                                                ui.close();
+                                                            }
+                                                        }
+                                                    });
+                                                }
+                                            }
+
+                                            ui.separator();
+                                            if ui.button("⚙️ Buka Manajer Auto-Binding...").clicked() {
+                                                open_binding_manager = true;
+                                                ui.close();
+                                            }
+                                        });
+
+                                        if has_indiv_track {
+                                            if ui.button(egui::RichText::new("✕ Lepas Binding Lagu Ini").color(Color32::from_rgb(225, 29, 72))).clicked() {
+                                                track_unbind_rule = Some((PresetBindingType::Track, song.title.trim().to_string()));
+                                                ui.close();
+                                            }
+                                        } else if has_album_bind {
+                                            if ui.button(egui::RichText::new("✕ Lepas Binding Album Ini").color(Color32::from_rgb(225, 29, 72))).clicked() {
+                                                track_unbind_rule = Some((PresetBindingType::Album, song.album.trim().to_string()));
                                                 ui.close();
                                             }
                                         }
@@ -1437,6 +1759,49 @@ impl LunulaApp {
         }
         if switch_to_all_tracks {
             self.library_category = LibraryCategory::AllTracks;
+        }
+
+        if let Some((target_type, target_key, target_label, preset_name)) = track_bind_to_preset {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let prefix = match target_type {
+                PresetBindingType::Track => "trk",
+                PresetBindingType::Album => "alb",
+                PresetBindingType::Genre => "gnr",
+            };
+            self.preset_bindings.retain(|b| !(b.target_type == target_type && b.target_key.eq_ignore_ascii_case(&target_key)));
+            self.preset_bindings.push(crate::preset::PresetBindingRule {
+                id: format!("bind_{}_{}", prefix, now),
+                target_type: target_type.clone(),
+                target_key: target_key.clone(),
+                target_label: target_label.clone(),
+                preset_name: preset_name.clone(),
+            });
+            self.save_auto_bindings();
+            self.preset_status_notification = Some((
+                format!("🔗 {} '{}' berhasil diikat ke preset '{}' ({})!", target_type.badge_label(), target_label, preset_name, target_type.weight_badge()),
+                true,
+            ));
+            self.preset_status_notification_time = Some(std::time::Instant::now());
+            had_mutations = true;
+        }
+
+        if let Some((target_type, target_key)) = track_unbind_rule {
+            let before_len = self.preset_bindings.len();
+            self.preset_bindings.retain(|b| !(b.target_type == target_type && b.target_key.eq_ignore_ascii_case(&target_key)));
+            if self.preset_bindings.len() < before_len {
+                self.save_auto_bindings();
+                self.preset_status_notification = Some((
+                    format!("✕ Aturan auto-binding {} '{}' berhasil dilepas.", target_type.badge_label(), target_key),
+                    true,
+                ));
+                self.preset_status_notification_time = Some(std::time::Instant::now());
+                had_mutations = true;
+            }
+        }
+
+        if open_binding_manager {
+            self.show_export_preset_modal = true;
+            self.preset_modal_tab = 2;
         }
 
         if had_mutations {

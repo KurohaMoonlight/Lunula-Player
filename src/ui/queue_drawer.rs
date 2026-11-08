@@ -33,40 +33,39 @@ impl LunulaApp {
             ui.separator();
             ui.add_space(4.0);
 
-            // 2. Playback & Repeat Mode Options Box with animated hover
+            // 2. Playback & Repeat Mode Options Box with animated hover & ZERO layout shift
             let opt_card_id = ui.scope_id().with("queue_options_card");
-            let opt_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), 62.0));
-            let opt_hovered = ui.input(|i| i.pointer.hover_pos().map_or(false, |p| opt_rect.contains(p)));
+            let opt_hovered = ui.data(|d| d.get_temp::<bool>(opt_card_id).unwrap_or(false));
             let opt_hover_t = ui.ctx().animate_bool(opt_card_id, opt_hovered);
             let opt_bg = lerp_color(Color32::from_rgb(248, 250, 252), Color32::from_rgb(255, 255, 255), opt_hover_t);
             let opt_border = lerp_color(Color32::from_rgb(226, 232, 240), Color32::from_rgb(199, 210, 254), opt_hover_t);
 
-            egui::Frame::new()
+            let opt_frame_resp = egui::Frame::new()
                 .fill(opt_bg)
                 .stroke(Stroke::new(1.0, opt_border))
                 .corner_radius(8.0)
                 .inner_margin(8.0)
                 .show(ui, |ui| {
                     ui.vertical(|ui| {
-                        // Repeat options
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("🔁 Repeat:").strong().size(11.0).color(Color32::from_rgb(71, 85, 105)));
+                        // Row 1: Repeat options
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(egui::RichText::new("🔁 Repeat:").strong().size(10.5).color(Color32::from_rgb(71, 85, 105)));
 
                             let repeat_modes = [
-                                (RepeatMode::Off, "✕ Mati", "Tidak mengulang (berhenti setelah selesai)"),
-                                (RepeatMode::All, "🔁 Semua", "Mengulang seluruh playlist & antrean"),
-                                (RepeatMode::One, "🔂 Lagu", "Mengulang lagu yang sedang diputar"),
-                                (RepeatMode::Album, "💿 Album Ini", "Mengulang hanya lagu di album yang sama"),
+                                (RepeatMode::Off, "Mati", "Tidak mengulang (berhenti setelah selesai)"),
+                                (RepeatMode::All, "Semua", "Mengulang seluruh playlist & antrean"),
+                                (RepeatMode::One, "1 Lagu", "Mengulang lagu yang sedang diputar"),
+                                (RepeatMode::Album, "Album", "Mengulang hanya lagu di album yang sama"),
                             ];
 
                             for (mode, label, tip) in repeat_modes {
                                 let is_active = self.repeat_mode == mode;
                                 let btn = if is_active {
-                                    egui::Button::new(egui::RichText::new(label).strong().size(10.5).color(Color32::WHITE))
+                                    egui::Button::new(egui::RichText::new(label).strong().size(10.0).color(Color32::WHITE))
                                         .fill(Color32::from_rgb(2, 132, 199))
                                         .corner_radius(4.0)
                                 } else {
-                                    egui::Button::new(egui::RichText::new(label).size(10.5).color(Color32::from_rgb(71, 85, 105)))
+                                    egui::Button::new(egui::RichText::new(label).size(10.0).color(Color32::from_rgb(71, 85, 105)))
                                         .fill(Color32::WHITE)
                                         .stroke(Stroke::new(1.0, Color32::from_rgb(203, 213, 225)))
                                         .corner_radius(4.0)
@@ -77,18 +76,17 @@ impl LunulaApp {
                             }
                         });
 
-                        ui.add_space(4.0);
+                        ui.add_space(3.0);
 
-                        // Shuffle & Queue Tools
-                        ui.horizontal(|ui| {
-                            // Shuffle Mode Toggle
-                            let shuf_label = if self.is_shuffled { "🔀 Acak: Aktif" } else { "🔀 Acak: Mati" };
+                        // Row 2: Shuffle & Stable Queue Tools (Always present to prevent layout shift!)
+                        ui.horizontal_wrapped(|ui| {
+                            let shuf_label = if self.is_shuffled { "🔀 Acak: ON" } else { "🔀 Acak: OFF" };
                             let shuf_btn = if self.is_shuffled {
-                                egui::Button::new(egui::RichText::new(shuf_label).strong().size(10.5).color(Color32::WHITE))
+                                egui::Button::new(egui::RichText::new(shuf_label).strong().size(10.0).color(Color32::WHITE))
                                     .fill(Color32::from_rgb(14, 165, 233))
                                     .corner_radius(4.0)
                             } else {
-                                egui::Button::new(egui::RichText::new(shuf_label).size(10.5).color(Color32::from_rgb(71, 85, 105)))
+                                egui::Button::new(egui::RichText::new(shuf_label).size(10.0).color(Color32::from_rgb(71, 85, 105)))
                                     .fill(Color32::WHITE)
                                     .stroke(Stroke::new(1.0, Color32::from_rgb(203, 213, 225)))
                                     .corner_radius(4.0)
@@ -98,39 +96,42 @@ impl LunulaApp {
                             }
 
                             if !self.play_queue.is_empty() {
-                                if ui.button(egui::RichText::new("🎲 Acak Antrean").size(10.5)).on_hover_text("Kocok urutan antrean saat ini").clicked() {
+                                if ui.button(egui::RichText::new("🎲 Kocok").size(10.0)).on_hover_text("Kocok urutan antrean saat ini").clicked() {
                                     shuffle_queue_now = true;
                                 }
                             }
 
-                            // Selected item Move Up/Down shortcuts
-                            if let Some(sel) = self.selected_queue_idx {
-                                if sel < self.play_queue.len() {
-                                    ui.add_enabled_ui(sel > 0, |ui| {
-                                        if ui.button(egui::RichText::new("⬆ Naik").size(10.0)).on_hover_text("Pindahkan lagu terpilih ke atas").clicked() {
-                                            move_up_idx = Some(sel);
-                                        }
-                                    });
-                                    ui.add_enabled_ui(sel + 1 < self.play_queue.len(), |ui| {
-                                        if ui.button(egui::RichText::new("⬇ Turun").size(10.0)).on_hover_text("Pindahkan lagu terpilih ke bawah").clicked() {
-                                            move_down_idx = Some(sel);
-                                        }
-                                    });
+                            // Stable Move Up/Down shortcuts (Disabled when not applicable, avoiding layout shift)
+                            let can_move_up = self.selected_queue_idx.map_or(false, |sel| sel > 0 && sel < self.play_queue.len());
+                            let can_move_down = self.selected_queue_idx.map_or(false, |sel| sel + 1 < self.play_queue.len());
+
+                            ui.add_enabled_ui(can_move_up, |ui| {
+                                if ui.button(egui::RichText::new("⬆ Naik").size(10.0)).on_hover_text("Pindahkan lagu terpilih ke atas (Ctrl+Up)").clicked() {
+                                    if let Some(sel) = self.selected_queue_idx {
+                                        move_up_idx = Some(sel);
+                                    }
                                 }
-                            }
+                            });
+                            ui.add_enabled_ui(can_move_down, |ui| {
+                                if ui.button(egui::RichText::new("⬇ Turun").size(10.0)).on_hover_text("Pindahkan lagu terpilih ke bawah (Ctrl+Down)").clicked() {
+                                    if let Some(sel) = self.selected_queue_idx {
+                                        move_down_idx = Some(sel);
+                                    }
+                                }
+                            });
                         });
 
-                        ui.add_space(4.0);
+                        ui.add_space(3.0);
 
-                        // Gapless & ReplayGain Controls
-                        ui.horizontal(|ui| {
+                        // Row 3: Gapless & Crossfade Controls
+                        ui.horizontal_wrapped(|ui| {
                             let gapless_label = if self.is_gapless_enabled { "⚡ Gapless: ON" } else { "⚡ Gapless: OFF" };
                             let gapless_btn = if self.is_gapless_enabled {
-                                egui::Button::new(egui::RichText::new(gapless_label).strong().size(10.5).color(Color32::WHITE))
+                                egui::Button::new(egui::RichText::new(gapless_label).strong().size(10.0).color(Color32::WHITE))
                                     .fill(Color32::from_rgb(16, 185, 129))
                                     .corner_radius(4.0)
                             } else {
-                                egui::Button::new(egui::RichText::new(gapless_label).size(10.5).color(Color32::from_rgb(71, 85, 105)))
+                                egui::Button::new(egui::RichText::new(gapless_label).size(10.0).color(Color32::from_rgb(71, 85, 105)))
                                     .fill(Color32::WHITE)
                                     .stroke(Stroke::new(1.0, Color32::from_rgb(203, 213, 225)))
                                     .corner_radius(4.0)
@@ -150,7 +151,31 @@ impl LunulaApp {
                                 }
                             }
 
-                            ui.label(egui::RichText::new("🔊 ReplayGain:").strong().size(10.5).color(Color32::from_rgb(71, 85, 105)));
+                            ui.label(egui::RichText::new("🔀 Fade:").strong().size(10.0).color(Color32::from_rgb(71, 85, 105)));
+                            let cf_presets = [(0.0f32, "Off"), (2.0, "2s"), (4.0, "4s"), (8.0, "8s")];
+                            for (secs, lbl) in cf_presets {
+                                let is_active = (self.crossfade_secs - secs).abs() < 0.2;
+                                let btn = if is_active {
+                                    egui::Button::new(egui::RichText::new(lbl).strong().size(9.5).color(Color32::WHITE))
+                                        .fill(Color32::from_rgb(14, 165, 233))
+                                        .corner_radius(4.0)
+                                } else {
+                                    egui::Button::new(egui::RichText::new(lbl).size(9.5).color(Color32::from_rgb(71, 85, 105)))
+                                        .fill(Color32::WHITE)
+                                        .stroke(Stroke::new(1.0, Color32::from_rgb(203, 213, 225)))
+                                        .corner_radius(4.0)
+                                };
+                                if ui.add(btn).on_hover_text("Transisi tumpang-tindih (fade-out lagu lama & fade-in lagu baru)").clicked() {
+                                    self.set_crossfade_secs(secs);
+                                }
+                            }
+                        });
+
+                        ui.add_space(3.0);
+
+                        // Row 4: ReplayGain Mode Selection
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(egui::RichText::new("🔊 ReplayGain:").strong().size(10.0).color(Color32::from_rgb(71, 85, 105)));
                             let rg_modes = [
                                 (crate::models::ReplayGainMode::Auto, "Auto"),
                                 (crate::models::ReplayGainMode::Track, "Track"),
@@ -160,11 +185,11 @@ impl LunulaApp {
                             for (m, lbl) in rg_modes {
                                 let is_active = self.replay_gain_mode == m;
                                 let btn = if is_active {
-                                    egui::Button::new(egui::RichText::new(lbl).strong().size(10.0).color(Color32::WHITE))
+                                    egui::Button::new(egui::RichText::new(lbl).strong().size(9.5).color(Color32::WHITE))
                                         .fill(Color32::from_rgb(99, 102, 241))
                                         .corner_radius(4.0)
                                 } else {
-                                    egui::Button::new(egui::RichText::new(lbl).size(10.0).color(Color32::from_rgb(71, 85, 105)))
+                                    egui::Button::new(egui::RichText::new(lbl).size(9.5).color(Color32::from_rgb(71, 85, 105)))
                                         .fill(Color32::WHITE)
                                         .stroke(Stroke::new(1.0, Color32::from_rgb(203, 213, 225)))
                                         .corner_radius(4.0)
@@ -173,28 +198,6 @@ impl LunulaApp {
                                     self.replay_gain_mode = m;
                                     self.update_effective_replay_gain();
                                     self.save_library_state();
-                                }
-                            }
-                        });
-
-                        // Crossfade Settings
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("🔀 Crossfade:").strong().size(10.5).color(Color32::from_rgb(71, 85, 105)));
-                            let cf_presets = [(0.0f32, "0s (Off)"), (2.0, "2s"), (4.0, "4s"), (8.0, "8s")];
-                            for (secs, lbl) in cf_presets {
-                                let is_active = (self.crossfade_secs - secs).abs() < 0.2;
-                                let btn = if is_active {
-                                    egui::Button::new(egui::RichText::new(lbl).strong().size(10.0).color(Color32::WHITE))
-                                        .fill(Color32::from_rgb(14, 165, 233))
-                                        .corner_radius(4.0)
-                                } else {
-                                    egui::Button::new(egui::RichText::new(lbl).size(10.0).color(Color32::from_rgb(71, 85, 105)))
-                                        .fill(Color32::WHITE)
-                                        .stroke(Stroke::new(1.0, Color32::from_rgb(203, 213, 225)))
-                                        .corner_radius(4.0)
-                                };
-                                if ui.add(btn).on_hover_text("Transisi tumpang-tindih (fade-out lagu lama & fade-in lagu baru)").clicked() {
-                                    self.set_crossfade_secs(secs);
                                 }
                             }
                         });
@@ -209,13 +212,15 @@ impl LunulaApp {
                             };
                             ui.label(
                                 egui::RichText::new(format!("💿 Mengulang khusus album: \"{}\"", alb_name))
-                                    .size(10.5)
+                                    .size(10.0)
                                     .color(Color32::from_rgb(2, 132, 199))
                                     .strong(),
                             );
                         }
                     });
                 });
+            let opt_is_hovered = opt_frame_resp.response.hovered();
+            ui.data_mut(|d| d.insert_temp(opt_card_id, opt_is_hovered));
 
             ui.add_space(6.0);
 
@@ -238,7 +243,7 @@ impl LunulaApp {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let (thumb_rect, _) = ui.allocate_exact_size(Vec2::splat(38.0), egui::Sense::hover());
-                        let painter = ui.painter_at(thumb_rect);
+                        let painter = ui.painter();
 
                         // Use actual cover art if available
                         let cover_key = if !self.current_track.album.trim().is_empty() {
@@ -262,7 +267,8 @@ impl LunulaApp {
 
                         ui.add_space(8.0);
                         ui.vertical(|ui| {
-                            ui.set_max_width(220.0);
+                            let np_text_w = (ui.available_width() - 8.0).max(60.0);
+                            ui.set_max_width(np_text_w);
                             let title_color = if self.is_playing { Color32::from_rgb(16, 185, 129) } else { Color32::from_rgb(15, 23, 42) };
                             ui.add(egui::Label::new(egui::RichText::new(&self.current_track.title).strong().size(13.0).color(title_color)).truncate());
                             ui.add(egui::Label::new(egui::RichText::new(format!("{} • {}", self.current_track.artist, self.current_track.album)).size(11.0).color(Color32::from_rgb(71, 85, 105))).truncate());
@@ -308,7 +314,7 @@ impl LunulaApp {
                 ui.label(egui::RichText::new("💡 Tips: Klik lagu untuk memilih • Gunakan tombol ▲ ▼ atau tombol panah keyboard ↑ ↓ untuk geser").size(10.0).color(Color32::from_rgb(148, 163, 184)));
                 ui.add_space(2.0);
 
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     for (idx, song) in self.play_queue.iter().enumerate() {
                         let is_selected = self.selected_queue_idx == Some(idx);
                         let is_active_track = self.queue_cursor == Some(idx);
@@ -391,7 +397,7 @@ impl LunulaApp {
                                         };
                                         let thumb_tex = self.get_album_cover_texture(ui.ctx(), cover_key, song.file_path.as_deref());
                                         let (thumb_rect, _) = ui.allocate_exact_size(Vec2::splat(26.0), egui::Sense::hover());
-                                        let painter = ui.painter_at(thumb_rect);
+                                        let painter = ui.painter();
                                         if let Some(ref tex) = thumb_tex {
                                             painter.rect_filled(thumb_rect, 3.0, Color32::from_rgb(15, 23, 42));
                                             painter.image(
@@ -407,8 +413,9 @@ impl LunulaApp {
                                         }
                                     });
 
-                                    // Title & Artist (clickable to select or double-click to play without removing)
-                                    let text_w = (ui.available_width() - 110.0).max(80.0);
+                                    // Title & Artist (guaranteed fixed column with clipping & truncation)
+                                    let actions_w = 84.0;
+                                    let text_w = (ui.available_width() - actions_w - 6.0).max(50.0);
                                     let (text_rect, text_res) = ui.allocate_exact_size(Vec2::new(text_w, 28.0), egui::Sense::click());
                                     if text_res.clicked() {
                                         set_selected_idx = Some(idx);
@@ -449,7 +456,8 @@ impl LunulaApp {
                                         }
                                     });
 
-                                    let text_painter = ui.painter_at(text_rect);
+                                    let text_clip = ui.clip_rect().intersect(text_rect);
+                                    let text_painter = ui.painter().with_clip_rect(text_clip);
                                     let title_color = if is_active_track {
                                         Color32::from_rgb(5, 150, 105)
                                     } else if is_selected {
@@ -457,8 +465,8 @@ impl LunulaApp {
                                     } else {
                                         Color32::from_rgb(15, 23, 42)
                                     };
-                                    let title_font = egui::FontId::proportional(12.0);
-                                    let artist_font = egui::FontId::proportional(10.5);
+                                    let title_font = egui::FontId::proportional(11.5);
+                                    let artist_font = egui::FontId::proportional(10.0);
 
                                     text_painter.text(
                                         Pos2::new(text_rect.min.x, text_rect.min.y + 1.0),
@@ -469,7 +477,7 @@ impl LunulaApp {
                                     );
 
                                     let (artist_txt, artist_col) = if is_active_track {
-                                        (format!("{} • ▶ Sedang Diputar", song.artist), Color32::from_rgb(5, 150, 105))
+                                        (format!("{} • ▶ Putar", song.artist), Color32::from_rgb(5, 150, 105))
                                     } else {
                                         (song.artist.clone(), Color32::from_rgb(100, 116, 139))
                                     };
@@ -482,33 +490,39 @@ impl LunulaApp {
                                         artist_col,
                                     );
 
-                                    // Action Buttons with FIXED POSITIONS (Never jumping!)
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        // Delete [ ✕ ]
-                                        if ui.add_sized([22.0, 24.0], egui::Button::new(egui::RichText::new("✕").size(10.0))).on_hover_text("Hapus dari Antrean").clicked() {
-                                            remove_queue_idx = Some(idx);
-                                        }
+                                    // Action Buttons with guaranteed slot width (Never wrapping or shifting!)
+                                    ui.allocate_ui_with_layout(
+                                        Vec2::new(actions_w, 28.0),
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            ui.spacing_mut().item_spacing.x = 2.0;
 
-                                        // Move Down [ ▼ ] (Fixed slot, disabled on last item)
-                                        ui.add_enabled_ui(idx + 1 < self.play_queue.len(), |ui| {
-                                            if ui.add_sized([22.0, 24.0], egui::Button::new(egui::RichText::new("▼").size(9.5))).on_hover_text("Geser Lagu ke Bawah (atau Ctrl+Down)").clicked() {
-                                                move_down_idx = Some(idx);
+                                            // Delete [ ✕ ]
+                                            if ui.add_sized([18.0, 22.0], egui::Button::new(egui::RichText::new("✕").size(9.0))).on_hover_text("Hapus dari Antrean").clicked() {
+                                                remove_queue_idx = Some(idx);
                                             }
-                                        });
 
-                                        // Move Up [ ▲ ] (Fixed slot, disabled on first item)
-                                        ui.add_enabled_ui(idx > 0, |ui| {
-                                            if ui.add_sized([22.0, 24.0], egui::Button::new(egui::RichText::new("▲").size(9.5))).on_hover_text("Geser Lagu ke Atas (atau Ctrl+Up)").clicked() {
-                                                move_up_idx = Some(idx);
+                                            // Move Down [ ▼ ] (Fixed slot, disabled on last item)
+                                            ui.add_enabled_ui(idx + 1 < self.play_queue.len(), |ui| {
+                                                if ui.add_sized([18.0, 22.0], egui::Button::new(egui::RichText::new("▼").size(8.5))).on_hover_text("Geser Lagu ke Bawah (atau Ctrl+Down)").clicked() {
+                                                    move_down_idx = Some(idx);
+                                                }
+                                            });
+
+                                            // Move Up [ ▲ ] (Fixed slot, disabled on first item)
+                                            ui.add_enabled_ui(idx > 0, |ui| {
+                                                if ui.add_sized([18.0, 22.0], egui::Button::new(egui::RichText::new("▲").size(8.5))).on_hover_text("Geser Lagu ke Atas (atau Ctrl+Up)").clicked() {
+                                                    move_up_idx = Some(idx);
+                                                }
+                                            });
+
+                                            // Play Now [ ▶ ] (Plays and sets active queue cursor without deleting)
+                                            if ui.add_sized([20.0, 22.0], egui::Button::new(egui::RichText::new("▶").size(9.5))).on_hover_text("Putar Sekarang").clicked() {
+                                                track_to_play = Some(song.clone());
+                                                set_queue_cursor = Some(idx);
                                             }
-                                        });
-
-                                        // Play Now [ ▶ ] (Plays and sets active queue cursor without deleting)
-                                        if ui.add_sized([24.0, 24.0], egui::Button::new(egui::RichText::new("▶").size(10.5))).on_hover_text("Putar Sekarang").clicked() {
-                                            track_to_play = Some(song.clone());
-                                            set_queue_cursor = Some(idx);
-                                        }
-                                    });
+                                        },
+                                    );
                                 });
                             });
 

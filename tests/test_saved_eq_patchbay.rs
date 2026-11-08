@@ -317,26 +317,27 @@ fn test_dag_branching_and_cycle_prevention() {
 #[test]
 fn test_red_dashed_line_suppressed_when_reaching_through_intermediate_filter() {
     let mut app = LunulaApp::default();
-    app.add_modular_filter(NodeType::SavedEqPreset("Vocal Clarity".to_string())); // id 6
+    app.add_modular_filter(NodeType::LowPassFilter); // id 6
+    app.add_modular_filter(NodeType::SavedEqPreset("Vocal Clarity".to_string())); // id 7
 
     // Configure chain:
-    // 1 (Source) -> 2 (RAM) -> 3 (DSP) -> 6 (Saved EQ) -> 4 (Engine) -> 5 (DAC)
+    // 1 (Source) -> 2 (RAM) -> 6 (LPF) -> 7 (Saved EQ) -> 4 (Resampler) -> 5 (DAC)
     app.connections.clear();
     app.invalidate_chain_cache();
     app.connections.push(lunulaplayer::models::CableConnection::new(1, 2));
-    app.connections.push(lunulaplayer::models::CableConnection::new(2, 3));
-    app.connections.push(lunulaplayer::models::CableConnection::new(3, 6));
-    app.connections.push(lunulaplayer::models::CableConnection::new(6, 4));
+    app.connections.push(lunulaplayer::models::CableConnection::new(2, 6));
+    app.connections.push(lunulaplayer::models::CableConnection::new(6, 7));
+    app.connections.push(lunulaplayer::models::CableConnection::new(7, 4));
     app.connections.push(lunulaplayer::models::CableConnection::new(4, 5));
 
     let eval = app.evaluate_signal_chain();
     assert!(eval.is_complete, "Full chain through intermediate filter must be complete");
-    assert!(app.can_reach_node(3, 4), "DSP must reach Engine via filter 6");
+    assert!(app.can_reach_node(6, 4), "LPF must reach Resampler via filter 7");
 
     // Topological order compilation
     let graph = app.compile_signal_chain();
     assert!(graph.is_complete);
-    assert_eq!(graph.effects.len(), 2, "Must contain DSP and Saved EQ effects in order");
+    assert_eq!(graph.effects.len(), 2, "Must contain LPF and Saved EQ effects in order");
 }
 
 #[test]

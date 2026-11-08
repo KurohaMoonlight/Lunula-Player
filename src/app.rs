@@ -206,6 +206,40 @@ pub struct LunulaApp {
     pub tag_editor_genre: String,
     pub tag_editor_track_num: String,
     pub tag_editor_status: Option<(String, bool)>,
+
+    // Signal Chain Studio .lnl Preset Management & Auto-Binding
+    pub show_export_preset_modal: bool,
+    pub preset_modal_tab: usize,
+    pub preset_search_query: String,
+    pub preset_export_name: String,
+    pub preset_export_author: String,
+    pub preset_export_description: String,
+    pub preset_export_use_password: bool,
+    pub preset_export_password: String,
+    pub preset_status_notification: Option<(String, bool)>,
+    pub preset_status_notification_time: Option<std::time::Instant>,
+    pub show_import_password_modal: bool,
+    pub pending_import_container: Option<crate::preset::LnlPresetContainer>,
+    pub preset_import_password: String,
+    pub preset_import_error: Option<String>,
+    pub preset_selected_idx: usize,
+    pub inspecting_preset: Option<crate::preset::SignalChainPreset>,
+
+    // Preset Auto-Binding State
+    pub preset_bindings: Vec<crate::preset::PresetBindingRule>,
+    pub auto_load_preset_on_track_change: bool,
+    pub show_binding_toast_on_change: bool,
+    pub binding_fallback_to_bit_perfect: bool,
+    pub binding_filter_tab: usize,
+    pub binding_selected_preset: String,
+    pub binding_picker_open: bool,
+    pub binding_picker_mode: usize, // 0 = Track, 1 = Album, 2 = Genre
+    pub binding_picker_search: String,
+    pub binding_picker_selected_key: String,
+    pub binding_picker_selected_label: String,
+    pub binding_rule_search: String,
+    pub show_binding_options_popover: bool,
+    pub last_applied_auto_preset: Option<String>,
 }
 
 pub struct CoverLoadResult {
@@ -434,6 +468,7 @@ impl LunulaApp {
                 replay_gain: crate::models::ReplayGainData::default(),
                 cue_offset_sec: None,
                 cue_duration_sec: None,
+                genre: None,
             },
             playlist: Vec::new(),
             search_query: String::new(),
@@ -526,6 +561,54 @@ impl LunulaApp {
             tag_editor_genre: String::new(),
             tag_editor_track_num: String::new(),
             tag_editor_status: None,
+
+            show_export_preset_modal: false,
+            preset_modal_tab: 0,
+            preset_search_query: String::new(),
+            preset_export_name: "Warm Studio Master".to_string(),
+            preset_export_author: "Lunula Audio".to_string(),
+            preset_export_description: "Modular DSP signal chain with vintage warmth and spatial widening".to_string(),
+            preset_export_use_password: false,
+            preset_export_password: String::new(),
+            preset_status_notification: None,
+            preset_status_notification_time: None,
+            show_import_password_modal: false,
+            pending_import_container: None,
+            preset_import_password: String::new(),
+            preset_import_error: None,
+            preset_selected_idx: 0,
+            inspecting_preset: None,
+
+            // Preset Auto-Binding State
+            preset_bindings: vec![
+                crate::preset::PresetBindingRule {
+                    id: "bind_genre_rock".to_string(),
+                    target_type: crate::preset::PresetBindingType::Genre,
+                    target_key: "Rock".to_string(),
+                    target_label: "Rock / Metal / Alternative".to_string(),
+                    preset_name: "Warm Studio Master".to_string(),
+                },
+                crate::preset::PresetBindingRule {
+                    id: "bind_genre_jazz".to_string(),
+                    target_type: crate::preset::PresetBindingType::Genre,
+                    target_key: "Jazz".to_string(),
+                    target_label: "Acoustic / Jazz / Vocal".to_string(),
+                    preset_name: "Acoustic Vocal Intimacy".to_string(),
+                },
+            ],
+            auto_load_preset_on_track_change: true,
+            show_binding_toast_on_change: false,
+            binding_fallback_to_bit_perfect: true,
+            binding_filter_tab: 0,
+            binding_selected_preset: "Warm Studio Master".to_string(),
+            binding_picker_open: false,
+            binding_picker_mode: 0,
+            binding_picker_search: String::new(),
+            binding_picker_selected_key: String::new(),
+            binding_picker_selected_label: String::new(),
+            binding_rule_search: String::new(),
+            show_binding_options_popover: false,
+            last_applied_auto_preset: None,
         };
 
         if let Some(state) = Self::load_library_state() {
@@ -634,6 +717,8 @@ impl LunulaApp {
             engine.set_crossfade_secs(app.crossfade_secs);
         }
 
+        app.load_auto_bindings();
+        app.apply_startup_preset();
         app.sync_signal_chain_to_engine();
         app
     }
@@ -865,6 +950,10 @@ impl LunulaApp {
         });
         self.lyrics_offset_trim_sec = 0.0;
 
+        // Evaluate and automatically apply preset bindings for Track, Album, or Genre (or fallback to Bit-Perfect)
+        let track_eval = self.current_track.clone();
+        self.check_and_apply_auto_binding(&track_eval);
+
         self.update_effective_replay_gain();
         self.sync_smtc_state();
 
@@ -896,6 +985,10 @@ impl LunulaApp {
             )
         });
         self.lyrics_offset_trim_sec = 0.0;
+
+        // Evaluate and automatically apply preset bindings for Track, Album, or Genre (or fallback to Bit-Perfect)
+        let track_eval = self.current_track.clone();
+        self.check_and_apply_auto_binding(&track_eval);
 
         self.update_effective_replay_gain();
         self.sync_smtc_state();
@@ -1851,6 +1944,67 @@ impl LunulaApp {
             engine.set_signal_chain_graph(graph);
         }
     }
+
+    /// Resets the modular patchbay signal chain back to the clean default 4-node topology:
+    /// File Source (1) -> RAM Buffer (2) -> App Resampler (4) -> Output DAC (5).
+    /// Clears any leftover effect nodes, custom cables, or prior preset state.
+    pub fn reset_to_default_signal_chain(&mut self) {
+        self.nodes = vec![
+            ModularNode {
+                id: 1,
+                node_type: NodeType::Source,
+                title: "FILE SOURCE".to_string(),
+                sub1: "FLAC 24-bit".to_string(),
+                sub2: "96.0 kHz".to_string(),
+                pos: Pos2::new(30.0, 60.0),
+                is_removable: false,
+                param_val: 0.0,
+            },
+            ModularNode {
+                id: 2,
+                node_type: NodeType::Buffer,
+                title: "RAM BUFFER".to_string(),
+                sub1: "RingBuffer".to_string(),
+                sub2: "100% Loaded".to_string(),
+                pos: Pos2::new(280.0, 60.0),
+                is_removable: false,
+                param_val: 0.0,
+            },
+            ModularNode {
+                id: 4,
+                node_type: NodeType::Driver,
+                title: "APP RESAMPLER".to_string(),
+                sub1: "System Audio Endpoint".to_string(),
+                sub2: "Rubato Sinc SRC • 48.0 kHz".to_string(),
+                pos: Pos2::new(530.0, 60.0),
+                is_removable: false,
+                param_val: 0.0,
+            },
+            ModularNode {
+                id: 5,
+                node_type: NodeType::Endpoint,
+                title: "OUTPUT DAC".to_string(),
+                sub1: "Audio Endpoint".to_string(),
+                sub2: "Native Sample Rate".to_string(),
+                pos: Pos2::new(780.0, 60.0),
+                is_removable: false,
+                param_val: 0.0,
+            },
+        ];
+        self.connections = vec![
+            CableConnection::new(1, 2),
+            CableConnection::new(2, 4),
+            CableConnection::new(4, 5),
+        ];
+        self.next_node_id = 6;
+        self.selected_node = None;
+        self.advance_studio_state.selected_cable_idx = None;
+        self.last_applied_auto_preset = None;
+
+        self.invalidate_chain_cache();
+        self.sync_signal_chain_to_engine();
+        self.save_library_state();
+    }
 }
 
 impl eframe::App for LunulaApp {
@@ -2639,6 +2793,29 @@ impl eframe::App for LunulaApp {
                                     }
                                 }
 
+                                if ui.button(egui::RichText::new("💾 Simpan Preset").size(12.0).strong().color(Color32::from_rgb(79, 70, 229)))
+                                    .on_hover_text("Simpan & enkripsi rantai sinyal studio ke format bertanda tangan .lnl")
+                                    .clicked()
+                                {
+                                    self.preset_modal_tab = 0;
+                                    self.show_export_preset_modal = true;
+                                }
+
+                                if ui.button(egui::RichText::new("📚 Kelola Preset").size(12.0).strong().color(Color32::from_rgb(124, 58, 237)))
+                                    .on_hover_text("Buka perpustakaan & kelola koleksi preset rantai sinyal studio")
+                                    .clicked()
+                                {
+                                    self.preset_modal_tab = 1;
+                                    self.show_export_preset_modal = true;
+                                }
+
+                                if ui.button(egui::RichText::new("📂 Muat .lnl").size(12.0).strong().color(Color32::from_rgb(14, 116, 144)))
+                                    .on_hover_text("Buka berkas preset studio .lnl dan verifikasi tanda tangan digital")
+                                    .clicked()
+                                {
+                                    self.trigger_preset_import();
+                                }
+
                                 let current_dev_label = self.selected_output_device.as_deref().unwrap_or("Default System Output");
                                 let truncated_label = if current_dev_label.len() > 22 {
                                     format!("🔊 {}...", &current_dev_label[..19])
@@ -2847,6 +3024,85 @@ impl eframe::App for LunulaApp {
         if self.show_tag_editor {
             self.render_tag_editor_modal(ui.ctx());
         }
+
+        // Signal Chain Studio .lnl Preset Modals
+        if self.show_export_preset_modal {
+            self.render_export_preset_modal(ui.ctx());
+        }
+        if self.show_import_password_modal {
+            self.render_import_password_modal(ui.ctx());
+        }
+
+        // Floating Non-Shifting Studio Preset Toast Notification (Sleek Compact Modern Pill)
+        if let Some((ref msg, is_success)) = self.preset_status_notification {
+            let screen = ui.ctx().input(|i| i.raw.screen_rect).unwrap_or_else(|| ui.clip_rect());
+            let toast_w = 350.0f32.min(screen.width() - 32.0);
+            let toast_pos = Pos2::new(screen.center().x - toast_w * 0.5, screen.min.y + 14.0);
+            let mut dismiss = false;
+            #[allow(deprecated)]
+            egui::Area::new(egui::Id::new("floating_preset_status_toast"))
+                .order(egui::Order::Tooltip)
+                .fixed_pos(toast_pos)
+                .show(ui.ctx(), |ui| {
+                    let (bg, border, text_col, icon_str) = if is_success {
+                        (
+                            Color32::from_rgb(240, 253, 250), // Teal-tinted soft clean white
+                            Color32::from_rgb(45, 212, 191),  // Soft emerald/teal border
+                            Color32::from_rgb(15, 23, 42),    // Dark slate text
+                            "✨",
+                        )
+                    } else {
+                        (
+                            Color32::from_rgb(255, 241, 242), // Soft rose white
+                            Color32::from_rgb(251, 113, 133), // Soft rose border
+                            Color32::from_rgb(15, 23, 42),
+                            "⚠️",
+                        )
+                    };
+
+                    egui::Frame::new()
+                        .fill(bg)
+                        .stroke(Stroke::new(1.0, border))
+                        .corner_radius(18.0)
+                        .inner_margin(egui::Margin::symmetric(14, 7))
+                        .shadow(egui::epaint::Shadow {
+                            offset: [0, 4],
+                            blur: 16,
+                            spread: 0,
+                            color: Color32::from_black_alpha(45),
+                        })
+                        .show(ui, |ui| {
+                            ui.set_width(toast_w - 28.0);
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                ui.label(egui::RichText::new(icon_str).size(12.5));
+                                ui.add(egui::Label::new(egui::RichText::new(msg).strong().size(11.5).color(text_col)).truncate());
+
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    let close_btn = egui::Button::new(
+                                        egui::RichText::new("✕").size(10.5).color(Color32::from_rgb(148, 163, 184))
+                                    )
+                                    .fill(Color32::TRANSPARENT)
+                                    .stroke(Stroke::NONE)
+                                    .min_size(Vec2::splat(18.0));
+
+                                    if ui.add(close_btn).on_hover_text("Tutup notifikasi").clicked() {
+                                        dismiss = true;
+                                    }
+                                });
+                            });
+                        });
+                });
+            if let Some(t) = self.preset_status_notification_time {
+                if t.elapsed().as_secs_f32() > 2.2 {
+                    dismiss = true;
+                }
+            }
+            if dismiss {
+                self.preset_status_notification = None;
+                self.preset_status_notification_time = None;
+            }
+        }
     }
 }
 
@@ -3039,6 +3295,45 @@ mod tests {
             },
         );
         out3.textures_delta.clear();
+    }
+
+    #[test]
+    fn test_bit_perfect_direct_bypass_cable_render_and_no_preset_reset() {
+        let ctx = egui::Context::default();
+        let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0)));
+
+        let mut app = LunulaApp::default();
+        // 1. Add LowPassFilter and route audio 1 -> 2 -> 6 -> 4 -> 5
+        app.add_modular_filter(NodeType::LowPassFilter);
+        let lpf_id = app.nodes.iter().find(|n| n.node_type == NodeType::LowPassFilter).map(|n| n.id).unwrap();
+        app.connections.retain(|c| !(c.from_node == 2 && c.to_node == 4));
+        app.connections.push(crate::models::CableConnection::new(2, lpf_id));
+        app.connections.push(crate::models::CableConnection::new(lpf_id, 4));
+
+        // 2. Switch to Bit-Perfect mode (modular nodes are bypassed, direct bypass cable must activate)
+        app.set_chain_mode(ChainMode::BitPerfect);
+        app.is_playing = true;
+
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: screen,
+                time: Some(0.15),
+                ..Default::default()
+            },
+            |ui| {
+                app.render_modular_patchbay_canvas(ui, egui::vec2(1000.0, 600.0));
+            },
+        );
+        assert!(!out.shapes.is_empty(), "Direct bypass cable in Bit-Perfect mode renders without error");
+        out.textures_delta.clear();
+
+        // 3. Test reset_to_default_signal_chain()
+        app.reset_to_default_signal_chain();
+        assert_eq!(app.nodes.len(), 4, "Resetting chain leaves exactly 4 standard nodes");
+        assert_eq!(app.connections.len(), 3, "Resetting chain restores standard connections (1,2), (2,4), (4,5)");
+        assert!(app.connections.iter().any(|c| c.from_node == 1 && c.to_node == 2));
+        assert!(app.connections.iter().any(|c| c.from_node == 2 && c.to_node == 4));
+        assert!(app.connections.iter().any(|c| c.from_node == 4 && c.to_node == 5));
     }
 
     #[test]
@@ -3468,6 +3763,7 @@ mod tests {
             replay_gain: Default::default(),
             cue_offset_sec: None,
             cue_duration_sec: None,
+            genre: None,
         };
 
         let t1 = make_track("Song 1", "Album A");

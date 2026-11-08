@@ -818,6 +818,121 @@ impl LunulaApp {
             }
         }
 
+        // 4c. Bit-Perfect / Passthrough Direct Bypass Cable
+        // When in Bit-Perfect or OsResampled mode and intermediate effect nodes exist in the chain,
+        // intermediate DSP nodes are bypassed. We render the active direct bypass cable from
+        // RAM BUFFER (Node 2) directly into APP RESAMPLER (Node 4) with animated audio particles.
+        let is_bypass_mode = self.chain_mode == ChainMode::BitPerfect || self.chain_mode == ChainMode::OsResampled;
+        if is_bypass_mode {
+            let node2 = self.nodes.iter().find(|n| n.id == 2 || n.node_type == NodeType::Buffer);
+            let node4 = self.nodes.iter().find(|n| n.id == 4 || n.node_type == NodeType::Driver);
+            if let (Some(n2), Some(n4)) = (node2, node4) {
+                let has_direct_conn = self.connections.iter().any(|c| c.from_node == n2.id && c.to_node == n4.id);
+                if !has_direct_conn {
+                    let n2_size = get_node_size(&n2.node_type);
+                    let n4_size = get_node_size(&n4.node_type);
+                    let p_start = Pos2::new(
+                        canvas_rect.min.x + self.patchbay_pan.x + n2.pos.x + n2_size.x,
+                        canvas_rect.min.y + self.patchbay_pan.y + n2.pos.y + n2_size.y * 0.5,
+                    );
+                    let p_end = Pos2::new(
+                        canvas_rect.min.x + self.patchbay_pan.x + n4.pos.x,
+                        canvas_rect.min.y + self.patchbay_pan.y + n4.pos.y + n4_size.y * 0.5,
+                    );
+
+                    let dx = (p_end.x - p_start.x).abs().max(40.0) * 0.5;
+                    let (cp1, cp2) = (
+                        Pos2::new(p_start.x + dx, p_start.y),
+                        Pos2::new(p_end.x - dx, p_end.y),
+                    );
+
+                    let steps = 24;
+                    let mut points = Vec::with_capacity(steps + 1);
+                    for step in 0..=steps {
+                        let t = step as f32 / steps as f32;
+                        let u = 1.0 - t;
+                        let x = u * u * u * p_start.x + 3.0 * u * u * t * cp1.x + 3.0 * u * t * t * cp2.x + t * t * t * p_end.x;
+                        let y = u * u * u * p_start.y + 3.0 * u * u * t * cp1.y + 3.0 * u * t * t * cp2.y + t * t * t * p_end.y;
+                        points.push(Pos2::new(x, y));
+                    }
+
+                    let (bypass_col, halo_col, badge_text, badge_bg, badge_stroke, badge_text_col) = if self.chain_mode == ChainMode::BitPerfect {
+                        (
+                            Color32::from_rgb(16, 185, 129),
+                            Color32::from_rgba_premultiplied(52, 211, 153, 90),
+                            "🛡️ BYPASS BIT-PERFECT 1:1",
+                            Color32::from_rgb(236, 253, 245),
+                            Color32::from_rgb(16, 185, 129),
+                            Color32::from_rgb(4, 120, 87),
+                        )
+                    } else {
+                        (
+                            Color32::from_rgb(245, 158, 11),
+                            Color32::from_rgba_premultiplied(251, 191, 36, 90),
+                            "⚡ BYPASS OS-RESAMPLED",
+                            Color32::from_rgb(254, 243, 199),
+                            Color32::from_rgb(245, 158, 11),
+                            Color32::from_rgb(180, 83, 9),
+                        )
+                    };
+
+                    let mid = points[12];
+
+                    // Drop shadow
+                    let shadow_pts: Vec<Pos2> = points.iter().map(|p| *p + Vec2::new(0.0, 1.5)).collect();
+                    painter.add(egui::Shape::line(shadow_pts, Stroke::new(3.0, Color32::from_black_alpha(18))));
+
+                    // Glowing neon halo
+                    painter.add(egui::Shape::line(points.clone(), Stroke::new(5.0, halo_col)));
+
+                    // Main vibrant bypass cable
+                    painter.add(egui::Shape::line(points.clone(), Stroke::new(2.8, bypass_col)));
+
+                    // Animated live audio data particles running along direct bypass
+                    if self.is_playing {
+                        let particle_glow = if self.chain_mode == ChainMode::BitPerfect {
+                            Color32::from_rgba_premultiplied(167, 243, 208, 220)
+                        } else {
+                            Color32::from_rgba_premultiplied(253, 230, 138, 220)
+                        };
+                        for k in 0..3 {
+                            let t_part = ((self.visualizer_anim_phase * 0.75 + k as f32 * 0.33) % 1.0 + 1.0) % 1.0;
+                            let p_idx = (t_part * 24.0).min(23.0) as usize;
+                            let pt = points[p_idx];
+                            painter.circle_filled(pt, 4.0, particle_glow);
+                            painter.circle_filled(pt, 2.0, Color32::WHITE);
+                        }
+                    }
+
+                    // Sleek Pill Badge at midpoint
+                    let badge_rect = Rect::from_center_size(mid, Vec2::new(168.0, 22.0));
+                    let is_hover_bypass = mouse_pos.map_or(false, |p| badge_rect.contains(p) || points.iter().any(|pt| pt.distance(p) <= 8.0));
+
+                    let curr_badge_bg = if is_hover_bypass {
+                        Color32::from_rgb(209, 250, 229)
+                    } else {
+                        badge_bg
+                    };
+                    painter.rect_filled(badge_rect, 11.0, curr_badge_bg);
+                    painter.rect_stroke(badge_rect, 11.0, Stroke::new(1.0, badge_stroke), egui::StrokeKind::Outside);
+                    painter.text(
+                        mid,
+                        egui::Align2::CENTER_CENTER,
+                        badge_text,
+                        egui::FontId::proportional(10.0),
+                        badge_text_col,
+                    );
+
+                    if is_hover_bypass {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        if response.clicked() {
+                            switch_mode = Some(ChainMode::DspActive);
+                        }
+                    }
+                }
+            }
+        }
+
         // 4b. Render Broken Gaps between Standard Default Nodes with Click-to-Connect
         // Only rendered if the signal chain is incomplete AND no alternative path exists!
         // If from_id can already reach to_id (e.g. through an EQ preset or modular filter),
@@ -1122,11 +1237,7 @@ impl LunulaApp {
                     }
                 }
 
-                // DILEWATI badge on the top of the node
-                let badge_rect = Rect::from_min_size(node_rect.min + Vec2::new(26.0, 5.0), Vec2::new(58.0, 16.0));
-                painter.rect_filled(badge_rect, 3.0, Color32::from_rgb(226, 232, 240));
-                painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER, "DILEWATI", egui::FontId::proportional(10.0), Color32::from_rgb(100, 116, 139));
-
+                // Click on bypassed node to re-engage Modular DSP mode
                 if node_resp.clicked() {
                     switch_mode = Some(ChainMode::DspActive);
                 }

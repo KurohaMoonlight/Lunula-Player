@@ -19,6 +19,7 @@ struct FilterPaletteDef {
     icon: &'static str,
     title: &'static str,
     subtitle: &'static str,
+    short_subtitle: &'static str,
     friendly_desc: &'static str,
     accent_color: Color32,
     bg_accent: Color32,
@@ -45,6 +46,7 @@ impl LunulaApp {
                 icon: "🌊",
                 title: "Low-Pass Filter",
                 subtitle: "Peredam treble / suara tajam",
+                short_subtitle: "Peredam treble",
                 friendly_desc: "Memotong frekuensi tinggi (treble). Suara vokal dan instrumen menjadi lebih empuk, hangat, atau teredam halus seperti efek underwater.",
                 accent_color: Color32::from_rgb(14, 165, 233),
                 bg_accent: Color32::from_rgb(240, 249, 255),
@@ -58,6 +60,7 @@ impl LunulaApp {
                 icon: "🏔️",
                 title: "High-Pass Filter",
                 subtitle: "Pemotong sub-bass & gemuruh rendah",
+                short_subtitle: "Pemotong sub-bass",
                 friendly_desc: "Menghilangkan frekuensi sub-bass yang terlalu berdengung atau tidak terdengar agar vokal dan instrumen terdengar lebih jernih dan fokus.",
                 accent_color: Color32::from_rgb(56, 189, 248),
                 bg_accent: Color32::from_rgb(240, 249, 255),
@@ -71,6 +74,7 @@ impl LunulaApp {
                 icon: "🎯",
                 title: "Band-Pass Filter",
                 subtitle: "Isolasi pita frekuensi vokal / instrumen",
+                short_subtitle: "Isolasi frekuensi",
                 friendly_desc: "Hanya meloloskan frekuensi pada rentang tertentu di sekitar frekuensi pusat dan meredam nada di luar rentang tersebut.",
                 accent_color: Color32::from_rgb(245, 158, 11),
                 bg_accent: Color32::from_rgb(254, 243, 199),
@@ -84,6 +88,7 @@ impl LunulaApp {
                 icon: "🎛️",
                 title: "Equalizer Presets",
                 subtitle: "Koleksi kurva EQ kustom",
+                short_subtitle: "Kurva EQ kustom",
                 friendly_desc: "Mengatur profil frekuensi bass, vokal, dan treble dengan preset favorit Anda (Vocal Boost, Bass Boost, Flat, dll).",
                 accent_color: Color32::from_rgb(168, 85, 247),
                 bg_accent: Color32::from_rgb(250, 245, 255),
@@ -99,6 +104,7 @@ impl LunulaApp {
                 icon: "🔥",
                 title: "Tube Warmer",
                 subtitle: "Saturasi tabung vakum vintage",
+                short_subtitle: "Saturasi tabung",
                 friendly_desc: "Menghangatkan rekaman audio digital dengan distorsi harmonik genap yang tebal dan lembut khas ampli tabung analog klasik.",
                 accent_color: Color32::from_rgb(245, 158, 11),
                 bg_accent: Color32::from_rgb(254, 243, 199),
@@ -112,6 +118,7 @@ impl LunulaApp {
                 icon: "📻",
                 title: "Analog Preamp",
                 subtitle: "Karakter konsol studio analog",
+                short_subtitle: "Konsol studio analog",
                 friendly_desc: "Memberikan bobot tekstur dan ketebalan suara ala preamp konsol rekaman legendaris tanpa mengubah nada musik.",
                 accent_color: Color32::from_rgb(217, 119, 6),
                 bg_accent: Color32::from_rgb(254, 243, 199),
@@ -127,6 +134,7 @@ impl LunulaApp {
                 icon: "🎚️",
                 title: "Optical Leveler",
                 subtitle: "Kompresor optik penstabil volume",
+                short_subtitle: "Kompresor optik",
                 friendly_desc: "Secara otomatis menyeimbangkan bagian lagu yang terlalu keras dan terlalu pelan agar terdengar rata, mantap, dan nyaman di telinga.",
                 accent_color: Color32::from_rgb(234, 179, 8),
                 bg_accent: Color32::from_rgb(254, 252, 232),
@@ -140,6 +148,7 @@ impl LunulaApp {
                 icon: "🛡️",
                 title: "Bass Guard Limiter",
                 subtitle: "Pelindung speaker dari distorsi bass",
+                short_subtitle: "Pelindung distorsi bass",
                 friendly_desc: "Meredam getaran sub-bass ekstrem yang tidak terdengar agar bass tetap bertenaga tanpa membuat kerucut speaker bergetar liar atau pecah.",
                 accent_color: Color32::from_rgb(148, 163, 184),
                 bg_accent: Color32::from_rgb(241, 245, 249),
@@ -153,6 +162,7 @@ impl LunulaApp {
                 icon: "🌙",
                 title: "Dynamic Loudness",
                 subtitle: "Kompensasi dengar volume rendah",
+                short_subtitle: "Kompensasi volume",
                 friendly_desc: "Menaikkan bass dan treble secara cerdas saat mendengarkan musik di malam hari atau volume kecil (standar ISO 226).",
                 accent_color: Color32::from_rgb(99, 102, 241),
                 bg_accent: Color32::from_rgb(238, 242, 255),
@@ -166,6 +176,7 @@ impl LunulaApp {
                 icon: "🔉",
                 title: "Volume Attenuator",
                 subtitle: "Peredam gain digital presisi",
+                short_subtitle: "Peredam gain digital",
                 friendly_desc: "Menurunkan gain sinyal sebesar beberapa dB untuk memberi ruang headroom sebelum sinyal masuk ke efek yang sensitif.",
                 accent_color: Color32::from_rgb(148, 163, 184),
                 bg_accent: Color32::from_rgb(241, 245, 249),
@@ -179,6 +190,7 @@ impl LunulaApp {
                 icon: "🔊",
                 title: "Volume Booster",
                 subtitle: "Penguat volume lagu pelan",
+                short_subtitle: "Penguat volume",
                 friendly_desc: "Menaikkan volume master rekaman lagu yang suaranya terlalu kecil dengan algoritma soft-limiting transparan tanpa distorsi clipping.",
                 accent_color: Color32::from_rgb(239, 68, 68),
                 bg_accent: Color32::from_rgb(254, 242, 242),
@@ -192,6 +204,7 @@ impl LunulaApp {
                 icon: "🪜",
                 title: "Stepped Attenuator",
                 subtitle: "Volume bertingkat + tombol DIM",
+                short_subtitle: "Volume bertingkat",
                 friendly_desc: "Pengatur volume bertingkat presisi audiophile lengkap dengan tombol instan -20dB DIM untuk mengecilkan suara seketika.",
                 accent_color: Color32::from_rgb(71, 85, 105),
                 bg_accent: Color32::from_rgb(241, 245, 249),
@@ -207,6 +220,7 @@ impl LunulaApp {
                 icon: "↔️",
                 title: "Stereo Widener",
                 subtitle: "Pelebar panggung suara stereo",
+                short_subtitle: "Pelebar stereo",
                 friendly_desc: "Melebarkan pemisahan instrumen kiri dan kanan sehingga musik terasa lebih luas, megah, dan 3D di telinga Anda.",
                 accent_color: Color32::from_rgb(147, 51, 234),
                 bg_accent: Color32::from_rgb(250, 245, 255),
@@ -220,6 +234,7 @@ impl LunulaApp {
                 icon: "⚖️",
                 title: "Stereo Balance",
                 subtitle: "Keseimbangan kanal Kiri & Kanan",
+                short_subtitle: "Keseimbangan L / R",
                 friendly_desc: "Menggeser titik fokus audio lebih ke telinga kiri atau kanan untuk mengoreksi posisi speaker atau kebiasaan dengar.",
                 accent_color: Color32::from_rgb(59, 130, 246),
                 bg_accent: Color32::from_rgb(239, 246, 255),
@@ -235,6 +250,7 @@ impl LunulaApp {
                 icon: "🔀",
                 title: "Signal Splitter",
                 subtitle: "Pencabang 1 sinyal ke 2 jalur",
+                short_subtitle: "Pencabang (1➔2)",
                 friendly_desc: "Membagi satu kabel input menjadi dua kabel output terpisah untuk pemrosesan paralel (misal: satu ke tabung, satu tetap bersih).",
                 accent_color: Color32::from_rgb(16, 185, 129),
                 bg_accent: Color32::from_rgb(236, 253, 245),
@@ -248,6 +264,7 @@ impl LunulaApp {
                 icon: "🎛️",
                 title: "A/B Signal Mixer",
                 subtitle: "Penggabung 2 jalur audio (Pin A & B)",
+                short_subtitle: "Penggabung (2➔1)",
                 friendly_desc: "Menggabungkan dua cabang kabel (Pin A dan Pin B) kembali menjadi satu dengan slider crossfade persentase halus.",
                 accent_color: Color32::from_rgb(13, 148, 136),
                 bg_accent: Color32::from_rgb(240, 253, 250),
@@ -261,6 +278,7 @@ impl LunulaApp {
                 icon: "✂️",
                 title: "2-Way LR4 Crossover",
                 subtitle: "Pemisah frekuensi Low & High (24dB/oct)",
+                short_subtitle: "Pemisah Low & High",
                 friendly_desc: "Membagi audio menjadi jalur Low (Pin 0) dan High (Pin 1) dengan filter Linkwitz-Riley 4th order yang menyatu flat 0 dB tanpa celah.",
                 accent_color: Color32::from_rgb(168, 85, 247),
                 bg_accent: Color32::from_rgb(250, 245, 255),
@@ -274,10 +292,13 @@ impl LunulaApp {
             ui.vertical(|ui| {
                 // 1. Header Ringkas
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("🎛️ FX TOOLBOX").strong().size(15.0).color(Color32::from_rgb(15, 23, 42)));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new("Klik untuk tambah").size(11.5).color(Color32::from_rgb(148, 163, 184)));
-                    });
+                    ui.label(egui::RichText::new("🎛️ FX TOOLBOX").strong().size(14.0).color(Color32::from_rgb(15, 23, 42)));
+                    if ui.available_width() >= 100.0 {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let tip = if ui.available_width() >= 130.0 { "Klik untuk tambah" } else { "+ Tambah" };
+                            ui.label(egui::RichText::new(tip).size(11.0).color(Color32::from_rgb(148, 163, 184)));
+                        });
+                    }
                 });
 
                 ui.add_space(4.0);
@@ -287,15 +308,20 @@ impl LunulaApp {
                 let clear_btn_w = if has_search_text { 24.0 } else { 0.0 };
 
                 ui.horizontal(|ui| {
+                    let hint = if ui.available_width() < 240.0 {
+                        "🔍 Cari filter..."
+                    } else {
+                        "🔍 Cari filter... (mis: tube, eq)"
+                    };
                     let search_resp = ui.add(
                         egui::TextEdit::singleline(&mut self.patchbay_filter_search)
-                            .hint_text("🔍 Cari filter... (mis: tube, eq, bass)")
-                            .desired_width(ui.available_width() - clear_btn_w),
+                            .hint_text(hint)
+                            .desired_width((ui.available_width() - clear_btn_w).max(60.0)),
                     );
 
                     // Clear button jika ada teks pencarian
                     if has_search_text {
-                        if ui.button(egui::RichText::new("✕").size(11.5).color(Color32::from_rgb(148, 163, 184))).on_hover_text("Bersihkan pencarian").clicked() {
+                        if ui.button(egui::RichText::new("✕").size(11.0).color(Color32::from_rgb(148, 163, 184))).on_hover_text("Bersihkan pencarian").clicked() {
                             self.patchbay_filter_search.clear();
                         }
                     }
@@ -390,7 +416,14 @@ impl LunulaApp {
                             // Render compact card row (~48px height for effortless readability)
                             let row_height = 48.0;
                             let (row_rect, row_resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), egui::Sense::click());
-                            let r_painter = ui.painter_at(row_rect);
+
+                            // FIX SCROLL OVERFLOW: If row is outside current viewport, do not draw it!
+                            if !ui.is_rect_visible(row_rect) {
+                                ui.add_space(4.0);
+                                continue;
+                            }
+
+                            let r_painter = ui.painter();
 
                             let is_hovered = row_resp.hovered() && !def.is_coming_soon;
                             let bg_color = if def.is_coming_soon {
@@ -405,15 +438,18 @@ impl LunulaApp {
                                 Color32::from_rgb(226, 232, 240)
                             } else if is_hovered {
                                 def.accent_color
+                            } else if count_on_canvas > 0 {
+                                Color32::from_rgb(16, 185, 129).gamma_multiply(0.65)
                             } else {
                                 Color32::from_rgb(226, 232, 240)
                             };
 
                             r_painter.rect_filled(row_rect, 6.0, bg_color);
-                            r_painter.rect_stroke(row_rect, 6.0, Stroke::new(if is_hovered { 1.2 } else { 0.8 }, border_color), egui::StrokeKind::Inside);
+                            r_painter.rect_stroke(row_rect, 6.0, Stroke::new(if is_hovered || count_on_canvas > 0 { 1.2 } else { 0.8 }, border_color), egui::StrokeKind::Inside);
 
-                            // Left Icon Badge (30x30px)
-                            let icon_rect = Rect::from_center_size(Pos2::new(row_rect.min.x + 24.0, row_rect.center().y), Vec2::splat(30.0));
+                            // Left Icon Badge (28x28px)
+                            let icon_size = 28.0;
+                            let icon_rect = Rect::from_center_size(Pos2::new(row_rect.min.x + 19.0, row_rect.center().y), Vec2::splat(icon_size));
                             let icon_bg = if def.is_coming_soon { Color32::from_rgb(241, 245, 249) } else { def.bg_accent };
                             let icon_fg = if def.is_coming_soon { Color32::from_rgb(148, 163, 184) } else { def.accent_color };
                             r_painter.rect_filled(icon_rect, 5.0, icon_bg);
@@ -421,51 +457,47 @@ impl LunulaApp {
 
                             if def.node_type == NodeType::StereoWidener {
                                 let c = icon_rect.center();
-                                for r in [3.5f32, 7.0, 10.5] {
-                                    r_painter.line_segment([Pos2::new(c.x - r, c.y - 5.0), Pos2::new(c.x - r, c.y + 5.0)], Stroke::new(1.3, icon_fg));
-                                    r_painter.line_segment([Pos2::new(c.x + r, c.y - 5.0), Pos2::new(c.x + r, c.y + 5.0)], Stroke::new(1.3, icon_fg));
+                                for r in [3.0f32, 6.0, 9.0] {
+                                    r_painter.line_segment([Pos2::new(c.x - r, c.y - 4.5), Pos2::new(c.x - r, c.y + 4.5)], Stroke::new(1.2, icon_fg));
+                                    r_painter.line_segment([Pos2::new(c.x + r, c.y - 4.5), Pos2::new(c.x + r, c.y + 4.5)], Stroke::new(1.2, icon_fg));
                                 }
-                                r_painter.circle_filled(c, 2.5, icon_fg);
+                                r_painter.circle_filled(c, 2.0, icon_fg);
                             } else {
-                                r_painter.text(icon_rect.center(), egui::Align2::CENTER_CENTER, def.icon, egui::FontId::proportional(16.0), icon_fg);
+                                r_painter.text(icon_rect.center(), egui::Align2::CENTER_CENTER, def.icon, egui::FontId::proportional(15.0), icon_fg);
                             }
 
-                            // Center Text Area
-                            let text_left = row_rect.min.x + 46.0;
-                            let text_right = row_rect.max.x - 76.0;
-                            let text_top = row_rect.min.y + 7.0;
-
-                            // Baris 1: Judul + Status Badge
-                            let title_color = if def.is_coming_soon { Color32::from_rgb(100, 116, 139) } else { Color32::from_rgb(15, 23, 42) };
-                            r_painter.text(Pos2::new(text_left, text_top), egui::Align2::LEFT_TOP, def.title, egui::FontId::proportional(13.0), title_color);
+                            // Right Action Elements
+                            let mut btn_clicked = false;
+                            let actions_left;
 
                             if def.is_coming_soon {
-                                let badge_pos = Pos2::new(text_right - 4.0, text_top + 1.0);
-                                r_painter.text(badge_pos, egui::Align2::RIGHT_TOP, "🔒 Coming Soon", egui::FontId::proportional(10.5), Color32::from_rgb(217, 119, 6));
-                            } else if count_on_canvas > 0 {
-                                let badge_text = if count_on_canvas == 1 { "✓ Di Canvas".to_string() } else { format!("{}x di Canvas", count_on_canvas) };
-                                let badge_pos = Pos2::new(text_right - 4.0, text_top + 1.0);
-                                r_painter.text(badge_pos, egui::Align2::RIGHT_TOP, badge_text, egui::FontId::monospace(10.5), Color32::from_rgb(16, 185, 129));
-                            }
+                                let cs_w = if row_rect.width() >= 235.0 { 54.0 } else { 42.0 };
+                                let cs_h = 22.0;
+                                let cs_rect = Rect::from_min_size(Pos2::new(row_rect.max.x - cs_w - 6.0, row_rect.center().y - cs_h * 0.5), Vec2::new(cs_w, cs_h));
+                                actions_left = cs_rect.min.x;
 
-                            // Baris 2: Subtitle ramah pemula
-                            let sub_text = if def.is_coming_soon { "Segera hadir dalam pembaruan berikutnya" } else { def.subtitle };
-                            let sub_color = if def.is_coming_soon { Color32::from_rgb(148, 163, 184) } else { Color32::from_rgb(100, 116, 139) };
-                            r_painter.text(Pos2::new(text_left, text_top + 17.0), egui::Align2::LEFT_TOP, sub_text, egui::FontId::proportional(11.0), sub_color);
-
-                            if def.is_coming_soon {
-                                // Locked badge
-                                let cs_w = 66.0;
-                                let cs_h = 24.0;
-                                let cs_rect = Rect::from_center_size(Pos2::new(row_rect.max.x - 38.0, row_rect.center().y), Vec2::new(cs_w, cs_h));
                                 r_painter.rect_filled(cs_rect, 4.0, Color32::from_rgb(254, 243, 199));
                                 r_painter.rect_stroke(cs_rect, 4.0, Stroke::new(0.8, Color32::from_rgb(251, 191, 36)), egui::StrokeKind::Inside);
-                                r_painter.text(cs_rect.center(), egui::Align2::CENTER_CENTER, "🔒 Soon", egui::FontId::proportional(10.5), Color32::from_rgb(180, 83, 9));
+                                let cs_label = if cs_w >= 50.0 { "🔒 Soon" } else { "🔒" };
+                                r_painter.text(cs_rect.center(), egui::Align2::CENTER_CENTER, cs_label, egui::FontId::proportional(10.5), Color32::from_rgb(180, 83, 9));
                             } else {
+                                // Right Action 2: Tombol "+ Tambah" (atau "+" jika ruang sempit)
+                                let btn_w = if row_rect.width() >= 235.0 { 48.0 } else { 24.0 };
+                                let btn_h = 22.0;
+                                let btn_rect = Rect::from_min_size(Pos2::new(row_rect.max.x - btn_w - 6.0, row_rect.center().y - btn_h * 0.5), Vec2::new(btn_w, btn_h));
+                                let btn_resp = ui.interact(btn_rect, ui.scope_id().with(("add_fx_btn", def.title)), egui::Sense::click());
+
+                                let btn_bg = if btn_resp.hovered() { Color32::from_rgb(79, 70, 229) } else { Color32::from_rgb(241, 245, 249) };
+                                let btn_fg = if btn_resp.hovered() { Color32::WHITE } else { Color32::from_rgb(79, 70, 229) };
+
+                                r_painter.rect_filled(btn_rect, 4.0, btn_bg);
+                                let btn_label = if btn_w >= 40.0 { "+ Tambah" } else { "+" };
+                                r_painter.text(btn_rect.center(), egui::Align2::CENTER_CENTER, btn_label, egui::FontId::proportional(10.5), btn_fg);
+
                                 // Right Action 1: Tombol "? Panduan"
                                 let help_w = 20.0;
-                                let help_h = 24.0;
-                                let help_rect = Rect::from_center_size(Pos2::new(row_rect.max.x - 58.0, row_rect.center().y), Vec2::new(help_w, help_h));
+                                let help_h = 22.0;
+                                let help_rect = Rect::from_min_size(Pos2::new(btn_rect.min.x - help_w - 3.5, row_rect.center().y - help_h * 0.5), Vec2::new(help_w, help_h));
                                 let help_resp = ui.interact(help_rect, ui.scope_id().with(("help_fx_btn", def.title)), egui::Sense::click())
                                     .on_hover_text(format!("Buka panduan bergambar & cara kerja {}", def.title));
 
@@ -473,36 +505,70 @@ impl LunulaApp {
                                 let help_fg = if help_resp.hovered() { Color32::from_rgb(79, 70, 229) } else { Color32::from_rgb(100, 116, 139) };
 
                                 r_painter.rect_filled(help_rect, 4.0, help_bg);
-                                r_painter.text(help_rect.center(), egui::Align2::CENTER_CENTER, "?", egui::FontId::proportional(12.0), help_fg);
+                                r_painter.text(help_rect.center(), egui::Align2::CENTER_CENTER, "?", egui::FontId::proportional(11.0), help_fg);
 
                                 if help_resp.clicked() {
                                     switch_to_tutorial = Some(def.node_type.clone());
                                 }
 
-                                // Right Action 2: Tombol "+ Tambah"
-                                let btn_w = 46.0;
-                                let btn_h = 24.0;
-                                let btn_rect = Rect::from_center_size(Pos2::new(row_rect.max.x - 24.0, row_rect.center().y), Vec2::new(btn_w, btn_h));
-                                let btn_resp = ui.interact(btn_rect, ui.scope_id().with(("add_fx_btn", def.title)), egui::Sense::click());
-
-                                let btn_bg = if btn_resp.hovered() { Color32::from_rgb(79, 70, 229) } else { Color32::from_rgb(241, 245, 249) };
-                                let btn_fg = if btn_resp.hovered() { Color32::WHITE } else { Color32::from_rgb(79, 70, 229) };
-
-                                r_painter.rect_filled(btn_rect, 4.0, btn_bg);
-                                r_painter.text(btn_rect.center(), egui::Align2::CENTER_CENTER, "+ Tambah", egui::FontId::proportional(11.0), btn_fg);
-
-                                if def.node_type == NodeType::TubeWarmer {
-                                    self.quest_rect_tube_warmer_btn = Some(row_rect);
+                                if btn_resp.clicked() {
+                                    btn_clicked = true;
                                 }
 
-                                // Interaksi Tambah
-                                if row_resp.clicked() || btn_resp.clicked() {
-                                    if def.is_eq_preset {
-                                        self.show_saved_eq_palette_popup = !self.show_saved_eq_palette_popup;
-                                        open_eq_popup_pos = Some(Pos2::new(sidebar_min_x, row_rect.center().y));
-                                    } else {
-                                        add_filter_type = Some(def.node_type.clone());
+                                actions_left = help_rect.min.x;
+                            }
+
+                            // Center Text Area
+                            let text_left = row_rect.min.x + 38.0;
+                            let text_right = actions_left - 5.0;
+                            let text_width = (text_right - text_left).max(20.0);
+                            let text_top = row_rect.min.y + 6.0;
+
+                            let text_rect = Rect::from_min_max(
+                                Pos2::new(text_left, row_rect.min.y + 3.0),
+                                Pos2::new(text_right, row_rect.max.y - 3.0),
+                            );
+                            let text_clip = ui.clip_rect().intersect(text_rect);
+                            if text_clip.is_positive() {
+                                let clipped_painter = ui.painter().with_clip_rect(text_clip);
+
+                                // Baris 1: Judul
+                                let title_color = if def.is_coming_soon { Color32::from_rgb(100, 116, 139) } else { Color32::from_rgb(15, 23, 42) };
+                                clipped_painter.text(Pos2::new(text_left, text_top), egui::Align2::LEFT_TOP, def.title, egui::FontId::proportional(12.0), title_color);
+
+                                // Jika modul ada di canvas, tampilkan badge kecil "✓" atau "2x" setelah judul
+                                if count_on_canvas > 0 {
+                                    let title_est_w = (def.title.chars().count() as f32 * 6.5).min(text_width - 18.0);
+                                    let badge_x = text_left + title_est_w + 4.0;
+                                    if badge_x + 12.0 <= text_right {
+                                        let badge_text = if count_on_canvas == 1 { "✓" } else { "2x" };
+                                        clipped_painter.text(Pos2::new(badge_x, text_top + 1.0), egui::Align2::LEFT_TOP, badge_text, egui::FontId::proportional(9.5), Color32::from_rgb(16, 185, 129));
                                     }
+                                }
+
+                                // Baris 2: Subtitle adaptif yang terpotong rapi dalam batas text_rect
+                                let sub_color = if def.is_coming_soon { Color32::from_rgb(148, 163, 184) } else { Color32::from_rgb(100, 116, 139) };
+                                let sub_text = if def.is_coming_soon {
+                                    if text_width >= 110.0 { "Segera hadir di update" } else { "Segera hadir" }
+                                } else if text_width < 125.0 {
+                                    def.short_subtitle
+                                } else {
+                                    def.subtitle
+                                };
+                                clipped_painter.text(Pos2::new(text_left, text_top + 17.0), egui::Align2::LEFT_TOP, sub_text, egui::FontId::proportional(10.0), sub_color);
+                            }
+
+                            if def.node_type == NodeType::TubeWarmer {
+                                self.quest_rect_tube_warmer_btn = Some(row_rect);
+                            }
+
+                            // Interaksi Tambah
+                            if !def.is_coming_soon && (row_resp.clicked() || btn_clicked) {
+                                if def.is_eq_preset {
+                                    self.show_saved_eq_palette_popup = !self.show_saved_eq_palette_popup;
+                                    open_eq_popup_pos = Some(Pos2::new(sidebar_min_x, row_rect.center().y));
+                                } else {
+                                    add_filter_type = Some(def.node_type.clone());
                                 }
                             }
 

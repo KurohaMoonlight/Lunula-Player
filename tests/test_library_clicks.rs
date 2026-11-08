@@ -29,6 +29,7 @@ fn test_print_card_rects_for_grid() {
             replay_gain: Default::default(),
             cue_offset_sec: None,
             cue_duration_sec: None,
+            genre: None,
         });
     }
     app.library_category = LibraryCategory::Albums;
@@ -135,6 +136,7 @@ fn test_real_album_card_lihat_lagu_click_triggers_action() {
             replay_gain: Default::default(),
             cue_offset_sec: None,
             cue_duration_sec: None,
+            genre: None,
         },
     ];
     app.library_category = LibraryCategory::Albums;
@@ -245,6 +247,7 @@ fn test_real_album_card_button_click_triggers_action() {
             replay_gain: Default::default(),
             cue_offset_sec: None,
             cue_duration_sec: None,
+            genre: None,
         },
     ];
     app.library_category = LibraryCategory::Albums;
@@ -363,6 +366,7 @@ fn test_real_library_panel_all_categories_render() {
             replay_gain: Default::default(),
             cue_offset_sec: None,
             cue_duration_sec: None,
+            genre: None,
         },
         Track {
             title: "Test Track 2".to_string(),
@@ -383,6 +387,7 @@ fn test_real_library_panel_all_categories_render() {
             replay_gain: Default::default(),
             cue_offset_sec: None,
             cue_duration_sec: None,
+            genre: None,
         },
     ];
 
