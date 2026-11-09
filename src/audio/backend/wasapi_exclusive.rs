@@ -169,17 +169,30 @@ impl WasapiExclusiveBackend {
             ]
         };
 
-        let mut matched_fmt = None;
-        for (store_bits, valid_bits, sample_type, desc) in candidate_formats {
-            let wave_fmt = WaveFormat::new(store_bits, valid_bits, &sample_type, preferred_sample_rate as usize, 2, None);
-            if client.is_supported(&wave_fmt, &ShareMode::Exclusive).is_ok() {
-                matched_fmt = Some((wave_fmt, store_bits, valid_bits, sample_type, desc));
-                break;
+        let mix_rate = client.get_mixformat().map(|mf| mf.get_samplespersec()).unwrap_or(48000);
+        let mut candidate_rates = vec![preferred_sample_rate];
+        if !candidate_rates.contains(&mix_rate) {
+            candidate_rates.push(mix_rate);
+        }
+        for common_rate in [48000, 96000, 192000, 44100, 88200] {
+            if !candidate_rates.contains(&common_rate) {
+                candidate_rates.push(common_rate);
             }
         }
 
-        let (wave_fmt, store_bits, valid_bits, sample_type, format_desc) = matched_fmt
-            .ok_or_else(|| "Hardware audio tidak mendukung sample rate track dalam WASAPI Exclusive Mode")?;
+        let mut matched_fmt = None;
+        'rate_search: for sample_rate in candidate_rates {
+            for (store_bits, valid_bits, sample_type, desc) in &candidate_formats {
+                let wave_fmt = WaveFormat::new(*store_bits, *valid_bits, sample_type, sample_rate as usize, 2, None);
+                if let Ok(supported) = client.is_supported_exclusive_with_quirks(&wave_fmt) {
+                    matched_fmt = Some((supported, *store_bits, *valid_bits, *sample_type, desc.to_string(), sample_rate));
+                    break 'rate_search;
+                }
+            }
+        }
+
+        let (wave_fmt, store_bits, valid_bits, sample_type, format_desc, actual_sample_rate) = matched_fmt
+            .ok_or_else(|| "Hardware audio tidak mendukung format track dalam WASAPI Exclusive Mode")?;
 
         let (_, min_time) = client.get_device_period()?;
         client.initialize_client(
@@ -229,7 +242,7 @@ impl WasapiExclusiveBackend {
                 let mut raw_bytes: Vec<u8> = Vec::with_capacity(max_frames * bytes_per_frame);
                 let mut dither_state: u32 = 0x12345678;
                 let mut batch_f32 = [0.0f32; 1024];
-                let mut dsp = DspPipeline::new(preferred_sample_rate as f32);
+                let mut dsp = DspPipeline::new(actual_sample_rate as f32);
                 dsp.set_gc_sender(gc_tx);
 
                 let notify_err = |e: &dyn std::fmt::Display, prefix: &str| {
@@ -523,7 +536,7 @@ impl WasapiExclusiveBackend {
 
         Ok((
             Self {
-                sample_rate: preferred_sample_rate,
+                sample_rate: actual_sample_rate,
                 channels: 2,
                 bit_depth: valid_bits as u8,
                 format_desc: format_desc.to_string(),

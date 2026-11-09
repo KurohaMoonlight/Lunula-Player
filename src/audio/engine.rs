@@ -149,6 +149,10 @@ impl AudioEngineController {
         self.set_chain_mode(mode);
     }
 
+    pub fn set_prefer_exclusive(&self, prefer: bool) {
+        let _ = self.cmd_tx.send(AudioCommand::SetPreferExclusive(prefer));
+    }
+
     pub fn try_recv_event(&self) -> Option<AudioEvent> {
         self.event_rx.try_recv().ok()
     }
@@ -288,6 +292,7 @@ fn run_audio_worker(
     let mut resampler = StereoResampler::new(44100, 44100);
     let mut chain_mode = ChainMode::BitPerfect;
     let mut current_stream_mode: Option<ChainMode> = None;
+    let mut prefer_exclusive = true;
     let mut crossfade_secs: f32 = 0.0;
     let mut fade_in_remaining_samples: usize = 0;
     let mut fade_in_total_samples: usize = 0;
@@ -379,7 +384,7 @@ fn run_audio_worker(
                                         Arc::clone(&shared_muted),
                                         Arc::clone(&is_dsp_active),
                                         event_tx.clone(),
-                                        true,
+                                        prefer_exclusive,
                                     ) {
                                         Ok((out, prod)) => {
                                             sync_output_dsp(&out, desired_rate, last_bypass, last_limiter, &last_graph, &last_eq_bands);
@@ -687,6 +692,64 @@ fn run_audio_worker(
                             current_stream_mode = None;
                         }
                     }
+                    AudioCommand::SetPreferExclusive(prefer) => {
+                        if prefer_exclusive != prefer {
+                            prefer_exclusive = prefer;
+                            if let Some(dec) = &decoder {
+                                let track_sample_rate = dec.sample_rate();
+                                let track_bit_depth = dec.bits_per_sample();
+                                let desired_rate = desired_device_rate(chain_mode, track_sample_rate);
+                                let need_recreate = match &output {
+                                    Some(out) => out.is_exclusive() != prefer,
+                                    None => true,
+                                };
+                                if need_recreate {
+                                    if let Some(old_out) = output.take() {
+                                        old_out.pause();
+                                        let _ = old_out.flush();
+                                        drop(old_out);
+                                    }
+                                    producer = None;
+                                    match AudioOutput::new(
+                                        selected_device.as_deref(),
+                                        desired_rate,
+                                        track_bit_depth,
+                                        chain_mode,
+                                        96000,
+                                        Arc::clone(&shared_volume),
+                                        Arc::clone(&shared_visualizer),
+                                        Arc::clone(&shared_bit_perfect),
+                                        Arc::clone(&shared_muted),
+                                        Arc::clone(&is_dsp_active),
+                                        event_tx.clone(),
+                                        prefer_exclusive,
+                                    ) {
+                                        Ok((new_out, new_prod)) => {
+                                            if state == PlaybackState::Playing {
+                                                new_out.resume();
+                                            }
+                                            let device_rate = new_out.sample_rate();
+                                            resampler.reset(track_sample_rate, device_rate);
+                                            sync_output_dsp(&new_out, desired_rate, last_bypass, last_limiter, &last_graph, &last_eq_bands);
+
+                                            let report = create_signal_path_report(&new_out, track_sample_rate, track_bit_depth, chain_mode);
+                                            let _ = event_tx.send(AudioEvent::SignalPath(report));
+
+                                            output = Some(new_out);
+                                            producer = Some(new_prod);
+                                            current_stream_mode = Some(chain_mode);
+                                        }
+                                        Err(err) => {
+                                            let _ = event_tx.send(AudioEvent::Error(format!(
+                                                "Gagal mengganti mode eksklusif audio: {}",
+                                                err
+                                            )));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     AudioCommand::SetChainMode(mode) => {
                         let prev_mode = chain_mode;
                         chain_mode = mode;
@@ -726,7 +789,7 @@ fn run_audio_worker(
                                     Arc::clone(&shared_muted),
                                     Arc::clone(&is_dsp_active),
                                     event_tx.clone(),
-                                    true,
+                                    prefer_exclusive,
                                 ) {
                                     Ok((new_out, new_prod)) => {
                                         if state == PlaybackState::Playing {
@@ -952,7 +1015,7 @@ fn run_audio_worker(
                                         Arc::clone(&shared_muted),
                                         Arc::clone(&is_dsp_active),
                                         event_tx.clone(),
-                                        true,
+                                        prefer_exclusive,
                                     ) {
                                         Ok((new_out, new_prod)) => {
                                             sync_output_dsp(&new_out, desired_rate, last_bypass, last_limiter, &last_graph, &last_eq_bands);

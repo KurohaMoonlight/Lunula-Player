@@ -3145,11 +3145,18 @@ impl LunulaApp {
         let (pill_bg, pill_stroke, status_icon, status_msg, text_col) = if chain_eval.is_complete {
             if self.is_playing {
                 if is_fallback {
+                    let is_ex = self.signal_path_report.as_ref().map_or(false, |r| r.is_exclusive);
+                    let fallback_msg = if is_ex {
+                        let dev_rate = self.signal_path_report.as_ref().map_or(48.0, |r| r.device_rate as f32 / 1000.0);
+                        format!("HARDWARE RESAMPLED — DAC hanya mendukung {:.1} kHz dalam Exclusive Mode, di-resample via Sinc Engine (Mixer OS tetap di-bypass)", dev_rate)
+                    } else {
+                        "FALLBACK KE OS RESAMPLED — Hardware tidak mendukung sample rate asli file, dialihkan ke 48.0 kHz".to_string()
+                    };
                     (
                         Color32::from_rgba_premultiplied(254, 243, 199, 230),
                         Stroke::new(1.0, Color32::from_rgb(253, 230, 138)),
                         "⚠️",
-                        "FALLBACK KE OS RESAMPLED — Hardware tidak mendukung sample rate asli file, dialihkan ke 48.0 kHz".to_string(),
+                        fallback_msg,
                         Color32::from_rgb(146, 64, 14),
                     )
                 } else {

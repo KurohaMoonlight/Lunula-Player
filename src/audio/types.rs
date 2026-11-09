@@ -753,6 +753,8 @@ pub enum AudioCommand {
     SetResamplerSettings(ResamplerSettings),
     /// Set Crossfade duration in seconds (0.0 = pure gapless, >0.0 = smooth overlap)
     SetCrossfadeSecs(f32),
+    /// Prefer WASAPI Exclusive mode (true = exclusive hardware stream, false = shared mode)
+    SetPreferExclusive(bool),
 }
 
 /// Real-time non-blocking command delivered to audio callback DSP executor

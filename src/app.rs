@@ -753,6 +753,7 @@ impl LunulaApp {
             }
             engine.set_resampler_settings(app.resampler_settings);
             engine.set_crossfade_secs(app.crossfade_secs);
+            engine.set_prefer_exclusive(app.prefer_exclusive);
         }
 
         app.load_auto_bindings();
@@ -1491,6 +1492,13 @@ impl LunulaApp {
             node.sub2 = format!("Rubato Sinc {} ({}) • {}", settings.quality.short_name(), settings.profile.short_name(), rate_str);
         }
         self.save_library_state();
+    }
+
+    pub fn set_exclusive_mode(&mut self, prefer: bool) {
+        self.prefer_exclusive = prefer;
+        if let Some(ref engine) = self.audio_engine {
+            engine.set_prefer_exclusive(prefer);
+        }
     }
 
     pub fn set_chain_mode(&mut self, mode: ChainMode) {
@@ -3301,7 +3309,7 @@ impl eframe::App for LunulaApp {
                                     format!("🔊 {}", current_dev_label)
                                 };
                                 // --- TOGGLE PILIHAN USER: EXCLUSIVE vs SHARED ---
-                                let (ex_label, ex_color, ex_bg) = if self.chain_mode == ChainMode::BitPerfect {
+                                let (ex_label, ex_color, ex_bg) = if self.prefer_exclusive {
                                     ("🔒 Exclusive", Color32::from_rgb(16, 185, 129), Color32::from_rgb(236, 253, 245))
                                 } else {
                                     ("🔊 Shared", Color32::from_rgb(217, 119, 6), Color32::from_rgb(254, 243, 199))
@@ -3312,19 +3320,15 @@ impl eframe::App for LunulaApp {
                                         .stroke(Stroke::new(1.0, ex_color))
                                         .corner_radius(6.0)
                                 ).on_hover_text(
-                                    if self.chain_mode == ChainMode::BitPerfect {
-                                        "Mode Saat Ini: WASAPI Exclusive (Kunci Hardware Penuh)\nKlik untuk beralih ke Shared Mode agar audio bisa campur dengan YouTube/Discord."
+                                    if self.prefer_exclusive {
+                                        "Mode Output: WASAPI Exclusive (Kunci Hardware Penuh)\nBypass mixer Windows untuk latensi rendah & bit-accuracy.\nBisa digunakan di mode Modular FX maupun Bit-Perfect.\nKlik untuk beralih ke Shared Mode agar audio bisa campur dengan YouTube/Discord."
                                     } else {
-                                        "Mode Saat Ini: WASAPI Shared (Campur Audio Windows)\nKlik untuk beralih ke Exclusive Mode untuk bypass mixer Windows dan kualitas audiophile maksimal."
+                                        "Mode Output: WASAPI Shared (Campur Audio Windows)\nAudio bercampur dengan aplikasi lain (YouTube/Discord).\nKlik untuk beralih ke Exclusive Mode untuk bypass mixer Windows."
                                     }
                                 );
 
                                 if ex_btn.clicked() {
-                                    if self.chain_mode == ChainMode::BitPerfect {
-                                        self.set_chain_mode(ChainMode::DspActive);
-                                    } else {
-                                        self.set_chain_mode(ChainMode::BitPerfect);
-                                    }
+                                    self.set_exclusive_mode(!self.prefer_exclusive);
                                 }
 
 
@@ -4106,6 +4110,40 @@ mod tests {
         dsp.process_block(&mut left, &mut right);
         let peak = left[800..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
         assert!(peak < 0.15, "5000 Hz must be heavily attenuated by 400 Hz LPF, got {}", peak);
+    }
+
+    #[test]
+    fn test_modular_fx_independent_wasapi_exclusive_toggle() {
+        let mut app = LunulaApp::new_standalone();
+
+        // 1. Initial defaults
+        assert_eq!(app.chain_mode, ChainMode::BitPerfect);
+        assert!(app.prefer_exclusive);
+
+        // 2. Switch to Modular FX (DspActive)
+        app.set_chain_mode(ChainMode::DspActive);
+        assert_eq!(app.chain_mode, ChainMode::DspActive);
+        // prefer_exclusive must remain true!
+        assert!(app.prefer_exclusive);
+
+        // 3. Toggle exclusive mode off (to Shared mode) while remaining in Modular FX
+        app.set_exclusive_mode(false);
+        assert_eq!(app.chain_mode, ChainMode::DspActive, "Toggling exclusive must NEVER force mode to BitPerfect!");
+        assert!(!app.prefer_exclusive);
+
+        // 4. Toggle exclusive mode back on while remaining in Modular FX
+        app.set_exclusive_mode(true);
+        assert_eq!(app.chain_mode, ChainMode::DspActive, "Toggling exclusive must preserve Modular FX mode!");
+        assert!(app.prefer_exclusive);
+
+        // 5. Switch to Bit-Perfect mode and toggle exclusive mode
+        app.set_chain_mode(ChainMode::BitPerfect);
+        assert_eq!(app.chain_mode, ChainMode::BitPerfect);
+        assert!(app.prefer_exclusive);
+
+        app.set_exclusive_mode(false);
+        assert_eq!(app.chain_mode, ChainMode::BitPerfect, "Toggling exclusive must preserve BitPerfect mode!");
+        assert!(!app.prefer_exclusive);
     }
 
     #[test]
