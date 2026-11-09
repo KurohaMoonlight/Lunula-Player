@@ -24,6 +24,14 @@ impl DspPipeline {
         self.executor.set_signal_chain(graph);
     }
 
+    pub fn apply_compiled_plan(&mut self, plan: super::executor::ExecutionPlan) {
+        self.executor.apply_compiled_plan(plan);
+    }
+
+    pub fn set_gc_sender(&mut self, tx: crossbeam_channel::Sender<super::executor::ExecutionPlan>) {
+        self.executor.set_gc_sender(tx);
+    }
+
     pub fn set_sample_rate(&mut self, sample_rate: f32) {
         self.executor.set_sample_rate(sample_rate);
     }

@@ -22,9 +22,20 @@ pub struct CpalBackend {
     flush_ack: Arc<AtomicBool>,
     shared_volume: Arc<AtomicU32>,
     dsp_tx: Sender<DspCommand>,
+    stop_signal: Arc<AtomicBool>,
+    gc_rx: Receiver<crate::audio::dsp::executor::ExecutionPlan>,
 }
 
 unsafe impl Send for CpalBackend {}
+
+impl Drop for CpalBackend {
+    fn drop(&mut self) {
+        self.stop_signal.store(true, Ordering::SeqCst);
+        while let Ok(old_plan) = self.gc_rx.try_recv() {
+            drop(old_plan);
+        }
+    }
+}
 
 impl OutputBackend for CpalBackend {
     fn sample_rate(&self) -> u32 {
@@ -82,6 +93,9 @@ impl OutputBackend for CpalBackend {
     }
 
     fn send_dsp_command(&self, cmd: DspCommand) {
+        while let Ok(old_plan) = self.gc_rx.try_recv() {
+            drop(old_plan);
+        }
         let _ = self.dsp_tx.send(cmd);
     }
 }
@@ -133,6 +147,7 @@ impl CpalBackend {
         let is_paused = Arc::new(AtomicBool::new(false));
         let flush_requested = Arc::new(AtomicBool::new(false));
         let flush_ack = Arc::new(AtomicBool::new(false));
+        let stop_signal = Arc::new(AtomicBool::new(false));
 
         let (config, format) = matched_config.unwrap_or_else(|| {
             (default_supported.config(), default_supported.sample_format())
@@ -154,6 +169,7 @@ impl CpalBackend {
 
         let (producer, consumer) = RingBuffer::<f32>::new(buffer_capacity);
         let (dsp_tx, dsp_rx) = crossbeam_channel::unbounded::<DspCommand>();
+        let (gc_tx, gc_rx) = crossbeam_channel::bounded::<crate::audio::dsp::executor::ExecutionPlan>(32);
         let stream = Self::build_stream(
             &device,
             &config,
@@ -170,6 +186,8 @@ impl CpalBackend {
             Arc::clone(&is_dsp_active),
             dsp_rx,
             event_tx,
+            Arc::clone(&stop_signal),
+            gc_tx,
         )?;
         stream.play()?;
 
@@ -189,6 +207,8 @@ impl CpalBackend {
                 flush_ack,
                 shared_volume,
                 dsp_tx,
+                stop_signal,
+                gc_rx,
             },
             producer,
         ))
@@ -208,6 +228,9 @@ impl CpalBackend {
                 }
                 DspCommand::SetLimiterEnabled(enabled) => {
                     dsp.set_limiter_enabled(enabled);
+                }
+                DspCommand::SetCompiledPlan(plan) => {
+                    dsp.apply_compiled_plan(*plan);
                 }
                 DspCommand::SetSignalChainGraph(g) => {
                     dsp.set_signal_chain(g);
@@ -239,6 +262,8 @@ impl CpalBackend {
         _is_dsp_active: Arc<AtomicBool>,
         dsp_rx: Receiver<DspCommand>,
         event_tx: Option<Sender<crate::audio::types::AudioEvent>>,
+        stop_signal: Arc<AtomicBool>,
+        gc_tx: Sender<crate::audio::dsp::executor::ExecutionPlan>,
     ) -> Result<Stream, Box<dyn std::error::Error + Send + Sync>> {
         let is_paused_cb = Arc::clone(&is_paused);
         let flush_cb = Arc::clone(&flush_requested);
@@ -247,22 +272,48 @@ impl CpalBackend {
         let muted_cb = Arc::clone(&shared_muted);
         let volume_cb = Arc::clone(&shared_volume);
         let visualizer_cb = Arc::clone(&visualizer);
+        let stop_signal_cb = Arc::clone(&stop_signal);
         let channels_count = config.channels as usize;
         let dev_name = device.name().unwrap_or_else(|_| "Audio Device".to_string());
         let err_tx = event_tx.clone();
         let err_fn = move |err: cpal::StreamError| {
+            if stop_signal_cb.load(Ordering::Relaxed) {
+                return; // Stream sedang dimatikan secara normal, jangan kirim error palsu
+            }
             eprintln!("Audio stream error: {}", err);
             if let Some(ref tx) = err_tx {
                 let err_str = err.to_string();
                 let err_lower = err_str.to_lowercase();
-                let is_disconnect = err_lower.contains("device")
-                    || err_lower.contains("invalidat")
-                    || err_lower.contains("disconnect");
-                if is_disconnect {
-                    let _ = tx.send(crate::audio::types::AudioEvent::DeviceDisconnected {
-                        device_name: dev_name.clone(),
-                        error: err_str,
-                    });
+                // Periksa apakah ini format rejection atau disconnect keyword
+                let is_format_or_invalidated = err_lower.contains("invalidat")
+                    || err_lower.contains("device in use")
+                    || err_str.contains("88890004")
+                    || err_str.contains("88890019");
+                let is_disconnect_keyword = err_lower.contains("disconnect")
+                    || err_lower.contains("not found")
+                    || err_lower.contains("removed");
+
+                if is_format_or_invalidated || is_disconnect_keyword {
+                    // Verifikasi fisik via CPAL host: apakah masih ada output device?
+                    let host = cpal::default_host();
+                    let device_still_present = host
+                        .output_devices()
+                        .ok()
+                        .map(|mut devs| devs.any(|d| d.name().map_or(false, |n| n == dev_name)))
+                        .unwrap_or(false);
+                    if device_still_present {
+                        // Device masih ada → stream error / format problem, bukan hot-unplug fisik
+                        let _ = tx.send(crate::audio::types::AudioEvent::StreamFallback {
+                            device_name: dev_name.clone(),
+                            reason: format!("CPAL stream error: {}", err_str),
+                        });
+                    } else {
+                        // Device benar-benar hilang → hot-unplug fisik
+                        let _ = tx.send(crate::audio::types::AudioEvent::DeviceDisconnected {
+                            device_name: dev_name.clone(),
+                            error: err_str,
+                        });
+                    }
                 } else {
                     let _ = tx.send(crate::audio::types::AudioEvent::Error(format!("CPAL error: {}", err_str)));
                 }
@@ -273,6 +324,7 @@ impl CpalBackend {
         let stream = match sample_format {
             SampleFormat::F32 => {
                 let mut dsp = DspPipeline::new(stream_rate);
+                dsp.set_gc_sender(gc_tx.clone());
                 device.build_output_stream(
                     config,
                     move |data: &mut [f32], _: &OutputCallbackInfo| {
@@ -297,6 +349,7 @@ impl CpalBackend {
             }
             SampleFormat::I32 => {
                 let mut dsp = DspPipeline::new(stream_rate);
+                dsp.set_gc_sender(gc_tx.clone());
                 device.build_output_stream(
                     config,
                     move |data: &mut [i32], _: &OutputCallbackInfo| {
@@ -322,6 +375,7 @@ impl CpalBackend {
             }
             SampleFormat::I16 => {
                 let mut dsp = DspPipeline::new(stream_rate);
+                dsp.set_gc_sender(gc_tx.clone());
                 let mut dither_state: u32 = 0x12345678;
                 device.build_output_stream(
                     config,

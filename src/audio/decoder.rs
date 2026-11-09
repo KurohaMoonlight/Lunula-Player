@@ -338,6 +338,15 @@ impl AudioDecoder {
 /// Fast background scanner to determine true linear audio peak of an audio file.
 /// Decodes frames in streaming chunks without memory allocations for playback cache.
 pub fn scan_audio_peak_fast<P: AsRef<Path>>(path: P) -> Result<f32, Box<dyn std::error::Error + Send + Sync>> {
+    let (peak, _) = scan_audio_peak_and_waveform(path, 0)?;
+    Ok(peak)
+}
+
+/// Fast background scanner that extracts both the true peak and the real audio waveform envelope.
+pub fn scan_audio_peak_and_waveform<P: AsRef<Path>>(
+    path: P,
+    waveform_bins: usize,
+) -> Result<(f32, Vec<f32>), Box<dyn std::error::Error + Send + Sync>> {
     let path_ref = path.as_ref();
     let file = File::open(path_ref)?;
     let mss_opts = MediaSourceStreamOptions {
@@ -367,6 +376,7 @@ pub fn scan_audio_peak_fast<P: AsRef<Path>>(path: P) -> Result<f32, Box<dyn std:
     )?;
 
     let mut max_peak: f32 = 0.0;
+    let mut packet_peaks: Vec<f32> = Vec::new();
     let mut sample_buf: Option<SampleBuffer<f32>> = None;
 
     while let Ok(packet) = format.next_packet() {
@@ -386,11 +396,18 @@ pub fn scan_audio_peak_fast<P: AsRef<Path>>(path: P) -> Result<f32, Box<dyn std:
                 }
                 if let Some(ref mut buf) = sample_buf {
                     buf.copy_interleaved_ref(audio_buf_ref);
+                    let mut pkt_max: f32 = 0.0;
                     for &s in buf.samples() {
                         let a = s.abs();
                         if a > max_peak {
                             max_peak = a;
                         }
+                        if a > pkt_max {
+                            pkt_max = a;
+                        }
+                    }
+                    if waveform_bins > 0 {
+                        packet_peaks.push(pkt_max);
                     }
                 }
             }
@@ -404,7 +421,23 @@ pub fn scan_audio_peak_fast<P: AsRef<Path>>(path: P) -> Result<f32, Box<dyn std:
         }
     }
 
-    Ok(max_peak)
+    let mut waveform = Vec::with_capacity(waveform_bins);
+    if waveform_bins > 0 && !packet_peaks.is_empty() {
+        let total_pkts = packet_peaks.len();
+        for bin in 0..waveform_bins {
+            let start = bin * total_pkts / waveform_bins;
+            let end = ((bin + 1) * total_pkts / waveform_bins).max(start + 1).min(total_pkts);
+            let mut bin_max: f32 = 0.0;
+            for &p in &packet_peaks[start..end] {
+                if p > bin_max {
+                    bin_max = p;
+                }
+            }
+            waveform.push(bin_max.clamp(0.02, 1.0));
+        }
+    }
+
+    Ok((max_peak, waveform))
 }
 
 #[cfg(test)]

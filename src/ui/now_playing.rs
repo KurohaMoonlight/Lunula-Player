@@ -398,6 +398,14 @@ impl LunulaApp {
                         Stroke::new(2.0, Color32::from_rgb(15, 23, 42)),
                     );
                     painter.circle_filled(Pos2::new(center_x, wave_rect.min.y + 8.0), 4.0, Color32::from_rgb(14, 165, 233));
+                } else if duration > 0.0 {
+                    painter.text(
+                        wave_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "Memindai bentuk gelombang audio...",
+                        egui::FontId::proportional(14.0),
+                        Color32::from_rgb(148, 163, 184),
+                    );
                 } else {
                     painter.text(
                         wave_rect.center(),

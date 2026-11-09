@@ -56,6 +56,8 @@ impl LunulaApp {
             NodeType::SteppedAttenuator => ("🪜 STEPPED ATTENUATOR".to_string(), "-12 dB".to_string(), "64-Step Resistor".to_string()),
             NodeType::OpticalLeveler => ("🎚️ OPTICAL LEVELER".to_string(), "Peak Red 30%".to_string(), "LA-2A Opto".to_string()),
             NodeType::StereoBalance => ("⚖️ STEREO BALANCE".to_string(), "Center 0.0 dB".to_string(), "Pan & Trim".to_string()),
+            NodeType::TimeAlignment => ("⏱️ TIME & PHASE ALIGN".to_string(), "Delay 0 µs".to_string(), "Phase 0° (Normal)".to_string()),
+            NodeType::StereoMatrix => ("🌐 STEREO MATRIX".to_string(), "Stereo Direct".to_string(), "Bauer / MS / Swap".to_string()),
             _ => ("AUDIO FILTER".to_string(), "DSP Unit".to_string(), "Active".to_string()),
         };
 
@@ -78,6 +80,8 @@ impl LunulaApp {
             NodeType::SteppedAttenuator => -12.0,
             NodeType::OpticalLeveler => 30.0,
             NodeType::StereoBalance => 0.0,
+            NodeType::TimeAlignment => 0.0,
+            NodeType::StereoMatrix => 0.0,
             _ => 0.0,
         };
         let new_node = ModularNode {

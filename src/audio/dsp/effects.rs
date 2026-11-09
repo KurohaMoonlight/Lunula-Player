@@ -1826,3 +1826,303 @@ impl Effect for CompressorEffect {
     }
 }
 
+/// Time & Phase Alignment Effect
+/// Allows microsecond-level delay per channel for acoustic distance compensation,
+/// and independent 180° phase inversion per channel.
+#[derive(Clone, Debug)]
+pub struct TimeAlignmentEffect {
+    pub delay_left_us: f32,
+    pub delay_right_us: f32,
+    pub invert_left: bool,
+    pub invert_right: bool,
+    sample_rate: f32,
+    buffer_l: Vec<f32>,
+    buffer_r: Vec<f32>,
+    write_pos: usize,
+    buffer_mask: usize,
+}
+
+pub const MAX_ALIGN_DELAY_US: f32 = 50_000.0;
+pub const ALIGN_BUFFER_SIZE: usize = 16384;
+
+impl TimeAlignmentEffect {
+    pub fn new(delay_left_us: f32, delay_right_us: f32, invert_left: bool, invert_right: bool, sample_rate: f32) -> Self {
+        let sr = sample_rate.max(8000.0);
+        Self {
+            delay_left_us: delay_left_us.clamp(0.0, MAX_ALIGN_DELAY_US),
+            delay_right_us: delay_right_us.clamp(0.0, MAX_ALIGN_DELAY_US),
+            invert_left,
+            invert_right,
+            sample_rate: sr,
+            buffer_l: vec![0.0f32; ALIGN_BUFFER_SIZE],
+            buffer_r: vec![0.0f32; ALIGN_BUFFER_SIZE],
+            write_pos: 0,
+            buffer_mask: ALIGN_BUFFER_SIZE - 1,
+        }
+    }
+}
+
+impl Effect for TimeAlignmentEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let d_samples_l = (self.delay_left_us as f64 * 1e-6 * self.sample_rate as f64).clamp(0.0, (ALIGN_BUFFER_SIZE - 2) as f64);
+        let mut d_int_l = d_samples_l.floor() as usize;
+        let mut d_frac_l = (d_samples_l - d_int_l as f64) as f32;
+        if d_frac_l < 1e-5 {
+            d_frac_l = 0.0;
+        } else if d_frac_l > 0.99999 {
+            d_int_l += 1;
+            d_frac_l = 0.0;
+        }
+
+        let d_samples_r = (self.delay_right_us as f64 * 1e-6 * self.sample_rate as f64).clamp(0.0, (ALIGN_BUFFER_SIZE - 2) as f64);
+        let mut d_int_r = d_samples_r.floor() as usize;
+        let mut d_frac_r = (d_samples_r - d_int_r as f64) as f32;
+        if d_frac_r < 1e-5 {
+            d_frac_r = 0.0;
+        } else if d_frac_r > 0.99999 {
+            d_int_r += 1;
+            d_frac_r = 0.0;
+        }
+
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            self.buffer_l[self.write_pos] = *l;
+            self.buffer_r[self.write_pos] = *r;
+
+            let read_idx0_l = (self.write_pos + ALIGN_BUFFER_SIZE - d_int_l) & self.buffer_mask;
+            let read_idx1_l = (read_idx0_l + self.buffer_mask) & self.buffer_mask;
+            let mut out_l = self.buffer_l[read_idx0_l] * (1.0 - d_frac_l) + self.buffer_l[read_idx1_l] * d_frac_l;
+
+            let read_idx0_r = (self.write_pos + ALIGN_BUFFER_SIZE - d_int_r) & self.buffer_mask;
+            let read_idx1_r = (read_idx0_r + self.buffer_mask) & self.buffer_mask;
+            let mut out_r = self.buffer_r[read_idx0_r] * (1.0 - d_frac_r) + self.buffer_r[read_idx1_r] * d_frac_r;
+
+            if self.invert_left {
+                out_l = -out_l;
+            }
+            if self.invert_right {
+                out_r = -out_r;
+            }
+
+            *l = out_l;
+            *r = out_r;
+
+            self.write_pos = (self.write_pos + 1) & self.buffer_mask;
+        }
+    }
+
+    fn reset(&mut self) {
+        self.buffer_l.fill(0.0);
+        self.buffer_r.fill(0.0);
+        self.write_pos = 0;
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        self.sample_rate = sample_rate.max(8000.0);
+        self.reset();
+    }
+
+    fn set_param(&mut self, param_id: u32, value: f32) {
+        match param_id {
+            0 => self.delay_left_us = value.clamp(0.0, MAX_ALIGN_DELAY_US),
+            1 => self.delay_right_us = value.clamp(0.0, MAX_ALIGN_DELAY_US),
+            2 => self.invert_left = value > 0.5,
+            3 => self.invert_right = value > 0.5,
+            _ => {}
+        }
+    }
+
+    fn name(&self) -> &str {
+        "Time & Phase Alignment"
+    }
+
+    fn effect_type(&self) -> EffectType {
+        EffectType::TimeAlignment
+    }
+
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+
+    fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        AmplitudeInterval::symmetric(input.peak_magnitude())
+    }
+}
+
+/// Stereo Matrix Router & Headphone Crossfeed Effect
+/// Modes:
+/// 0: Normal Passthrough (L -> L, R -> R)
+/// 1: Channel Swap (L -> R, R -> L)
+/// 2: Mono Sum (L = (L+R)/2, R = (L+R)/2)
+/// 3: Mid-Side Encode (M = (L+R)/sqrt(2), S = (L-R)/sqrt(2))
+/// 4: Mid-Side Decode (L = (M+S)/sqrt(2), R = (M-S)/sqrt(2))
+/// 5: Side Only / Mid Mute (L = (L-R)/2, R = (R-L)/2)
+/// 6: Mid Only / Side Mute (L = (L+R)/2, R = (L+R)/2)
+/// 7: Bauer Headphone Crossfeed
+#[derive(Clone, Debug)]
+pub struct StereoMatrixEffect {
+    pub mode: u8,
+    pub crossfeed_amount: f32,
+    sample_rate: f32,
+    lpf_state_l: f32,
+    lpf_state_r: f32,
+    delay_l: [f32; 16],
+    delay_r: [f32; 16],
+    delay_idx: usize,
+}
+
+impl StereoMatrixEffect {
+    pub fn new(mode: u8, crossfeed_amount: f32, sample_rate: f32) -> Self {
+        Self {
+            mode: mode.min(7),
+            crossfeed_amount: crossfeed_amount.clamp(0.0, 1.0),
+            sample_rate: sample_rate.max(8000.0),
+            lpf_state_l: 0.0,
+            lpf_state_r: 0.0,
+            delay_l: [0.0; 16],
+            delay_r: [0.0; 16],
+            delay_idx: 0,
+        }
+    }
+}
+
+impl Effect for StereoMatrixEffect {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        match self.mode {
+            0 => {
+                // Passthrough
+            }
+            1 => {
+                // Channel Swap
+                for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+                    std::mem::swap(l, r);
+                }
+            }
+            2 => {
+                // Mono Sum
+                for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+                    let mono = (*l + *r) * 0.5;
+                    *l = mono;
+                    *r = mono;
+                }
+            }
+            3 => {
+                // Mid-Side Encode
+                const SQRT_2: f32 = 1.41421356237;
+                for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+                    let m = (*l + *r) / SQRT_2;
+                    let s = (*l - *r) / SQRT_2;
+                    *l = m;
+                    *r = s;
+                }
+            }
+            4 => {
+                // Mid-Side Decode
+                const SQRT_2: f32 = 1.41421356237;
+                for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+                    let m = *l;
+                    let s = *r;
+                    let orig_l = (m + s) / SQRT_2;
+                    let orig_r = (m - s) / SQRT_2;
+                    *l = orig_l;
+                    *r = orig_r;
+                }
+            }
+            5 => {
+                // Side Only (Mid Muted)
+                for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+                    let s = (*l - *r) * 0.5;
+                    *l = s;
+                    *r = -s;
+                }
+            }
+            6 => {
+                // Mid Only (Side Muted)
+                for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+                    let m = (*l + *r) * 0.5;
+                    *l = m;
+                    *r = m;
+                }
+            }
+            7 => {
+                // Bauer Headphone Crossfeed
+                let fc = 700.0f32;
+                let alpha = 1.0 - (-2.0 * std::f32::consts::PI * fc / self.sample_rate).exp();
+                let delay_samples = ((self.sample_rate * 0.00015).round() as usize).clamp(1, 15);
+                let cross_factor = (self.crossfeed_amount * 0.40).clamp(0.0, 0.50);
+                let direct_factor = 1.0 - cross_factor * 0.35;
+
+                for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+                    let in_l = *l;
+                    let in_r = *r;
+
+                    let old_idx = (self.delay_idx + 16 - delay_samples) & 15;
+                    let delayed_l = self.delay_l[old_idx];
+                    let delayed_r = self.delay_r[old_idx];
+
+                    self.delay_l[self.delay_idx] = in_l;
+                    self.delay_r[self.delay_idx] = in_r;
+                    self.delay_idx = (self.delay_idx + 1) & 15;
+
+                    self.lpf_state_l += alpha * (delayed_l - self.lpf_state_l);
+                    self.lpf_state_r += alpha * (delayed_r - self.lpf_state_r);
+
+                    *l = direct_factor * in_l + cross_factor * self.lpf_state_r;
+                    *r = direct_factor * in_r + cross_factor * self.lpf_state_l;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn reset(&mut self) {
+        self.lpf_state_l = 0.0;
+        self.lpf_state_r = 0.0;
+        self.delay_l.fill(0.0);
+        self.delay_r.fill(0.0);
+        self.delay_idx = 0;
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        self.sample_rate = sample_rate.max(8000.0);
+        self.reset();
+    }
+
+    fn set_param(&mut self, param_id: u32, value: f32) {
+        match param_id {
+            0 => self.mode = (value.round() as u8).min(7),
+            1 => self.crossfeed_amount = value.clamp(0.0, 1.0),
+            _ => {}
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self.mode {
+            0 => "Stereo Matrix (Passthrough)",
+            1 => "Stereo Matrix (Channel Swap)",
+            2 => "Stereo Matrix (Mono Sum)",
+            3 => "Stereo Matrix (M/S Encode)",
+            4 => "Stereo Matrix (M/S Decode)",
+            5 => "Stereo Matrix (Side Only)",
+            6 => "Stereo Matrix (Mid Only)",
+            7 => "Stereo Matrix (Bauer Crossfeed)",
+            _ => "Stereo Matrix Router",
+        }
+    }
+
+    fn effect_type(&self) -> EffectType {
+        EffectType::StereoMatrix
+    }
+
+    fn clone_box(&self) -> Box<dyn Effect> {
+        Box::new(self.clone())
+    }
+
+    fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        if self.mode == 3 || self.mode == 4 {
+            input.scale(1.4142)
+        } else {
+            input
+        }
+    }
+}
+

@@ -1775,6 +1775,26 @@ impl LunulaApp {
                         n.sub1 = format!("L {:.0}% / R {:.0}%", 50.0 - new_val * 0.5, 50.0 + new_val * 0.5);
                     }
                 }
+                NodeType::TimeAlignment => {
+                    if new_val >= 1000.0 {
+                        n.sub1 = format!("Delay {:.2} ms", new_val / 1000.0);
+                    } else {
+                        n.sub1 = format!("Delay {:.0} µs", new_val);
+                    }
+                }
+                NodeType::StereoMatrix => {
+                    n.sub1 = match new_val.round() as u8 {
+                        0 => "Stereo Direct".to_string(),
+                        1 => "Channel Swap (R/L)".to_string(),
+                        2 => "Mono (L+R Sum)".to_string(),
+                        3 => "M/S Encode (Mid/Side)".to_string(),
+                        4 => "M/S Decode (to Stereo)".to_string(),
+                        5 => "Side Only (Mid Mute)".to_string(),
+                        6 => "Mid Only (Side Mute)".to_string(),
+                        7 => "Bauer Crossfeed 3D".to_string(),
+                        _ => "Stereo Matrix".to_string(),
+                    };
+                }
                 _ => {}
             }
         }
@@ -1925,7 +1945,7 @@ impl LunulaApp {
             CrossoverHighEffect, CrossoverLowEffect, DynamicLoudnessEffect, Effect,
             HighPassFilterEffect, LowPassFilterEffect, MixerEffect, OpticalLevelerEffect,
             PassthroughEffect, PresetEqEffect, SplitterEffect, SteppedAttenuatorEffect,
-            StereoBalanceEffect, StereoWidenerEffect, TubeWarmerEffect, VolumeAttenuatorEffect,
+            StereoBalanceEffect, StereoMatrixEffect, StereoWidenerEffect, TimeAlignmentEffect, TubeWarmerEffect, VolumeAttenuatorEffect,
             VolumeBoosterEffect,
         };
 
@@ -1976,6 +1996,17 @@ impl LunulaApp {
                     }
                 }
             }
+        }
+
+        // If Kahn topological sort was unable to visit all flowing nodes, a cycle exists!
+        if ordered_node_ids.len() != chain_eval.flowing_nodes.len() {
+            return crate::audio::SignalChainGraph {
+                is_complete: false,
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                topological_order: Vec::new(),
+                effects: Vec::new(),
+            };
         }
 
         // Build concrete effects chain in topological sequence
@@ -2108,6 +2139,15 @@ impl LunulaApp {
                         let thresh = if (-48.0..=0.0).contains(&node.param_val) { node.param_val } else { -16.0 };
                         Box::new(CompressorEffect::new(thresh, 4.0, 10.0, 120.0, 2.0, sample_rate as f32))
                     }
+                    NodeType::TimeAlignment => {
+                        let delay_us = if (0.0..=50_000.0).contains(&node.param_val) { node.param_val } else { 0.0 };
+                        let invert = node.sub2.contains("180°") || node.sub2.contains("Invert");
+                        Box::new(TimeAlignmentEffect::new(delay_us, 0.0, invert, false, sample_rate as f32))
+                    }
+                    NodeType::StereoMatrix => {
+                        let mode = (node.param_val.round() as u8).min(7);
+                        Box::new(StereoMatrixEffect::new(mode, 0.6, sample_rate as f32))
+                    }
                     _ => {
                         Box::new(PassthroughEffect)
                     }
@@ -2194,6 +2234,59 @@ impl LunulaApp {
             topological_order,
             effects,
         }
+    }
+
+    /// Builds a declarative, non-DSP Intermediate Representation (Graph IR) of the patchbay canvas.
+    pub fn build_graph_ir(&self) -> crate::audio::GraphIr {
+        let source_id = self.nodes.iter().find(|n| n.node_type == crate::models::NodeType::Source).map(|n| n.id as u32).unwrap_or(1);
+        let endpoint_id = self.nodes.iter().find(|n| n.node_type == crate::models::NodeType::Endpoint).map(|n| n.id as u32).unwrap_or(5);
+        let mut ir = crate::audio::GraphIr::new(source_id, endpoint_id);
+
+        for node in &self.nodes {
+            let eff_type = match &node.node_type {
+                crate::models::NodeType::TubeWarmer => crate::audio::EffectType::TubeWarmer,
+                crate::models::NodeType::StereoWidener => crate::audio::EffectType::StereoWidener,
+                crate::models::NodeType::BassGuard => crate::audio::EffectType::BassGuard,
+                crate::models::NodeType::VolumeAttenuator => crate::audio::EffectType::VolumeAttenuator,
+                crate::models::NodeType::LowPassFilter => crate::audio::EffectType::LowPassFilter,
+                crate::models::NodeType::HighPassFilter => crate::audio::EffectType::HighPassFilter,
+                crate::models::NodeType::BandPassFilter => crate::audio::EffectType::BandPassFilter,
+                crate::models::NodeType::Crossover => crate::audio::EffectType::Crossover,
+                crate::models::NodeType::Mixer => crate::audio::EffectType::Mixer,
+                crate::models::NodeType::Splitter => crate::audio::EffectType::Splitter,
+                crate::models::NodeType::VolumeBooster => crate::audio::EffectType::VolumeBooster,
+                crate::models::NodeType::AnalogPreamp => crate::audio::EffectType::AnalogPreamp,
+                crate::models::NodeType::DynamicLoudness => crate::audio::EffectType::DynamicLoudness,
+                crate::models::NodeType::SteppedAttenuator => crate::audio::EffectType::SteppedAttenuator,
+                crate::models::NodeType::OpticalLeveler => crate::audio::EffectType::OpticalLeveler,
+                crate::models::NodeType::StereoBalance => crate::audio::EffectType::StereoBalance,
+                crate::models::NodeType::Compressor => crate::audio::EffectType::Compressor,
+                crate::models::NodeType::TimeAlignment => crate::audio::EffectType::TimeAlignment,
+                crate::models::NodeType::StereoMatrix => crate::audio::EffectType::StereoMatrix,
+                crate::models::NodeType::SavedEqPreset(_) => crate::audio::EffectType::ParametricEq,
+                _ => crate::audio::EffectType::Passthrough,
+            };
+
+            let mut node_ir = crate::audio::NodeIr::new(node.id as u32, node.title.clone(), eff_type);
+            node_ir.param_val = node.param_val;
+            ir.nodes.push(node_ir);
+        }
+
+        for conn in &self.connections {
+            ir.edges.push(crate::audio::EdgeIr::new(
+                conn.from_node as u32,
+                conn.from_port,
+                conn.to_node as u32,
+                conn.to_port,
+            ));
+        }
+
+        ir
+    }
+
+    /// Performs formal DAG validation and cycle detection on the current Graph IR.
+    pub fn validate_graph_ir(&self) -> Result<Vec<u32>, crate::audio::GraphCompilationError> {
+        self.build_graph_ir().validate_and_sort()
     }
 
     pub fn sync_signal_chain_to_engine(&self) {
@@ -4412,6 +4505,145 @@ mod tests {
         let fixed_count = app.apply_all_headroom_auto_fixes();
         assert_eq!(fixed_count, 1);
         assert!(app.get_static_analysis().is_chain_safe);
+    }
+
+    #[test]
+    fn test_formal_dag_cycle_detection_via_kahn_sort() {
+        use crate::audio::{EdgeIr, GraphCompilationError, GraphIr, NodeIr, EffectType};
+
+        // 1. Setup Graph IR with a cycle: 1 (Source) -> 2 (Mixer) -> 3 -> 2 (Cycle between 2 and 3)
+        let mut ir = GraphIr::new(1, 4);
+        ir.nodes.push(NodeIr::new(1, "Source".to_string(), EffectType::Passthrough));
+        ir.nodes.push(NodeIr::new(2, "Mixer".to_string(), EffectType::Mixer));
+        ir.nodes.push(NodeIr::new(3, "Filter B".to_string(), EffectType::StereoWidener));
+        ir.nodes.push(NodeIr::new(4, "Endpoint".to_string(), EffectType::Passthrough));
+
+        // Connect 1 -> 2 port 0, 2 -> 3 port 0, 3 -> 2 port 1 (Cycle!), 3 -> 4
+        ir.edges.push(EdgeIr::new(1, 0, 2, 0));
+        ir.edges.push(EdgeIr::new(2, 0, 3, 0));
+        ir.edges.push(EdgeIr::new(3, 0, 2, 1)); // Backward cycle edge into mixer port 1
+        ir.edges.push(EdgeIr::new(3, 0, 4, 0));
+
+        let result = ir.validate_and_sort();
+        match result {
+            Err(GraphCompilationError::CycleDetected(cycle_nodes)) => {
+                assert!(cycle_nodes.contains(&2) || cycle_nodes.contains(&3), "Cycle must identify participating nodes");
+            }
+            other => panic!("Expected CycleDetected error, got {:?}", other),
+        }
+
+        // Test in LunulaApp: if cycle is injected into flowing cables, compile_signal_chain must reject graph
+        let mut app = LunulaApp::default();
+        app.connections.push(crate::models::CableConnection::new(4, 2)); // 4 (Engine) -> 2 (RAM) forms cycle
+        app.invalidate_chain_cache();
+        let compiled = app.compile_signal_chain();
+        assert!(!compiled.is_complete, "Graph compilation must fail and reject chain containing cycle!");
+    }
+
+    #[test]
+    fn test_graph_ir_validation_dangling_and_port_constraints() {
+        use crate::audio::{EdgeIr, GraphCompilationError, GraphIr, NodeIr, EffectType};
+
+        // 1. Missing Source
+        let ir_no_source = GraphIr::new(99, 4);
+        assert_eq!(ir_no_source.validate_and_sort(), Err(GraphCompilationError::MissingSourceNode));
+
+        // 2. Missing Endpoint
+        let mut ir_no_endpoint = GraphIr::new(1, 99);
+        ir_no_endpoint.nodes.push(NodeIr::new(1, "Source".to_string(), EffectType::Passthrough));
+        assert_eq!(ir_no_endpoint.validate_and_sort(), Err(GraphCompilationError::MissingEndpointNode));
+
+        // 3. Port index out of range (Filter has 1 input port: port 0. Edge connects to port 5)
+        let mut ir_bad_port = GraphIr::new(1, 2);
+        ir_bad_port.nodes.push(NodeIr::new(1, "Source".to_string(), EffectType::Passthrough));
+        ir_bad_port.nodes.push(NodeIr::new(2, "Endpoint".to_string(), EffectType::Passthrough));
+        ir_bad_port.edges.push(EdgeIr::new(1, 0, 2, 5)); // Port 5 out of range
+        match ir_bad_port.validate_and_sort() {
+            Err(GraphCompilationError::InvalidPortIndex { node, port, max_ports }) => {
+                assert_eq!(node, 2);
+                assert_eq!(port, 5);
+                assert_eq!(max_ports, 1);
+            }
+            other => panic!("Expected InvalidPortIndex, got {:?}", other),
+        }
+
+        // 4. Dangling Path: Source -> Node 2 -> [nowhere] (Endpoint is disconnected)
+        let mut ir_dangling = GraphIr::new(1, 3);
+        ir_dangling.nodes.push(NodeIr::new(1, "Source".to_string(), EffectType::Passthrough));
+        ir_dangling.nodes.push(NodeIr::new(2, "Filter".to_string(), EffectType::TubeWarmer));
+        ir_dangling.nodes.push(NodeIr::new(3, "Endpoint".to_string(), EffectType::Passthrough));
+        ir_dangling.edges.push(EdgeIr::new(1, 0, 2, 0)); // 1 -> 2, but 2 does not reach 3
+        match ir_dangling.validate_and_sort() {
+            Err(GraphCompilationError::DanglingPathToEndpoint(_)) => {}
+            other => panic!("Expected DanglingPathToEndpoint, got {:?}", other),
+        }
+
+        // 5. Valid linear DAG: 1 -> 2 -> 3
+        let mut ir_valid = GraphIr::new(1, 3);
+        ir_valid.nodes.push(NodeIr::new(1, "Source".to_string(), EffectType::Passthrough));
+        ir_valid.nodes.push(NodeIr::new(2, "Filter".to_string(), EffectType::TubeWarmer));
+        ir_valid.nodes.push(NodeIr::new(3, "Endpoint".to_string(), EffectType::Passthrough));
+        ir_valid.edges.push(EdgeIr::new(1, 0, 2, 0));
+        ir_valid.edges.push(EdgeIr::new(2, 0, 3, 0));
+
+        let order = ir_valid.validate_and_sort().expect("Valid linear DAG must compile");
+        assert_eq!(order, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_dead_node_isolation() {
+        let mut app = LunulaApp::default();
+        // Add 3 unlinked modular filters that sit loose on canvas
+        app.add_modular_filter(crate::models::NodeType::TubeWarmer);
+        app.add_modular_filter(crate::models::NodeType::StereoWidener);
+        app.add_modular_filter(crate::models::NodeType::BassGuard);
+
+        // Active chain is default linear 1 -> 2 -> 4 -> 5
+        let eval = app.evaluate_signal_chain();
+        assert!(eval.is_complete);
+
+        // Dead nodes must not be in flowing_nodes
+        assert_eq!(eval.flowing_nodes.len(), 4);
+        for node in &app.nodes {
+            if node.id > 5 {
+                assert!(!eval.flowing_nodes.contains(&node.id), "Dead node {} must be 100% isolated", node.id);
+            }
+        }
+
+        // Compiled signal chain must only contain the 4 flowing nodes
+        let graph = app.compile_signal_chain();
+        assert_eq!(graph.topological_order.len(), 4);
+        assert!(!graph.topological_order.iter().any(|&id| id > 5));
+    }
+
+    #[test]
+    fn test_advanced_dsp_nodes_time_alignment_and_stereo_matrix_pipeline() {
+        let mut app = LunulaApp::default();
+        // Insert Time Alignment and Stereo Matrix
+        app.add_modular_filter(crate::models::NodeType::TimeAlignment);
+        app.add_modular_filter(crate::models::NodeType::StereoMatrix);
+
+        let align_id = app.nodes.iter().find(|n| n.node_type == crate::models::NodeType::TimeAlignment).unwrap().id;
+        let matrix_id = app.nodes.iter().find(|n| n.node_type == crate::models::NodeType::StereoMatrix).unwrap().id;
+
+        // Splice them into flowing chain: 1 -> 2 -> align -> matrix -> 4 -> 5
+        app.connections.retain(|c| !(c.from_node == 2 && c.to_node == 4));
+        app.connections.push(crate::models::CableConnection::new(2, align_id));
+        app.connections.push(crate::models::CableConnection::new(align_id, matrix_id));
+        app.connections.push(crate::models::CableConnection::new(matrix_id, 4));
+        app.invalidate_chain_cache();
+
+        let eval = app.evaluate_signal_chain();
+        assert!(eval.is_complete);
+        assert_eq!(eval.flowing_nodes.len(), 6);
+
+        let graph = app.compile_signal_chain();
+        assert!(graph.is_complete);
+        assert_eq!(graph.topological_order.len(), 6);
+
+        // Verify Graph IR validation passes
+        let ir_order = app.validate_graph_ir().expect("Advanced DSP patchbay graph must validate cleanly");
+        assert_eq!(ir_order.len(), 6);
     }
 }
 

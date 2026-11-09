@@ -285,6 +285,8 @@ pub enum NodeType {
     OpticalLeveler,
     StereoBalance,
     Compressor,
+    TimeAlignment,
+    StereoMatrix,
 }
 
 impl NodeType {
@@ -310,6 +312,8 @@ impl NodeType {
                 | NodeType::OpticalLeveler
                 | NodeType::StereoBalance
                 | NodeType::Compressor
+                | NodeType::TimeAlignment
+                | NodeType::StereoMatrix
         )
     }
 }
@@ -563,8 +567,6 @@ pub struct SavedAppState {
 
 impl From<TrackData> for Track {
     fn from(data: TrackData) -> Self {
-        let (waveform, waveform_bass, waveform_mid, waveform_treble) =
-            crate::scanner::generate_multiband_waveform(&data.title, 3600);
         Track {
             title: data.title,
             artist: data.artist,
@@ -573,10 +575,10 @@ impl From<TrackData> for Track {
             format: data.format,
             sample_rate: data.sample_rate,
             bit_depth: data.bit_depth,
-            waveform,
-            waveform_bass,
-            waveform_mid,
-            waveform_treble,
+            waveform: Vec::new(),
+            waveform_bass: Vec::new(),
+            waveform_mid: Vec::new(),
+            waveform_treble: Vec::new(),
             file_path: data.file_path,
             file_size_mb: data.file_size_mb,
             bitrate_kbps: data.bitrate_kbps,

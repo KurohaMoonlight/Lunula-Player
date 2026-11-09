@@ -131,9 +131,6 @@ pub fn parse_single_audio_file(path: &Path) -> Option<Track> {
         }
     };
 
-    let (waveform, waveform_bass, waveform_mid, waveform_treble) =
-        generate_multiband_waveform(&fallback_title, 3600);
-
     Some(Track {
         title,
         artist,
@@ -142,10 +139,10 @@ pub fn parse_single_audio_file(path: &Path) -> Option<Track> {
         format: ext.to_uppercase(),
         sample_rate,
         bit_depth,
-        waveform,
-        waveform_bass,
-        waveform_mid,
-        waveform_treble,
+        waveform: Vec::new(),
+        waveform_bass: Vec::new(),
+        waveform_mid: Vec::new(),
+        waveform_treble: Vec::new(),
         file_path: Some(path.to_string_lossy().to_string()),
         file_size_mb,
         bitrate_kbps,

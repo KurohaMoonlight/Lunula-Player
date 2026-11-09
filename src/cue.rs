@@ -140,9 +140,6 @@ impl CueSheet {
             };
 
             let artist = raw.performer.clone().unwrap_or_else(|| album_artist.clone());
-            let (waveform, waveform_bass, waveform_mid, waveform_treble) =
-                crate::scanner::generate_multiband_waveform(&raw.title, 3600);
-
             tracks.push(Track {
                 title: raw.title.clone(),
                 artist,
@@ -151,10 +148,10 @@ impl CueSheet {
                 format: format!("{}+CUE", format_str),
                 sample_rate,
                 bit_depth,
-                waveform,
-                waveform_bass,
-                waveform_mid,
-                waveform_treble,
+                waveform: Vec::new(),
+                waveform_bass: Vec::new(),
+                waveform_mid: Vec::new(),
+                waveform_treble: Vec::new(),
                 file_path: Some(audio_path.to_string_lossy().to_string()),
                 file_size_mb,
                 bitrate_kbps,

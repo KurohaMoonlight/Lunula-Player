@@ -1,1 +1,1 @@
-Lunula is honest audio player, no gimmick allowed
+Lunula is honest audio player, no gimmick allowed and ultra-lightweight

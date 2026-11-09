@@ -38,7 +38,7 @@ impl LunulaApp {
         let mut switch_to_tutorial: Option<NodeType> = None;
         let mut open_eq_popup_pos: Option<Pos2> = None;
 
-        let palette_defs: [FilterPaletteDef; 17] = [
+        let palette_defs: [FilterPaletteDef; 19] = [
             // 1. Tonal & EQ
             FilterPaletteDef {
                 node_type: NodeType::LowPassFilter,
@@ -283,6 +283,34 @@ impl LunulaApp {
                 accent_color: Color32::from_rgb(168, 85, 247),
                 bg_accent: Color32::from_rgb(250, 245, 255),
                 keywords: &["crossover", "xover", "lr4", "linkwitz", "riley", "low", "high", "subwoofer", "split"],
+                is_eq_preset: false,
+                is_coming_soon: false,
+            },
+            FilterPaletteDef {
+                node_type: NodeType::TimeAlignment,
+                category: FilterCategory::Routing,
+                icon: "⏱️",
+                title: "Time & Phase Alignment",
+                subtitle: "Kompensasi jarak driver & balik fase 180°",
+                short_subtitle: "Delay & Phase Align",
+                friendly_desc: "Menyelaraskan waktu tempuh suara driver speaker/headphone dengan resolusi mikrodetik dan koreksi fase akustik 180 derajat.",
+                accent_color: Color32::from_rgb(14, 165, 233),
+                bg_accent: Color32::from_rgb(240, 249, 255),
+                keywords: &["time", "align", "phase", "delay", "jarak", "speaker", "fase", "invert", "microseconds"],
+                is_eq_preset: false,
+                is_coming_soon: false,
+            },
+            FilterPaletteDef {
+                node_type: NodeType::StereoMatrix,
+                category: FilterCategory::Spatial,
+                icon: "🌐",
+                title: "Stereo Matrix Router",
+                subtitle: "M/S Encode/Decode, Swap & Bauer Crossfeed",
+                short_subtitle: "Matrix & Crossfeed",
+                friendly_desc: "Routing matriks Mid/Side murni, pembalik kanal L/R, isolasi vokal tengah / reverb samping, dan headphone crossfeed natural anti-lelah.",
+                accent_color: Color32::from_rgb(99, 102, 241),
+                bg_accent: Color32::from_rgb(238, 242, 255),
+                keywords: &["matrix", "mid", "side", "ms", "crossfeed", "bauer", "swap", "mono", "headphone"],
                 is_eq_preset: false,
                 is_coming_soon: false,
             },

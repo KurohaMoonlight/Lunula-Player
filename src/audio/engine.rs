@@ -295,7 +295,11 @@ fn run_audio_worker(
         out.send_dsp_command(DspCommand::SetSampleRate(rate as f32));
         out.send_dsp_command(DspCommand::SetEqBypass(bp));
         out.send_dsp_command(DspCommand::SetLimiterEnabled(limiter));
-        out.send_dsp_command(DspCommand::SetSignalChainGraph(graph.clone()));
+        if let Ok(plan) = crate::audio::dsp::executor::compile_signal_chain_plan(graph, rate as f32, None) {
+            out.send_dsp_command(DspCommand::SetCompiledPlan(Box::new(plan)));
+        } else {
+            out.send_dsp_command(DspCommand::SetSignalChainGraph(graph.clone()));
+        }
         for (idx, &gain) in eq.iter().enumerate() {
             out.send_dsp_command(DspCommand::SetEqBand { index: idx, gain_db: gain });
         }
@@ -348,6 +352,12 @@ fn run_audio_worker(
                                 };
 
                                 if need_recreate {
+                                    if let Some(old_out) = output.take() {
+                                        old_out.pause();
+                                        let _ = old_out.flush();
+                                        drop(old_out);
+                                    }
+                                    producer = None;
                                     match AudioOutput::new(
                                         selected_device.as_deref(),
                                         desired_rate,
@@ -612,6 +622,12 @@ fn run_audio_worker(
                             let track_sample_rate = dec.sample_rate();
                             let track_bit_depth = dec.bits_per_sample();
                             let desired_rate = desired_device_rate(chain_mode, track_sample_rate);
+                            if let Some(old_out) = output.take() {
+                                old_out.pause();
+                                let _ = old_out.flush();
+                                drop(old_out);
+                            }
+                            producer = None;
                             match AudioOutput::new(
                                 selected_device.as_deref(),
                                 desired_rate,
@@ -679,6 +695,12 @@ fn run_audio_worker(
                             };
 
                             if need_recreate {
+                                if let Some(old_out) = output.take() {
+                                    old_out.pause();
+                                    let _ = old_out.flush();
+                                    drop(old_out);
+                                }
+                                producer = None;
                                 match AudioOutput::new(
                                     selected_device.as_deref(),
                                     desired_rate,
@@ -737,9 +759,17 @@ fn run_audio_worker(
                     }
                     AudioCommand::SetSignalChainGraph(graph) => {
                         last_graph = graph.clone();
-                        dsp.set_signal_chain(graph.clone());
-                        if let Some(out) = &output {
-                            out.send_dsp_command(DspCommand::SetSignalChainGraph(graph));
+                        let dev_rate = output.as_ref().map(|o| o.sample_rate()).unwrap_or(44100) as f32;
+                        match crate::audio::dsp::executor::compile_signal_chain_plan(&graph, dev_rate, Some(&mut dsp.executor.plan.steps)) {
+                            Ok(plan) => {
+                                dsp.apply_compiled_plan(plan.clone());
+                                if let Some(out) = &output {
+                                    out.send_dsp_command(DspCommand::SetCompiledPlan(Box::new(plan)));
+                                }
+                            }
+                            Err(err) => {
+                                let _ = event_tx.send(AudioEvent::Error(format!("Kompilasi graph gagal (rollback aktif): {}", err)));
+                            }
                         }
                     }
                 }
@@ -882,6 +912,12 @@ fn run_audio_worker(
                                     raw_pos = 0;
                                     raw_len = 0;
                                     let desired_rate = desired_device_rate(chain_mode, next_sr);
+                                    if let Some(old_out) = output.take() {
+                                        old_out.pause();
+                                        let _ = old_out.flush();
+                                        drop(old_out);
+                                    }
+                                    producer = None;
                                     match AudioOutput::new(
                                         selected_device.as_deref(),
                                         desired_rate,

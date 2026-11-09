@@ -33,6 +33,7 @@ pub struct WasapiExclusiveBackend {
     shared_volume: Arc<AtomicU32>,
     worker_handle: Option<JoinHandle<()>>,
     dsp_tx: Sender<DspCommand>,
+    gc_rx: crossbeam_channel::Receiver<crate::audio::dsp::executor::ExecutionPlan>,
 }
 
 unsafe extern "system" {
@@ -95,6 +96,9 @@ impl OutputBackend for WasapiExclusiveBackend {
     }
 
     fn send_dsp_command(&self, cmd: DspCommand) {
+        while let Ok(old_plan) = self.gc_rx.try_recv() {
+            drop(old_plan);
+        }
         let _ = self.dsp_tx.send(cmd);
     }
 }
@@ -109,6 +113,9 @@ impl Drop for WasapiExclusiveBackend {
         }
         if let Some(handle) = self.worker_handle.take() {
             let _ = handle.join();
+        }
+        while let Ok(old_plan) = self.gc_rx.try_recv() {
+            drop(old_plan);
         }
     }
 }
@@ -202,6 +209,7 @@ impl WasapiExclusiveBackend {
 
         let (producer, mut consumer) = RingBuffer::<f32>::new(buffer_capacity);
         let (dsp_tx, dsp_rx) = crossbeam_channel::unbounded::<DspCommand>();
+        let (gc_tx, gc_rx) = crossbeam_channel::bounded::<crate::audio::dsp::executor::ExecutionPlan>(32);
 
         client.start_stream()?;
 
@@ -222,19 +230,55 @@ impl WasapiExclusiveBackend {
                 let mut dither_state: u32 = 0x12345678;
                 let mut batch_f32 = [0.0f32; 1024];
                 let mut dsp = DspPipeline::new(preferred_sample_rate as f32);
+                dsp.set_gc_sender(gc_tx);
 
                 let notify_err = |e: &dyn std::fmt::Display, prefix: &str| {
+                    if stop_worker.load(Ordering::Relaxed) {
+                        return; // Worker stream sedang dimatikan secara normal, jangan kirim error palsu
+                    }
                     let err_str = e.to_string();
                     let err_lower = err_str.to_lowercase();
-                    let is_disconnect = err_lower.contains("device")
-                        || err_lower.contains("invalidat")
-                        || err_lower.contains("disconnect")
-                        || err_str.contains("88890004");
-                    if is_disconnect {
-                        let _ = event_tx_worker.send(crate::audio::types::AudioEvent::DeviceDisconnected {
-                            device_name: dev_name_worker.clone(),
-                            error: format!("{}: {}", prefix, err_str),
-                        });
+                    // Error seperti AUDCLNT_E_DEVICE_INVALIDATED (0x88890004) atau AUDCLNT_E_DEVICE_IN_USE
+                    // bisa terjadi karena dua alasan berbeda:
+                    //   1. Device benar-benar dicabut secara fisik (hot-unplug)
+                    //   2. Driver menolak format (sample rate tidak didukung) — ini false positive!
+                    // Kita verifikasi ke OS: jika device masih terdaftar = false positive = StreamFallback.
+                    let is_format_rejection = err_lower.contains("invalidat")
+                        || err_lower.contains("device in use")
+                        || err_str.contains("88890004")
+                        || err_str.contains("88890019") // AUDCLNT_E_UNSUPPORTED_FORMAT
+                        || err_str.contains("88890017"); // AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED
+                    let is_disconnect_keyword = err_lower.contains("disconnect")
+                        || err_lower.contains("not found")
+                        || err_lower.contains("removed");
+
+                    if is_format_rejection || is_disconnect_keyword {
+                        // Verifikasi fisik: apakah device masih terdaftar di OS?
+                        let device_still_present = {
+                            if let Ok(enumerator) = DeviceEnumerator::new() {
+                                enumerator
+                                    .get_device_collection(&Direction::Render)
+                                    .ok()
+                                    .map(|coll| coll.get_device_with_name(&dev_name_worker).is_ok())
+                                    .unwrap_or(false)
+                            } else {
+                                false
+                            }
+                        };
+                        if device_still_present {
+                            // Device masih ada → ini stream error / format rejection, BUKAN hot-unplug fisik.
+                            // Kirim StreamFallback agar app bisa handle tanpa pause-play loop.
+                            let _ = event_tx_worker.send(crate::audio::types::AudioEvent::StreamFallback {
+                                device_name: dev_name_worker.clone(),
+                                reason: format!("{}: {}", prefix, err_str),
+                            });
+                        } else {
+                            // Device benar-benar hilang dari OS → hot-unplug fisik.
+                            let _ = event_tx_worker.send(crate::audio::types::AudioEvent::DeviceDisconnected {
+                                device_name: dev_name_worker.clone(),
+                                error: format!("{}: {}", prefix, err_str),
+                            });
+                        }
                     } else {
                         let _ = event_tx_worker.send(crate::audio::types::AudioEvent::Error(format!(
                             "{}: {}",
@@ -262,6 +306,9 @@ impl WasapiExclusiveBackend {
                                 }
                                 DspCommand::SetLimiterEnabled(enabled) => {
                                     dsp.set_limiter_enabled(enabled);
+                                }
+                                DspCommand::SetCompiledPlan(plan) => {
+                                    dsp.apply_compiled_plan(*plan);
                                 }
                                 DspCommand::SetSignalChainGraph(g) => {
                                     dsp.set_signal_chain(g);
@@ -489,6 +536,7 @@ impl WasapiExclusiveBackend {
                 shared_volume,
                 worker_handle: Some(worker_handle),
                 dsp_tx,
+                gc_rx,
             },
             producer,
         ))

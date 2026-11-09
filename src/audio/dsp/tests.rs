@@ -1045,3 +1045,206 @@ fn test_crossover_lr4_flat_summation() {
         );
     }
 }
+
+#[test]
+fn test_compile_execution_plan_outside_callback_and_gc_handover() {
+    use super::executor::{compile_signal_chain_plan, GraphExecutor};
+    use crate::audio::types::{GraphEdge, GraphNode, SignalChainGraph};
+    use super::effects::VolumeBoosterEffect;
+
+    let sample_rate = 44100.0;
+    let mut executor = GraphExecutor::new(sample_rate);
+
+    // 1. Setup GC channel to ensure zero deallocations on the audio thread
+    let (gc_tx, gc_rx) = crossbeam_channel::bounded(16);
+    executor.set_gc_sender(gc_tx);
+
+    // 2. Build initial graph: Source -> VolumeBooster (+6dB) -> Endpoint
+    let mut g1 = SignalChainGraph::default();
+    g1.is_complete = true;
+    g1.topological_order = vec![1, 2];
+    g1.nodes.push(GraphNode {
+        id: 1,
+        name: "Booster 1".to_string(),
+        effect: Box::new(VolumeBoosterEffect::new(6.0)),
+    });
+    g1.nodes.push(GraphNode {
+        id: 2,
+        name: "Booster 2".to_string(),
+        effect: Box::new(VolumeBoosterEffect::new(3.0)),
+    });
+    g1.edges.push(GraphEdge { from_node: 1, from_port: 0, to_node: 2, to_port: 0 });
+
+    // Compile plan outside callback
+    let plan1 = compile_signal_chain_plan(&g1, sample_rate, None).expect("Kompilasi plan1 harus berhasil");
+    assert_eq!(plan1.steps.len(), 2);
+    assert_eq!(plan1.terminal_slots, vec![1]);
+
+    // Apply plan in audio thread (zero allocation swap)
+    executor.apply_compiled_plan(plan1);
+    assert!(executor.is_chain_complete());
+
+    // 3. Compile updated graph: Booster 1 (+12dB)
+    let mut g2 = SignalChainGraph::default();
+    g2.is_complete = true;
+    g2.topological_order = vec![1];
+    g2.nodes.push(GraphNode {
+        id: 1,
+        name: "Booster 1".to_string(),
+        effect: Box::new(VolumeBoosterEffect::new(12.0)),
+    });
+
+    let plan2 = compile_signal_chain_plan(&g2, sample_rate, Some(&mut executor.plan.steps)).expect("Kompilasi plan2 harus berhasil");
+    assert_eq!(plan2.steps.len(), 1);
+
+    // Apply plan2
+    executor.apply_compiled_plan(plan2);
+
+    // 4. Verify old plan was sent to GC channel for safe destruction outside callback
+    let old_plan = gc_rx.try_recv().expect("Old plan must be forwarded to GC channel without being dropped in callback");
+    assert_eq!(old_plan.steps.len(), 2, "GC channel must receive plan1");
+    drop(old_plan); // Clean background thread deallocation
+}
+
+#[test]
+fn test_bounded_buffers_and_block_size_resilience() {
+    use super::executor::{compile_signal_chain_plan, GraphExecutor, MAX_BLOCK_SIZE};
+    use crate::audio::types::{GraphNode, SignalChainGraph};
+    use super::effects::VolumeBoosterEffect;
+
+    let sample_rate = 48000.0;
+    let mut executor = GraphExecutor::new(sample_rate);
+
+    let mut g = SignalChainGraph::default();
+    g.is_complete = true;
+    g.topological_order = vec![10];
+    g.nodes.push(GraphNode {
+        id: 10,
+        name: "Booster".to_string(),
+        effect: Box::new(VolumeBoosterEffect::new(0.0)), // Unity gain
+    });
+
+    let plan = compile_signal_chain_plan(&g, sample_rate, None).unwrap();
+    executor.apply_compiled_plan(plan);
+
+    // Test all standard pro audio buffer block sizes: 64, 128, 256, 512, 1024, 2048, 4096
+    for &block_size in &[64, 128, 256, 512, 1024, 2048, 4096] {
+        let mut l = vec![0.5f32; block_size];
+        let mut r = vec![-0.5f32; block_size];
+        executor.process_block(&mut l, &mut r);
+        assert_eq!(l.len(), block_size);
+        assert!((l[0] - 0.5).abs() < 1e-4, "Block size {} must maintain audio integrity", block_size);
+    }
+
+    // Test oversized block size > MAX_BLOCK_SIZE (e.g. 8192) - must chunk safely without panic
+    let oversized = MAX_BLOCK_SIZE * 2;
+    let mut l_over = vec![0.25f32; oversized];
+    let mut r_over = vec![-0.25f32; oversized];
+    executor.process_block(&mut l_over, &mut r_over);
+    assert_eq!(l_over.len(), oversized);
+    assert!((l_over[oversized - 1] - 0.25).abs() < 1e-4);
+}
+
+#[test]
+fn test_time_alignment_precision_and_phase_inversion() {
+    let sample_rate = 48000.0;
+    // 1000 us (1 ms) at 48000 Hz = exactly 48 samples
+    let delay_left_us = 1000.0;
+    let delay_right_us = 0.0;
+    let mut align = TimeAlignmentEffect::new(delay_left_us, delay_right_us, true, false, sample_rate);
+
+    let n = 256;
+    let mut l = vec![0.0f32; n];
+    let mut r = vec![0.0f32; n];
+
+    // Put an impulse at sample index 0
+    l[0] = 1.0;
+    r[0] = 1.0;
+
+    align.process_block(&mut l, &mut r);
+
+    // Right channel had 0 delay, normal phase: impulse is at index 0, amplitude +1.0
+    assert!((r[0] - 1.0).abs() < 1e-5);
+    for i in 1..n {
+        assert_eq!(r[i], 0.0);
+    }
+
+    // Left channel had 1000 us (48 samples) delay, 180° inverted phase: impulse is at index 48, amplitude -1.0
+    assert_eq!(l[0], 0.0);
+    assert!((l[48] - (-1.0)).abs() < 1e-4, "Left impulse must be delayed by exactly 48 samples and inverted to -1.0, got {}", l[48]);
+    for i in 49..n {
+        assert_eq!(l[i], 0.0);
+    }
+}
+
+#[test]
+fn test_stereo_matrix_ms_encode_decode_roundtrip_lossless() {
+    let sample_rate = 48000.0;
+    let mut encoder = StereoMatrixEffect::new(3, 0.6, sample_rate); // Mode 3: M/S Encode
+    let mut decoder = StereoMatrixEffect::new(4, 0.6, sample_rate); // Mode 4: M/S Decode
+
+    let n = 512;
+    let orig_l: Vec<f32> = (0..n).map(|i| (i as f32 * 0.1).sin() * 0.8).collect();
+    let orig_r: Vec<f32> = (0..n).map(|i| (i as f32 * 0.15).cos() * 0.7).collect();
+
+    let mut l = orig_l.clone();
+    let mut r = orig_r.clone();
+
+    // Step 1: Encode L/R into Mid/Side
+    encoder.process_block(&mut l, &mut r);
+
+    // Mid and Side are different from original L and R
+    assert!((l[10] - orig_l[10]).abs() > 0.01);
+
+    // Step 2: Decode Mid/Side back into L/R
+    decoder.process_block(&mut l, &mut r);
+
+    // After decode, the reconstructed signal must match the original bit-for-bit (floating point precision)
+    for i in 0..n {
+        assert!((l[i] - orig_l[i]).abs() < 1e-5, "L channel mismatch at index {}: reconstructed {}, original {}", i, l[i], orig_l[i]);
+        assert!((r[i] - orig_r[i]).abs() < 1e-5, "R channel mismatch at index {}: reconstructed {}, original {}", i, r[i], orig_r[i]);
+    }
+}
+
+#[test]
+fn test_stereo_matrix_modes_swap_mono_and_bauer_crossfeed() {
+    let sample_rate = 48000.0;
+
+    // 1. Channel Swap (Mode 1)
+    let mut swapper = StereoMatrixEffect::new(1, 0.0, sample_rate);
+    let mut l = vec![1.0, 2.0, 3.0];
+    let mut r = vec![4.0, 5.0, 6.0];
+    swapper.process_block(&mut l, &mut r);
+    assert_eq!(l, vec![4.0, 5.0, 6.0]);
+    assert_eq!(r, vec![1.0, 2.0, 3.0]);
+
+    // 2. Mono Sum (Mode 2)
+    let mut mono = StereoMatrixEffect::new(2, 0.0, sample_rate);
+    let mut l_mono = vec![1.0, 0.0];
+    let mut r_mono = vec![0.0, 1.0];
+    mono.process_block(&mut l_mono, &mut r_mono);
+    assert_eq!(l_mono, vec![0.5, 0.5]);
+    assert_eq!(r_mono, vec![0.5, 0.5]);
+
+    // 3. Side Only (Mode 5) cancels pure mono center content
+    let mut side = StereoMatrixEffect::new(5, 0.0, sample_rate);
+    let mut l_side = vec![0.8, -0.5, 0.3];
+    let mut r_side = vec![0.8, -0.5, 0.3]; // Identical (center mono)
+    side.process_block(&mut l_side, &mut r_side);
+    for i in 0..3 {
+        assert!(l_side[i].abs() < 1e-6, "Side Only must completely eliminate mono center content");
+        assert!(r_side[i].abs() < 1e-6);
+    }
+
+    // 4. Bauer Headphone Crossfeed (Mode 7) produces natural acoustic crosstalk on opposite ear
+    let mut crossfeed = StereoMatrixEffect::new(7, 0.8, sample_rate);
+    let n = 128;
+    // Hard panned audio to left ear
+    let mut l_feed = vec![0.7f32; n];
+    let mut r_feed = vec![0.0f32; n];
+    crossfeed.process_block(&mut l_feed, &mut r_feed);
+
+    // Opposite channel (Right ear) must receive a smooth low-pass acoustic crossfeed signal
+    assert!(r_feed[64] > 0.05, "Bauer crossfeed must feed acoustic energy to right ear, got {}", r_feed[64]);
+    assert!(l_feed[64] < 0.7, "Direct path must be slightly padded to maintain overall perceived acoustic volume");
+}

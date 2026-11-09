@@ -2067,6 +2067,8 @@ impl LunulaApp {
             NodeType::Mixer => "🎛️",
             NodeType::Crossover => "✂️",
             NodeType::StereoBalance => "⚖️",
+            NodeType::TimeAlignment => "⏱️",
+            NodeType::StereoMatrix => "🌐",
             _ => "⚡",
         }
     }
@@ -2099,6 +2101,8 @@ impl LunulaApp {
                 NodeType::Mixer => format!("Mix: {:.0}%", node.param_val),
                 NodeType::Crossover => format!("XOver: {:.0}Hz", node.param_val),
                 NodeType::StereoBalance => format!("Bal: {:.0}%", node.param_val),
+                NodeType::TimeAlignment => format!("Delay: {:.1}ms", node.param_val / 1000.0),
+                NodeType::StereoMatrix => format!("Matrix: Mode {:.0}", node.param_val),
                 NodeType::Dsp => "10-Band EQ".to_string(),
                 NodeType::SavedEqPreset(name) => format!("EQ: {}", name),
                 _ => "Active".to_string(),

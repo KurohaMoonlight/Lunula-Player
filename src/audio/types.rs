@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +161,8 @@ pub enum EffectType {
     Splitter,
     Compressor,
     Convolution,
+    TimeAlignment,
+    StereoMatrix,
     Custom,
 }
 
@@ -207,6 +210,8 @@ impl EffectType {
             EffectType::Splitter => "Splitter / Y-Branch Bus",
             EffectType::Compressor => "Studio Dynamic Compressor",
             EffectType::Convolution => "Convolution / FIR Engine",
+            EffectType::TimeAlignment => "Time & Phase Alignment (Delay / Invert)",
+            EffectType::StereoMatrix => "Stereo Matrix Router (M/S, Crossfeed, Swap)",
             EffectType::Custom => "Custom DSP Effect",
         }
     }
@@ -344,6 +349,270 @@ pub trait Effect: Send + std::fmt::Debug {
 impl Clone for Box<dyn Effect> {
     fn clone(&self) -> Self {
         self.clone_box()
+    }
+}
+
+/// Channel contract defining audio stream layout across graph nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChannelContract {
+    Stereo,
+    Mono,
+}
+
+impl Default for ChannelContract {
+    fn default() -> Self {
+        Self::Stereo
+    }
+}
+
+/// Formal errors produced during Graph IR DAG analysis and topological sorting.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GraphCompilationError {
+    /// Graph contains a cycle (directed loop). Includes the node IDs participating in the cycle.
+    CycleDetected(Vec<u32>),
+    /// A node cannot be reached by signal flowing from the Source node.
+    UnreachableFromSource(u32),
+    /// A node cannot reach the Endpoint node (severed path).
+    DanglingPathToEndpoint(u32),
+    /// The specified input port already has a connection and does not support multi-input.
+    PortAlreadyConnected(u32, u8),
+    /// The number of input connections to this node exceeds its maximum supported inputs.
+    InputCountExceeded { node: u32, max: usize },
+    /// More than one Endpoint node is present on the canvas.
+    MultipleEndpointsNotSupported,
+    /// No Source node exists in the graph.
+    MissingSourceNode,
+    /// No Endpoint node exists in the graph.
+    MissingEndpointNode,
+    /// The port index is outside the valid range for this node.
+    InvalidPortIndex { node: u32, port: u8, max_ports: u8 },
+}
+
+impl std::fmt::Display for GraphCompilationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CycleDetected(nodes) => write!(f, "Siklus graph terdeteksi pada node: {:?}", nodes),
+            Self::UnreachableFromSource(node) => write!(f, "Node {} tidak terjangkau dari Source", node),
+            Self::DanglingPathToEndpoint(node) => write!(f, "Node {} tidak memiliki jalur menuju Endpoint", node),
+            Self::PortAlreadyConnected(node, port) => write!(f, "Port {} pada node {} sudah terhubung", port, node),
+            Self::InputCountExceeded { node, max } => write!(f, "Jumlah input pada node {} melebihi batas maksimum {}", node, max),
+            Self::MultipleEndpointsNotSupported => write!(f, "Lebih dari satu Endpoint terdeteksi pada graph"),
+            Self::MissingSourceNode => write!(f, "Node Source tidak ditemukan"),
+            Self::MissingEndpointNode => write!(f, "Node Endpoint tidak ditemukan"),
+            Self::InvalidPortIndex { node, port, max_ports } => write!(f, "Port {} pada node {} di luar rentang (maks: {})", port, node, max_ports),
+        }
+    }
+}
+
+impl std::error::Error for GraphCompilationError {}
+
+/// Pure declarative node representation in Intermediate Representation (IR).
+/// Decoupled from concrete trait object Box<dyn Effect>.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeIr {
+    pub id: u32,
+    pub name: String,
+    pub effect_type: EffectType,
+    pub input_ports: u8,
+    pub output_ports: u8,
+    pub channel_contract: ChannelContract,
+    pub param_val: f32,
+    pub param_min: f32,
+    pub param_max: f32,
+}
+
+impl NodeIr {
+    pub fn new(id: u32, name: String, effect_type: EffectType) -> Self {
+        let (input_ports, output_ports) = match effect_type {
+            EffectType::Mixer => (2, 1),
+            EffectType::Splitter | EffectType::Crossover => (1, 2),
+            _ => (1, 1),
+        };
+        Self {
+            id,
+            name,
+            effect_type,
+            input_ports,
+            output_ports,
+            channel_contract: ChannelContract::Stereo,
+            param_val: 0.0,
+            param_min: -24.0,
+            param_max: 24.0,
+        }
+    }
+}
+
+/// Pure declarative edge representation in Intermediate Representation (IR).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EdgeIr {
+    pub from_node: u32,
+    pub from_port: u8,
+    pub to_node: u32,
+    pub to_port: u8,
+}
+
+impl EdgeIr {
+    pub fn new(from_node: u32, from_port: u8, to_node: u32, to_port: u8) -> Self {
+        Self { from_node, from_port, to_node, to_port }
+    }
+}
+
+/// Pure declarative graph Intermediate Representation (IR).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GraphIr {
+    pub nodes: Vec<NodeIr>,
+    pub edges: Vec<EdgeIr>,
+    pub source_id: u32,
+    pub endpoint_id: u32,
+}
+
+impl GraphIr {
+    pub fn new(source_id: u32, endpoint_id: u32) -> Self {
+        Self {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            source_id,
+            endpoint_id,
+        }
+    }
+
+    /// Validates DAG integrity, detects cycles via Kahn's algorithm, verifies port constraints,
+    /// and isolates dead nodes. Returns the verified topological order of flowing nodes.
+    pub fn validate_and_sort(&self) -> Result<Vec<u32>, GraphCompilationError> {
+        // 1. Verify Source and Endpoint nodes exist
+        if !self.nodes.iter().any(|n| n.id == self.source_id) {
+            return Err(GraphCompilationError::MissingSourceNode);
+        }
+        if !self.nodes.iter().any(|n| n.id == self.endpoint_id) {
+            return Err(GraphCompilationError::MissingEndpointNode);
+        }
+
+        let node_map: HashMap<u32, &NodeIr> = self.nodes.iter().map(|n| (n.id, n)).collect();
+
+        // 2. Validate Port indices and Input constraints
+        let mut port_connections: HashMap<(u32, u8), Vec<EdgeIr>> = HashMap::new();
+        for &edge in &self.edges {
+            if let Some(from) = node_map.get(&edge.from_node) {
+                if edge.from_port >= from.output_ports && from.output_ports > 0 {
+                    return Err(GraphCompilationError::InvalidPortIndex {
+                        node: edge.from_node,
+                        port: edge.from_port,
+                        max_ports: from.output_ports,
+                    });
+                }
+            }
+            if let Some(to) = node_map.get(&edge.to_node) {
+                if edge.to_port >= to.input_ports && to.input_ports > 0 {
+                    return Err(GraphCompilationError::InvalidPortIndex {
+                        node: edge.to_node,
+                        port: edge.to_port,
+                        max_ports: to.input_ports,
+                    });
+                }
+            }
+            port_connections.entry((edge.to_node, edge.to_port)).or_default().push(edge);
+        }
+
+        // Validate that single-input ports do not have conflicting duplicate cables
+        for (&(node_id, port), edges) in &port_connections {
+            if let Some(node) = node_map.get(&node_id) {
+                if edges.len() > 1 && !node.effect_type.is_mixer() {
+                    return Err(GraphCompilationError::PortAlreadyConnected(node_id, port));
+                }
+            }
+        }
+
+        // 3. Forward reachability from Source
+        let mut reachable_from_source = HashSet::new();
+        let mut q_fwd = VecDeque::new();
+        reachable_from_source.insert(self.source_id);
+        q_fwd.push_back(self.source_id);
+
+        while let Some(curr) = q_fwd.pop_front() {
+            for edge in &self.edges {
+                if edge.from_node == curr {
+                    if reachable_from_source.insert(edge.to_node) {
+                        q_fwd.push_back(edge.to_node);
+                    }
+                }
+            }
+        }
+
+        if !reachable_from_source.contains(&self.endpoint_id) {
+            return Err(GraphCompilationError::DanglingPathToEndpoint(self.source_id));
+        }
+
+        // 4. Backward reachability from Endpoint
+        let mut can_reach_endpoint = HashSet::new();
+        let mut q_back = VecDeque::new();
+        can_reach_endpoint.insert(self.endpoint_id);
+        q_back.push_back(self.endpoint_id);
+
+        while let Some(curr) = q_back.pop_front() {
+            for edge in &self.edges {
+                if edge.to_node == curr {
+                    if can_reach_endpoint.insert(edge.from_node) {
+                        q_back.push_back(edge.from_node);
+                    }
+                }
+            }
+        }
+
+        // Flowing nodes: strictly reachable from Source AND capable of reaching Endpoint.
+        // Dead / disconnected nodes are completely isolated.
+        let flowing_nodes: HashSet<u32> = self.nodes.iter()
+            .map(|n| n.id)
+            .filter(|id| reachable_from_source.contains(id) && can_reach_endpoint.contains(id))
+            .collect();
+
+        // 5. Kahn's Topological Sort with Formal Cycle Detection
+        let mut in_degree: HashMap<u32, usize> = HashMap::new();
+        let mut adj: HashMap<u32, Vec<u32>> = HashMap::new();
+
+        for &node_id in &flowing_nodes {
+            in_degree.insert(node_id, 0);
+            adj.insert(node_id, Vec::new());
+        }
+
+        for edge in &self.edges {
+            if flowing_nodes.contains(&edge.from_node) && flowing_nodes.contains(&edge.to_node) {
+                *in_degree.entry(edge.to_node).or_insert(0) += 1;
+                adj.entry(edge.from_node).or_default().push(edge.to_node);
+            }
+        }
+
+        let mut q = VecDeque::new();
+        for (&node_id, &deg) in &in_degree {
+            if deg == 0 {
+                q.push_back(node_id);
+            }
+        }
+
+        let mut ordered_node_ids = Vec::new();
+        while let Some(curr) = q.pop_front() {
+            ordered_node_ids.push(curr);
+            if let Some(neighbors) = adj.get(&curr) {
+                for &next in neighbors {
+                    if let Some(deg) = in_degree.get_mut(&next) {
+                        *deg -= 1;
+                        if *deg == 0 {
+                            q.push_back(next);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Formal Cycle Detection: if sorted count != flowing count, cycle exists!
+        if ordered_node_ids.len() != flowing_nodes.len() {
+            let cycle_nodes: Vec<u32> = in_degree.iter()
+                .filter(|(_, deg)| **deg > 0)
+                .map(|(id, _)| *id)
+                .collect();
+            return Err(GraphCompilationError::CycleDetected(cycle_nodes));
+        }
+
+        Ok(ordered_node_ids)
     }
 }
 
@@ -495,6 +764,7 @@ pub enum DspCommand {
     SetLimiterEnabled(bool),
     SetChainMode(ChainMode),
     SetSignalChainGraph(SignalChainGraph),
+    SetCompiledPlan(Box<crate::audio::dsp::executor::ExecutionPlan>),
     ResetStates,
     SetSampleRate(f32),
 }
@@ -600,6 +870,12 @@ pub enum AudioEvent {
     DeviceDisconnected {
         device_name: String,
         error: String,
+    },
+    /// Driver menolak format audio (mis. Realtek tidak support 44.1 kHz) — BUKAN hot-unplug fisik.
+    /// Engine sudah fallback ke OS Resampled. Playback tetap berjalan.
+    StreamFallback {
+        device_name: String,
+        reason: String,
     },
     /// Engine reports the actual signal path after Play or mode change.
     SignalPath(SignalPathReport),

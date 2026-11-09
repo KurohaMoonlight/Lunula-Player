@@ -11,7 +11,7 @@ pub use analyzer::{
 pub use biquad::{soft_limit, BiquadCoeffs, BiquadState};
 pub use effects::{
     AnalogPreampEffect, BandPassFilterEffect, BassGuardEffect, CompressorEffect, CrossoverHighEffect, CrossoverLowEffect, DynamicLoudnessEffect, GraphicEqEffect, HighPassFilterEffect, LowPassFilterEffect, MixerEffect, OpticalLevelerEffect,
-    ParametricBandConfig, ParametricEqEffect, PassthroughEffect, PresetEqEffect, SplitterEffect, SteppedAttenuatorEffect, StereoBalanceEffect, StereoWidenerEffect, TubeWarmerEffect,
+    ParametricBandConfig, ParametricEqEffect, PassthroughEffect, PresetEqEffect, SplitterEffect, SteppedAttenuatorEffect, StereoBalanceEffect, StereoMatrixEffect, StereoWidenerEffect, TimeAlignmentEffect, TubeWarmerEffect,
     VolumeAttenuatorEffect, VolumeBoosterEffect, EQ_FREQUENCIES,
 };
 pub use crate::audio::types::EffectType;
