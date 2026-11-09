@@ -27,9 +27,10 @@ impl AudioOutput {
         shared_muted: Arc<AtomicBool>,
         is_dsp_active: Arc<AtomicBool>,
         event_tx: crossbeam_channel::Sender<crate::audio::types::AudioEvent>,
+        prefer_exclusive: bool,
     ) -> Result<(Self, Producer<f32>), Box<dyn std::error::Error + Send + Sync>> {
         #[cfg(target_os = "windows")]
-        if chain_mode == ChainMode::BitPerfect {
+        if prefer_exclusive && chain_mode != ChainMode::OsResampled {
             if let Ok((ex_backend, prod)) = WasapiExclusiveBackend::try_new(
                 preferred_device_name,
                 preferred_sample_rate,

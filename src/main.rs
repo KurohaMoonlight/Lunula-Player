@@ -1,7 +1,6 @@
 #![windows_subsystem = "windows"]
 
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 
 use eframe::egui;
 use egui::{Color32, Stroke};
@@ -110,10 +109,14 @@ fn main() -> eframe::Result {
             cc.egui_ctx.set_visuals(visuals);
 
             let mut fonts = egui::FontDefinitions::default();
-            if let Ok(font_data) = std::fs::read("C:\\Windows\\Fonts\\segoeui.ttf") {
+            let load_static_font = |path: &str| -> Option<&'static [u8]> {
+                std::fs::read(path).ok().map(|vec| &*Box::leak(vec.into_boxed_slice()))
+            };
+
+            if let Some(font_bytes) = load_static_font("C:\\Windows\\Fonts\\segoeui.ttf") {
                 fonts.font_data.insert(
                     "segoe_ui".to_owned(),
-                    std::sync::Arc::new(egui::FontData::from_owned(font_data)),
+                    std::sync::Arc::new(egui::FontData::from_static(font_bytes)),
                 );
                 fonts
                     .families
@@ -121,10 +124,10 @@ fn main() -> eframe::Result {
                     .or_default()
                     .insert(0, "segoe_ui".to_owned());
             }
-            if let Ok(font_data) = std::fs::read("C:\\Windows\\Fonts\\seguiemj.ttf") {
+            if let Some(font_bytes) = load_static_font("C:\\Windows\\Fonts\\seguiemj.ttf") {
                 fonts.font_data.insert(
                     "segoe_ui_emoji".to_owned(),
-                    std::sync::Arc::new(egui::FontData::from_owned(font_data)),
+                    std::sync::Arc::new(egui::FontData::from_static(font_bytes)),
                 );
                 fonts
                     .families
@@ -132,10 +135,10 @@ fn main() -> eframe::Result {
                     .or_default()
                     .push("segoe_ui_emoji".to_owned());
             }
-            if let Ok(font_data) = std::fs::read("C:\\Windows\\Fonts\\malgun.ttf") {
+            if let Some(font_bytes) = load_static_font("C:\\Windows\\Fonts\\malgun.ttf") {
                 fonts.font_data.insert(
                     "malgun".to_owned(),
-                    std::sync::Arc::new(egui::FontData::from_owned(font_data)),
+                    std::sync::Arc::new(egui::FontData::from_static(font_bytes)),
                 );
                 fonts
                     .families
@@ -143,10 +146,10 @@ fn main() -> eframe::Result {
                     .or_default()
                     .push("malgun".to_owned());
             }
-            if let Ok(font_data) = std::fs::read("C:\\Windows\\Fonts\\consola.ttf") {
+            if let Some(font_bytes) = load_static_font("C:\\Windows\\Fonts\\consola.ttf") {
                 fonts.font_data.insert(
                     "consola".to_owned(),
-                    std::sync::Arc::new(egui::FontData::from_owned(font_data)),
+                    std::sync::Arc::new(egui::FontData::from_static(font_bytes)),
                 );
                 fonts
                     .families
@@ -168,9 +171,7 @@ fn main() -> eframe::Result {
             cc.egui_ctx.set_style_of(egui::Theme::Light, style_arc.clone());
             cc.egui_ctx.set_style_of(egui::Theme::Dark, style_arc);
 
-            Ok(stacker::grow(32 * 1024 * 1024, || {
-                Box::new(LunulaApp::new(cc))
-            }))
+            Ok(Box::new(LunulaApp::new(cc)))
         }),
     )
 }

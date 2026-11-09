@@ -4,8 +4,7 @@ version = "1.1.1"
 edition = "2024"
 
 [dependencies]
-stacker = "0.1"
-eframe = "0.37.0"
+eframe = { version = "0.37.0", default-features = false, features = ["glow"] }
 lofty = "0.25.5"
 rfd = "0.17.2"
 walkdir = "2.5.0"
@@ -17,7 +16,7 @@ rtrb = "0.3"
 crossbeam-channel = "0.5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 rubato = "5.0.1"
-mimalloc = { version = "0.1", default-features = false }
+
 
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.26"

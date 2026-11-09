@@ -203,12 +203,51 @@ fn query_windows_process_memory() -> Option<ProcessMemoryStats> {
         let cb = size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
 
         if GetProcessMemoryInfo(handle, &mut pmc as *mut _ as *mut _, cb) != 0 {
+            let private_ws = query_exact_private_working_set(handle)
+                .unwrap_or(pmc.PrivateUsage.min(pmc.WorkingSetSize));
+
             Some(ProcessMemoryStats {
-                working_set_bytes: pmc.WorkingSetSize,
+                working_set_bytes: private_ws,
                 peak_working_set_bytes: pmc.PeakWorkingSetSize,
                 private_usage_bytes: pmc.PrivateUsage,
                 pagefile_usage_bytes: pmc.PagefileUsage,
             })
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(windows)]
+fn query_exact_private_working_set(handle: windows_sys::Win32::Foundation::HANDLE) -> Option<usize> {
+    use windows_sys::Win32::System::ProcessStatus::QueryWorkingSet;
+    use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
+
+    unsafe {
+        let mut sys_info: SYSTEM_INFO = std::mem::zeroed();
+        GetSystemInfo(&mut sys_info);
+        let page_size = sys_info.dwPageSize as usize;
+
+        let num_entries: usize = 65536;
+        let mut buffer: Vec<usize> = vec![0; num_entries];
+
+        if QueryWorkingSet(
+            handle,
+            buffer.as_mut_ptr() as *mut _,
+            (num_entries * std::mem::size_of::<usize>()) as u32,
+        ) != 0
+        {
+            let count = buffer[0];
+            let mut private_pages = 0;
+            for i in 1..=count.min(num_entries - 1) {
+                let entry = buffer[i];
+                // Bit 8 pada entri Working Set Windows: 0 = Private, 1 = Shared
+                let is_shared = (entry >> 8) & 1 == 1;
+                if !is_shared {
+                    private_pages += 1;
+                }
+            }
+            Some(private_pages * page_size)
         } else {
             None
         }
@@ -238,3 +277,13 @@ mod tests {
     }
 }
 
+/// Menginstruksikan Windows Memory Manager untuk memangkas halaman RAM yang sudah tidak aktif (working set trim)
+pub fn trim_process_working_set() {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::ProcessStatus::EmptyWorkingSet;
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        let handle = GetCurrentProcess();
+        EmptyWorkingSet(handle);
+    }
+}

@@ -9,7 +9,7 @@ use super::effects::GraphicEqEffect;
 pub const MAX_BLOCK_SIZE: usize = 4096;
 
 /// Default preallocated node slot capacity to prevent any heap reallocations in the audio callback.
-pub const INITIAL_SLOT_CAPACITY: usize = 64;
+pub const INITIAL_SLOT_CAPACITY: usize = 8;
 
 #[derive(Debug, Clone)]
 pub enum StepInput {
@@ -199,16 +199,14 @@ impl GraphExecutor {
     pub fn new(sample_rate: f32) -> Self {
         let sr = sample_rate.max(8000.0);
         let fallback_eq = GraphicEqEffect::new([0.0; 10], sr as f64);
-        let buffers_l = (0..INITIAL_SLOT_CAPACITY).map(|_| vec![0.0f32; MAX_BLOCK_SIZE]).collect();
-        let buffers_r = (0..INITIAL_SLOT_CAPACITY).map(|_| vec![0.0f32; MAX_BLOCK_SIZE]).collect();
         Self {
             sample_rate: sr,
             plan: ExecutionPlan::default(),
             graph: SignalChainGraph::default(),
-            buffers_l,
-            buffers_r,
-            scratch_l: vec![0.0f32; MAX_BLOCK_SIZE],
-            scratch_r: vec![0.0f32; MAX_BLOCK_SIZE],
+            buffers_l: Vec::new(),
+            buffers_r: Vec::new(),
+            scratch_l: Vec::new(),
+            scratch_r: Vec::new(),
             eq_bypass: false,
             limiter_enabled: false,
             fallback_eq,
@@ -226,6 +224,10 @@ impl GraphExecutor {
     /// Pre-allocates channel and scratch buffers up to `required_slots`.
     /// Called before stream processing to ensure zero heap allocation inside callback.
     pub fn ensure_buffer_capacity(&mut self, required_slots: usize) {
+        if self.scratch_l.is_empty() {
+            self.scratch_l = vec![0.0f32; MAX_BLOCK_SIZE];
+            self.scratch_r = vec![0.0f32; MAX_BLOCK_SIZE];
+        }
         let target_slots = required_slots.max(INITIAL_SLOT_CAPACITY);
         while self.buffers_l.len() < target_slots {
             self.buffers_l.push(vec![0.0f32; MAX_BLOCK_SIZE]);

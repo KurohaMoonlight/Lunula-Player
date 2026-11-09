@@ -2915,7 +2915,7 @@ impl LunulaApp {
         );
 
         let rows = [
-            ("Working Set (Physical RAM):", format!("{:.1} MB", mem.working_set_mb()), "Task Manager 'Memory' (Exact Resident Set)"),
+            ("Task Manager Memory (Private):", format!("{:.1} MB", mem.working_set_mb()), "Exact Private Working Set (Task Manager)"),
             ("Private Commit (Heap):", format!("{:.1} MB", mem.private_usage_mb()), "Dedicated committed heap + stack"),
             ("Peak Working Set:", format!("{:.1} MB", mem.peak_working_set_mb()), "Peak RAM usage since startup"),
             ("Process CPU Usage:", format!("{:.1}% CPU", cpu), "Kernel + User cycle delta across threads"),

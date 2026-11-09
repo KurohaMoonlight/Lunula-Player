@@ -12,6 +12,7 @@ pub struct LunulaApp {
     pub current_tab: AppTab,
     pub selected_node: Option<usize>,
     pub chain_mode: ChainMode,
+    pub prefer_exclusive: bool,
 
     // Modular Signal Chain Graph
     pub nodes: Vec<ModularNode>,
@@ -147,6 +148,7 @@ pub struct LunulaApp {
 
     // Library scanning state
     pub scan_rx: Option<std::sync::mpsc::Receiver<ScanMsg>>,
+    pub idle_trim_timer: f32,
     pub is_scanning: bool,
     pub system_telemetry: crate::system_telemetry::SystemTelemetrySampler,
     pub scan_status: String,
@@ -376,6 +378,7 @@ impl LunulaApp {
             current_tab: AppTab::NowPlaying,
             selected_node: None,
             chain_mode: ChainMode::BitPerfect,
+            prefer_exclusive: true,
 
             nodes: initial_nodes,
             connections: initial_connections,
@@ -526,7 +529,7 @@ impl LunulaApp {
             playlist_creator_desc: String::new(),
             playlist_creator_selected_tracks: std::collections::HashSet::new(),
             playlist_creator_search: String::new(),
-
+            idle_trim_timer: 5.0, // 5 detik setelah buka aplikasi, bersihkan memori startup
             scan_rx: None,
             is_scanning: false,
             scan_status: String::new(),
@@ -2384,13 +2387,22 @@ impl LunulaApp {
 }
 
 impl eframe::App for LunulaApp {
-    fn on_exit(&mut self) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save_library_state();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.system_telemetry.sample();
+        let is_minimized = ui.input(|i| i.viewport().minimized.unwrap_or(false));
+        if is_minimized {
+            crate::system_telemetry::trim_process_working_set();
+        } else if self.idle_trim_timer > 0.0 {
+            self.idle_trim_timer -= ui.input(|i| i.stable_dt);
+            if self.idle_trim_timer <= 0.0 {
+                crate::system_telemetry::trim_process_working_set();
+            }
+        }
 
         // Drain loaded covers from background thread into egui texture cache (bounded to 32 entries)
         while let Ok(result) = self.cover_res_rx.try_recv() {
@@ -2419,7 +2431,7 @@ impl eframe::App for LunulaApp {
             if self.current_track.file_path.as_deref() == Some(&path) {
                 self.current_track.replay_gain.track_peak = Some(peak);
                 if !wave.is_empty() {
-                    self.current_track.waveform = wave.clone();
+                    self.current_track.waveform = wave;
                 }
                 self.update_effective_replay_gain();
                 self.invalidate_chain_cache();
@@ -2427,14 +2439,13 @@ impl eframe::App for LunulaApp {
             for t in self.playlist.iter_mut() {
                 if t.file_path.as_deref() == Some(&path) {
                     t.replay_gain.track_peak = Some(peak);
-                    if !wave.is_empty() {
-                        t.waveform = wave.clone();
-                    }
+                    // Hemat RAM: waveform tidak perlu disimpan di ribuan lagu playlist, cukup di current_track
                 }
             }
             peak_received = true;
             ctx.request_repaint();
         }
+
         if peak_received {
             self.save_library_state();
         }
@@ -2447,6 +2458,7 @@ impl eframe::App for LunulaApp {
                         self.is_scanning = true;
                         self.scan_status = format!("Memindai: {}...", f);
                     }
+                    
                     ScanMsg::TrackFound(track) => {
                         let exists = self.playlist.iter().any(|t| {
                             match (&t.file_path, &track.file_path) {
@@ -2464,6 +2476,7 @@ impl eframe::App for LunulaApp {
                     }
                     ScanMsg::Finished(count) => {
                         self.is_scanning = false;
+                        self.idle_trim_timer = 2.0;
                         if count > 0 {
                             self.invalidate_library_cache();
                             self.scan_status = format!("✓ Selesai. Berhasil memuat {} lagu.", count);
@@ -2985,6 +2998,61 @@ impl eframe::App for LunulaApp {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("🌙 LunulaPlayer").strong().size(18.0).color(Color32::from_rgb(15, 23, 42)));
                     ui.label(egui::RichText::new("Pure Native Engine").strong().size(12.0).color(Color32::from_rgb(100, 116, 139)));
+                    ui.add_space(8.0);
+                    // --- HARDWARE STREAM INDICATOR (NO GIMMICK) ---
+                    if let Some(ref report) = self.signal_path_report {
+                        if report.is_exclusive {
+                            let badge = egui::Frame::new()
+                                .fill(Color32::from_rgb(236, 253, 245)) // Emerald background
+                                .stroke(Stroke::new(1.0, Color32::from_rgb(52, 211, 153)))
+                                .corner_radius(12.0)
+                                .inner_margin(egui::Margin::symmetric(8, 3))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new("🔒 WASAPI EXCLUSIVE")
+                                            .strong()
+                                            .size(10.5)
+                                            .color(Color32::from_rgb(4, 120, 87)),
+                                    );
+                                });
+                            badge.response.on_hover_text(format!(
+                                "Mode Hardware: WASAPI Exclusive Locked\n• Perangkat: {}\n• Format DAC: {}\n• Sample Rate: {:.1} kHz\n• Status: Windows Audio Mixer di-bypass penuh (Bit-Perfect)",
+                                report.device_name, report.format_desc, report.device_rate as f32 / 1000.0
+                            ));
+                        } else {
+                            let badge = egui::Frame::new()
+                                .fill(Color32::from_rgb(254, 243, 199)) // Amber background
+                                .stroke(Stroke::new(1.0, Color32::from_rgb(245, 158, 11)))
+                                .corner_radius(12.0)
+                                .inner_margin(egui::Margin::symmetric(8, 3))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new("🔊 WASAPI SHARED")
+                                            .strong()
+                                            .size(10.5)
+                                            .color(Color32::from_rgb(180, 83, 9)),
+                                    );
+                                });
+                            badge.response.on_hover_text(format!(
+                                "Mode Hardware: Windows Shared Audio\n• Perangkat: {}\n• Format DAC: {}\n• Status: Melewati OS Audio Mixer",
+                                report.device_name, report.format_desc
+                            ));
+                        }
+                    } else {
+                        let badge = egui::Frame::new()
+                            .fill(Color32::from_rgb(241, 245, 249))
+                            .stroke(Stroke::new(1.0, Color32::from_rgb(203, 213, 225)))
+                            .corner_radius(12.0)
+                            .inner_margin(egui::Margin::symmetric(8, 3))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new("○ STANDBY")
+                                        .size(10.5)
+                                        .color(Color32::from_rgb(100, 116, 139)),
+                                );
+                            });
+                        badge.response.on_hover_text("Audio Engine Standby: Putar lagu untuk melihat jalur hardware aktual");
+                    }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Quick Queue Header Button
@@ -3177,6 +3245,7 @@ impl eframe::App for LunulaApp {
                             if ui.add(egui::Button::new(simple_text).fill(simple_bg).corner_radius(6.0)).on_hover_text("Buka tampilan kanvas modular patchbay standar").clicked() {
                                 self.studio_mode = crate::models::StudioMode::Simple;
                             }
+                            
 
                             let advance_text = if is_advance {
                                 egui::RichText::new("🔬 Advance Studio").strong().size(13.0).color(Color32::WHITE)
@@ -3231,6 +3300,33 @@ impl eframe::App for LunulaApp {
                                 } else {
                                     format!("🔊 {}", current_dev_label)
                                 };
+                                // --- TOGGLE PILIHAN USER: EXCLUSIVE vs SHARED ---
+                                let (ex_label, ex_color, ex_bg) = if self.chain_mode == ChainMode::BitPerfect {
+                                    ("🔒 Exclusive", Color32::from_rgb(16, 185, 129), Color32::from_rgb(236, 253, 245))
+                                } else {
+                                    ("🔊 Shared", Color32::from_rgb(217, 119, 6), Color32::from_rgb(254, 243, 199))
+                                };
+                                let ex_btn = ui.add(
+                                    egui::Button::new(egui::RichText::new(ex_label).strong().size(11.5).color(ex_color))
+                                        .fill(ex_bg)
+                                        .stroke(Stroke::new(1.0, ex_color))
+                                        .corner_radius(6.0)
+                                ).on_hover_text(
+                                    if self.chain_mode == ChainMode::BitPerfect {
+                                        "Mode Saat Ini: WASAPI Exclusive (Kunci Hardware Penuh)\nKlik untuk beralih ke Shared Mode agar audio bisa campur dengan YouTube/Discord."
+                                    } else {
+                                        "Mode Saat Ini: WASAPI Shared (Campur Audio Windows)\nKlik untuk beralih ke Exclusive Mode untuk bypass mixer Windows dan kualitas audiophile maksimal."
+                                    }
+                                );
+
+                                if ex_btn.clicked() {
+                                    if self.chain_mode == ChainMode::BitPerfect {
+                                        self.set_chain_mode(ChainMode::DspActive);
+                                    } else {
+                                        self.set_chain_mode(ChainMode::BitPerfect);
+                                    }
+                                }
+
 
                                 egui::ComboBox::from_id_salt("patchbay_output_device_combo")
                                     .selected_text(egui::RichText::new(truncated_label).size(12.0).strong())
@@ -3469,6 +3565,8 @@ impl eframe::App for LunulaApp {
         if self.show_import_password_modal {
             self.render_import_password_modal(ui.ctx());
         }
+
+        
 
         // Floating Non-Shifting Studio Preset Toast Notification (Sleek Compact Modern Pill)
         if let Some((ref msg, is_success)) = self.preset_status_notification {

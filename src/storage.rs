@@ -26,6 +26,7 @@ impl LunulaApp {
             let saved_state = SavedAppState {
                 playlist: self.playlist.iter().map(TrackData::from).collect(),
                 custom_playlists: self.custom_playlists.clone(),
+                prefer_exclusive_mode: self.prefer_exclusive,
                 current_track: if self.current_track.duration > 0.0 {
                     Some(TrackData::from(&self.current_track))
                 } else {

@@ -510,7 +510,9 @@ pub struct TrackData {
     #[serde(default)]
     pub genre: Option<String>,
 }
-
+fn default_true() -> bool {
+    true
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedAppState {
     pub playlist: Vec<TrackData>,
@@ -525,6 +527,8 @@ pub struct SavedAppState {
     pub eq_bypass: bool,
     #[serde(default)]
     pub chain_mode: ChainMode,
+    #[serde(default = "default_true")]
+    pub prefer_exclusive_mode: bool,
     #[serde(default)]
     pub is_shuffled: bool,
     #[serde(default)]

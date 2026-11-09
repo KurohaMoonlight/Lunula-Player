@@ -379,6 +379,7 @@ fn run_audio_worker(
                                         Arc::clone(&shared_muted),
                                         Arc::clone(&is_dsp_active),
                                         event_tx.clone(),
+                                        true,
                                     ) {
                                         Ok((out, prod)) => {
                                             sync_output_dsp(&out, desired_rate, last_bypass, last_limiter, &last_graph, &last_eq_bands);
@@ -651,6 +652,7 @@ fn run_audio_worker(
                                 Arc::clone(&shared_muted),
                                 Arc::clone(&is_dsp_active),
                                 event_tx.clone(),
+                                true,
                             ) {
                                 Ok((new_out, new_prod)) => {
                                     if state == PlaybackState::Playing {
@@ -724,6 +726,7 @@ fn run_audio_worker(
                                     Arc::clone(&shared_muted),
                                     Arc::clone(&is_dsp_active),
                                     event_tx.clone(),
+                                    true,
                                 ) {
                                     Ok((new_out, new_prod)) => {
                                         if state == PlaybackState::Playing {
@@ -949,6 +952,7 @@ fn run_audio_worker(
                                         Arc::clone(&shared_muted),
                                         Arc::clone(&is_dsp_active),
                                         event_tx.clone(),
+                                        true,
                                     ) {
                                         Ok((new_out, new_prod)) => {
                                             sync_output_dsp(&new_out, desired_rate, last_bypass, last_limiter, &last_graph, &last_eq_bands);

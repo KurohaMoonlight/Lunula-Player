@@ -2,7 +2,7 @@ use eframe::egui;
 use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 use crate::models::{CustomPlaylist, LibraryCategory, Track};
 use crate::app::LunulaApp;
-use crate::preset::{list_local_presets, PresetBindingType};
+use crate::preset::PresetBindingType;
 use crate::ui::components::{draw_album_art, draw_artist_avatar, format_time, lerp_color, open_file_in_explorer, render_card_frame, render_stat_box};
 
 impl LunulaApp {
@@ -55,8 +55,18 @@ impl LunulaApp {
         let mut switch_to_all_tracks = false;
         let mut clear_entire_library = false;
 
-        let available_presets = list_local_presets();
-        let available_preset_names: Vec<String> = available_presets.iter().map(|p| p.metadata.name.clone()).collect();
+        // Hanya baca nama file preset (.lnl) dari direktori tanpa dekripsi kriptografi berat setiap frame
+        let available_presets_dir = crate::preset::get_presets_dir();
+        let available_preset_names: Vec<String> = std::fs::read_dir(&available_presets_dir)
+            .ok()
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|e| e.path().extension().map_or(false, |ext| ext.eq_ignore_ascii_case("lnl")))
+                    .filter_map(|e| e.path().file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut track_bind_to_preset: Option<(PresetBindingType, String, String, String)> = None;
         let mut track_unbind_rule: Option<(PresetBindingType, String)> = None;
         let mut open_binding_manager = false;

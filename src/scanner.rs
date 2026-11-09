@@ -107,7 +107,8 @@ pub fn parse_single_audio_file(path: &Path) -> Option<Track> {
     let file_size_mb = std::fs::metadata(path).map(|m| m.len() as f32 / (1024.0 * 1024.0)).unwrap_or(0.0);
     let fallback_title = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Unknown Title").to_string();
 
-    let (title, artist, album, genre, duration, sample_rate, bit_depth, bitrate_kbps, replay_gain) = match lofty::read_from_path(path) {
+    let parse_opts = lofty::config::ParseOptions::new().read_cover_art(false);
+    let (title, artist, album, genre, duration, sample_rate, bit_depth, bitrate_kbps, replay_gain) = match lofty::probe::Probe::open(path).and_then(|p| p.options(parse_opts).read()) {
         Ok(tagged_file) => {
             let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag());
             let title = tag.and_then(|t| t.title()).map(|s| s.to_string()).unwrap_or_else(|| fallback_title.clone());
