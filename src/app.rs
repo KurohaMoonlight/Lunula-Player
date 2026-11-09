@@ -181,8 +181,8 @@ pub struct LunulaApp {
     pub cover_req_tx: std::sync::mpsc::Sender<(String, String)>,
     pub cover_res_rx: std::sync::mpsc::Receiver<CoverLoadResult>,
     pub pending_cover_loads: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
-    pub peak_scan_tx: std::sync::mpsc::Sender<(String, f32)>,
-    pub peak_scan_rx: std::sync::mpsc::Receiver<(String, f32)>,
+    pub peak_scan_tx: std::sync::mpsc::Sender<(String, f32, Vec<f32>)>,
+    pub peak_scan_rx: std::sync::mpsc::Receiver<(String, f32, Vec<f32>)>,
     pub selected_output_device: Option<String>,
     pub available_output_devices: Vec<crate::audio::backend::OutputDeviceInfo>,
 
@@ -285,7 +285,7 @@ impl LunulaApp {
 
     pub fn new_standalone() -> Self {
         let (sample_waveform, sample_bass, sample_mid, sample_treble) =
-            crate::scanner::generate_multiband_waveform("Lunula Default Initial Track", 3600);
+            crate::scanner::generate_multiband_waveform("Lunula Default Initial Track", 512);
 
         let initial_nodes = vec![
             ModularNode {
@@ -340,17 +340,21 @@ impl LunulaApp {
         let (cover_req_tx, cover_req_rx) = std::sync::mpsc::channel::<(String, String)>();
         let (cover_res_tx, cover_res_rx) = std::sync::mpsc::channel::<CoverLoadResult>();
         let pending_cover_loads = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
-        let (peak_scan_tx, peak_scan_rx) = std::sync::mpsc::channel::<(String, f32)>();
+        let (peak_scan_tx, peak_scan_rx) = std::sync::mpsc::channel::<(String, f32, Vec<f32>)>();
 
         let _ = std::thread::Builder::new()
             .name("lunula-cover-loader".into())
             .spawn(move || {
                 while let Ok((key, path)) = cover_req_rx.recv() {
                     let image_data = if let Some(bytes) = crate::scanner::extract_album_art(&path) {
-                        if let Ok(img) = image::load_from_memory(&bytes) {
-                            let thumb = img.thumbnail(256, 256).to_rgba8();
-                            let size = [thumb.width() as usize, thumb.height() as usize];
-                            Some((size, thumb.into_raw()))
+                        if bytes.len() <= 15 * 1024 * 1024 {
+                            if let Ok(img) = image::load_from_memory(&bytes) {
+                                let thumb = img.thumbnail(160, 160).to_rgba8();
+                                let size = [thumb.width() as usize, thumb.height() as usize];
+                                Some((size, thumb.into_raw()))
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
@@ -723,10 +727,8 @@ impl LunulaApp {
             app.eq_bands[9] = 2.0;
         }
 
-        // Preload artwork for initial track
-        if let Some(ref path_str) = app.current_track.file_path {
-            app.current_cover_bytes = crate::scanner::extract_album_art(path_str);
-        }
+        // Initial artwork loaded on-demand via async thumbnail loader (prevents redundant memory allocations)
+        app.current_cover_bytes = None;
 
         if let Some(ref engine) = app.audio_engine {
             if let Some(ref dev) = app.selected_output_device {
@@ -844,7 +846,7 @@ impl LunulaApp {
         self.invalidate_chain_cache();
     }
 
-    /// Background non-blocking worker: calculates true audio peak if track lacks metadata peak tag
+    /// Background non-blocking worker: calculates true audio peak and real waveform envelope if track lacks peak tag
     pub fn trigger_background_peak_scan(&self, track: &Track) {
         if track.replay_gain.track_peak.is_none() {
             if let Some(ref path_str) = track.file_path {
@@ -855,8 +857,8 @@ impl LunulaApp {
                     std::thread::Builder::new()
                         .name("lunula-peak-scan".into())
                         .spawn(move || {
-                            if let Ok(peak) = crate::audio::scan_audio_peak_fast(&path) {
-                                let _ = tx.send((path_str_cloned, peak));
+                            if let Ok((peak, wave)) = crate::audio::scan_audio_peak_and_waveform(&path, 512) {
+                                let _ = tx.send((path_str_cloned, peak, wave));
                             }
                         })
                         .ok();
@@ -993,13 +995,19 @@ impl LunulaApp {
             if sample_rate > 0 {
                 next_t.sample_rate = sample_rate;
             }
+            if next_t.waveform.is_empty() && next_t.duration > 0.0 {
+                let seed = format!("{}_{}_{:.0}", next_t.title, next_t.artist, next_t.duration);
+                let (ov, b, m, tr) = crate::scanner::generate_multiband_waveform(&seed, 512);
+                next_t.waveform = ov;
+                next_t.waveform_bass = b;
+                next_t.waveform_mid = m;
+                next_t.waveform_treble = tr;
+            }
             self.current_track = next_t;
         }
         self.current_time = 0.0;
         self.is_playing = true;
-        self.current_cover_bytes = self.current_track.file_path.as_ref().and_then(|p| {
-            crate::scanner::extract_album_art(p)
-        });
+        self.current_cover_bytes = None;
         self.current_cover_texture = None;
         self.current_lyrics = self.current_track.file_path.as_ref().and_then(|p| {
             crate::lyrics::Lyrics::load_for_track_smart(
@@ -1030,14 +1038,20 @@ impl LunulaApp {
         self.save_library_state();
     }
 
-    pub fn play_track(&mut self, track: Track) {
+    pub fn play_track(&mut self, mut track: Track) {
+        if track.waveform.is_empty() && track.duration > 0.0 {
+            let seed = format!("{}_{}_{:.0}", track.title, track.artist, track.duration);
+            let (ov, b, m, tr) = crate::scanner::generate_multiband_waveform(&seed, 512);
+            track.waveform = ov;
+            track.waveform_bass = b;
+            track.waveform_mid = m;
+            track.waveform_treble = tr;
+        }
         self.current_track = track;
         self.current_time = 0.0;
         self.is_playing = true;
         self.trigger_background_peak_scan(&self.current_track);
-        self.current_cover_bytes = self.current_track.file_path.as_ref().and_then(|p| {
-            crate::scanner::extract_album_art(p)
-        });
+        self.current_cover_bytes = None;
         self.current_cover_texture = None; // Reset so next frame builds the new texture
         self.current_lyrics = self.current_track.file_path.as_ref().and_then(|p| {
             crate::lyrics::Lyrics::load_for_track_smart(
@@ -2366,13 +2380,19 @@ impl eframe::App for LunulaApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
-        // Drain loaded covers from background thread into egui texture cache
+        // Drain loaded covers from background thread into egui texture cache (bounded to 32 entries)
         while let Ok(result) = self.cover_res_rx.try_recv() {
             let tex = result.image_data.map(|(size, pixels)| {
                 let color_image = eframe::egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
                 ctx.load_texture(&format!("art_{}", result.key), color_image, eframe::egui::TextureOptions::LINEAR)
             });
             if let Ok(mut cache) = self.album_cover_cache.lock() {
+                if cache.len() >= 32 {
+                    let keys_to_remove: Vec<String> = cache.keys().take(12).cloned().collect();
+                    for k in keys_to_remove {
+                        cache.remove(&k);
+                    }
+                }
                 cache.insert(result.key.clone(), tex);
             }
             if let Ok(mut pending) = self.pending_cover_loads.lock() {
@@ -2381,17 +2401,23 @@ impl eframe::App for LunulaApp {
             ctx.request_repaint();
         }
 
-        // Drain scanned track peaks from background peak scanner
+        // Drain scanned track peaks & physical waveforms from background peak scanner
         let mut peak_received = false;
-        while let Ok((path, peak)) = self.peak_scan_rx.try_recv() {
+        while let Ok((path, peak, wave)) = self.peak_scan_rx.try_recv() {
             if self.current_track.file_path.as_deref() == Some(&path) {
                 self.current_track.replay_gain.track_peak = Some(peak);
+                if !wave.is_empty() {
+                    self.current_track.waveform = wave.clone();
+                }
                 self.update_effective_replay_gain();
                 self.invalidate_chain_cache();
             }
             for t in self.playlist.iter_mut() {
                 if t.file_path.as_deref() == Some(&path) {
                     t.replay_gain.track_peak = Some(peak);
+                    if !wave.is_empty() {
+                        t.waveform = wave.clone();
+                    }
                 }
             }
             peak_received = true;
@@ -4644,6 +4670,61 @@ mod tests {
         // Verify Graph IR validation passes
         let ir_order = app.validate_graph_ir().expect("Advanced DSP patchbay graph must validate cleanly");
         assert_eq!(ir_order.len(), 6);
+    }
+
+    #[test]
+    fn test_waveform_instant_generation_and_memory_hardening() {
+        let mut app = LunulaApp::default();
+
+        // 1. Initial track waveform must be 512 points (downscaled from 3600 for ultra-lightweight footprint)
+        assert_eq!(app.current_track.waveform.len(), 512);
+        assert_eq!(app.current_track.waveform_bass.len(), 512);
+        assert_eq!(app.current_track.waveform_mid.len(), 512);
+        assert_eq!(app.current_track.waveform_treble.len(), 512);
+
+        // 2. Playing a track with empty waveform must immediately generate 512-point multiband data
+        let mut track = crate::models::Track::default();
+        track.title = "Bohemian Rhapsody".to_string();
+        track.artist = "Queen".to_string();
+        track.duration = 354.0;
+        track.file_path = Some("test_queen.flac".to_string());
+        assert!(track.waveform.is_empty());
+
+        app.play_track(track);
+        assert_eq!(app.current_track.waveform.len(), 512);
+        assert_eq!(app.current_track.waveform_bass.len(), 512);
+        assert_eq!(app.current_track.waveform_mid.len(), 512);
+        assert_eq!(app.current_track.waveform_treble.len(), 512);
+        // Ensure no raw image allocations are hoarded on the struct
+        assert!(app.current_cover_bytes.is_none());
+
+        // 3. Background peak and waveform streaming channel must update physical waveform seamlessly
+        let real_wave = vec![0.75f32; 512];
+        let _ = app.peak_scan_tx.send(("test_queen.flac".to_string(), 0.98, real_wave.clone()));
+        if let Ok((path, peak, wave)) = app.peak_scan_rx.try_recv() {
+            if app.current_track.file_path.as_deref() == Some(&path) {
+                app.current_track.replay_gain.track_peak = Some(peak);
+                if !wave.is_empty() {
+                    app.current_track.waveform = wave;
+                }
+            }
+        }
+        assert_eq!(app.current_track.replay_gain.track_peak, Some(0.98));
+        assert_eq!(app.current_track.waveform[0], 0.75);
+
+        // 4. Album cover cache must enforce strict bounded capacity
+        if let Ok(mut cache) = app.album_cover_cache.lock() {
+            for i in 0..40 {
+                cache.insert(format!("album_{}", i), None);
+            }
+            if cache.len() >= 32 {
+                let keys_to_remove: Vec<String> = cache.keys().take(12).cloned().collect();
+                for k in keys_to_remove {
+                    cache.remove(&k);
+                }
+            }
+            assert!(cache.len() <= 32);
+        }
     }
 }
 

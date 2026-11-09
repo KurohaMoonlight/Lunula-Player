@@ -202,6 +202,14 @@ impl LunulaApp {
 
                 // Smooth Translucent Multi-Band Waveform
                 let center_x = wave_rect.center().x;
+                if self.current_track.waveform.is_empty() && self.current_track.duration > 0.0 {
+                    let seed = format!("{}_{}_{:.0}", self.current_track.title, self.current_track.artist, self.current_track.duration);
+                    let (ov, b, m, tr) = crate::scanner::generate_multiband_waveform(&seed, 512);
+                    self.current_track.waveform = ov;
+                    self.current_track.waveform_bass = b;
+                    self.current_track.waveform_mid = m;
+                    self.current_track.waveform_treble = tr;
+                }
                 let samples = &self.current_track.waveform;
                 let bass_samples = &self.current_track.waveform_bass;
                 let mid_samples = &self.current_track.waveform_mid;
