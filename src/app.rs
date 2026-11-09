@@ -67,6 +67,11 @@ pub struct LunulaApp {
     pub filter_tutorial_step: usize,
     pub dragging_slider_node: Option<usize>,
 
+    // Headroom Guard & Clipping Detection Settings
+    pub clipping_detection_enabled: bool,
+    pub clipping_threshold_db: f32,
+    pub show_clipping_settings_popup: bool,
+
     // Game-Like Onboarding Quest
     pub has_completed_onboarding: bool,
     pub is_onboarding_quest_active: bool,
@@ -176,12 +181,16 @@ pub struct LunulaApp {
     pub cover_req_tx: std::sync::mpsc::Sender<(String, String)>,
     pub cover_res_rx: std::sync::mpsc::Receiver<CoverLoadResult>,
     pub pending_cover_loads: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    pub peak_scan_tx: std::sync::mpsc::Sender<(String, f32)>,
+    pub peak_scan_rx: std::sync::mpsc::Receiver<(String, f32)>,
     pub selected_output_device: Option<String>,
     pub available_output_devices: Vec<crate::audio::backend::OutputDeviceInfo>,
 
     // High-performance GUI caching (DAG topology, library stats, and EQ curves)
     pub cached_chain_eval: std::cell::RefCell<Option<crate::models::ChainEvaluation>>,
+    pub cached_static_analysis: std::cell::RefCell<Option<crate::audio::GraphAnalysisReport>>,
     pub chain_eval_dirty: std::cell::Cell<bool>,
+    pub static_analysis_dirty: std::cell::Cell<bool>,
     pub cached_library_stats: std::cell::Cell<Option<(usize, usize, usize, f32, usize)>>,
     pub cached_album_map: std::cell::RefCell<Option<std::collections::BTreeMap<String, Vec<usize>>>>,
     pub cached_artist_map: std::cell::RefCell<Option<std::collections::BTreeMap<String, Vec<usize>>>>,
@@ -331,6 +340,7 @@ impl LunulaApp {
         let (cover_req_tx, cover_req_rx) = std::sync::mpsc::channel::<(String, String)>();
         let (cover_res_tx, cover_res_rx) = std::sync::mpsc::channel::<CoverLoadResult>();
         let pending_cover_loads = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let (peak_scan_tx, peak_scan_rx) = std::sync::mpsc::channel::<(String, f32)>();
 
         let _ = std::thread::Builder::new()
             .name("lunula-cover-loader".into())
@@ -407,6 +417,10 @@ impl LunulaApp {
             filter_tutorial_step: 0,
             dragging_slider_node: None,
 
+            clipping_detection_enabled: true,
+            clipping_threshold_db: 0.0,
+            show_clipping_settings_popup: false,
+
             has_completed_onboarding: false,
             is_onboarding_quest_active: false,
             onboarding_quest_step: crate::models::OnboardingQuestStep::Welcome,
@@ -415,7 +429,7 @@ impl LunulaApp {
             quest_rect_tube_warmer_btn: None,
             quest_rect_cable_mute_target: None,
 
-            show_interactive_theater: true,
+            show_interactive_theater: false,
             theater_slide: 0,
             theater_turn: 0,
             theater_turn_timer: 0.0,
@@ -536,11 +550,15 @@ impl LunulaApp {
             cover_req_tx,
             cover_res_rx,
             pending_cover_loads,
+            peak_scan_tx,
+            peak_scan_rx,
             selected_output_device: None,
             available_output_devices: crate::audio::backend::enumerate_output_devices(),
 
             cached_chain_eval: std::cell::RefCell::new(None),
+            cached_static_analysis: std::cell::RefCell::new(None),
             chain_eval_dirty: std::cell::Cell::new(true),
+            static_analysis_dirty: std::cell::Cell::new(true),
             cached_library_stats: std::cell::Cell::new(None),
             cached_album_map: std::cell::RefCell::new(None),
             cached_artist_map: std::cell::RefCell::new(None),
@@ -680,6 +698,12 @@ impl LunulaApp {
             if let Some(cf) = state.crossfade_secs {
                 app.crossfade_secs = cf;
             }
+            if let Some(cde) = state.clipping_detection_enabled {
+                app.clipping_detection_enabled = cde;
+            }
+            if let Some(ctd) = state.clipping_threshold_db {
+                app.clipping_threshold_db = ctd;
+            }
             app.has_completed_onboarding = state.has_completed_onboarding.unwrap_or(false);
             if !app.has_completed_onboarding {
                 app.is_onboarding_quest_active = true;
@@ -691,6 +715,7 @@ impl LunulaApp {
             // First time application is ever launched!
             app.has_completed_onboarding = false;
             app.is_onboarding_quest_active = true;
+            app.show_interactive_theater = true;
             app.set_chain_mode(ChainMode::BitPerfect);
             app.eq_bands[0] = 3.0;
             app.eq_bands[1] = 1.5;
@@ -721,6 +746,19 @@ impl LunulaApp {
         app.apply_startup_preset();
         app.sync_signal_chain_to_engine();
         app
+    }
+
+    /// Returns true if any fullscreen modal or high-priority overlay is currently active.
+    /// When active, underlying canvas, spectrum, and background controls should suppress
+    /// hovering animations, tooltips, dragging, and context menus.
+    #[inline]
+    pub fn is_modal_or_overlay_active(&self) -> bool {
+        self.show_interactive_theater
+            || self.show_tag_editor
+            || self.show_export_preset_modal
+            || self.show_import_password_modal
+            || self.show_save_preset_dialog
+            || self.show_playlist_creator
     }
 
     pub fn sync_eq_to_engine(&self) {
@@ -802,6 +840,28 @@ impl LunulaApp {
 
         if self.replay_gain_clip_prevention == crate::models::ReplayGainClipPrevention::Limiter && db > 0.0 {
             self.eq_limiter_enabled = true;
+        }
+        self.invalidate_chain_cache();
+    }
+
+    /// Background non-blocking worker: calculates true audio peak if track lacks metadata peak tag
+    pub fn trigger_background_peak_scan(&self, track: &Track) {
+        if track.replay_gain.track_peak.is_none() {
+            if let Some(ref path_str) = track.file_path {
+                let path = std::path::PathBuf::from(path_str);
+                if path.is_file() {
+                    let tx = self.peak_scan_tx.clone();
+                    let path_str_cloned = path_str.clone();
+                    std::thread::Builder::new()
+                        .name("lunula-peak-scan".into())
+                        .spawn(move || {
+                            if let Ok(peak) = crate::audio::scan_audio_peak_fast(&path) {
+                                let _ = tx.send((path_str_cloned, peak));
+                            }
+                        })
+                        .ok();
+                }
+            }
         }
     }
 
@@ -954,6 +1014,7 @@ impl LunulaApp {
         let track_eval = self.current_track.clone();
         self.check_and_apply_auto_binding(&track_eval);
 
+        self.trigger_background_peak_scan(&self.current_track);
         self.update_effective_replay_gain();
         self.sync_smtc_state();
 
@@ -973,6 +1034,7 @@ impl LunulaApp {
         self.current_track = track;
         self.current_time = 0.0;
         self.is_playing = true;
+        self.trigger_background_peak_scan(&self.current_track);
         self.current_cover_bytes = self.current_track.file_path.as_ref().and_then(|p| {
             crate::scanner::extract_album_art(p)
         });
@@ -1349,8 +1411,8 @@ impl LunulaApp {
 
     pub fn update_signal_nodes_from_report(&mut self, report: &crate::audio::SignalPathReport) {
         for node in &mut self.nodes {
-            match node.id {
-                1 => {
+            match node.node_type {
+                NodeType::Source => {
                     node.title = "FILE SOURCE".to_string();
                     let bit_depth_str = if report.source_bit_depth > 0 {
                         format!("{}-bit", report.source_bit_depth)
@@ -1358,14 +1420,19 @@ impl LunulaApp {
                         "Audio".to_string()
                     };
                     node.sub1 = format!("{} {}", self.current_track.format, bit_depth_str);
-                    node.sub2 = format!("{:.1} kHz", report.source_rate as f32 / 1000.0);
+                    if let Some(peak) = self.current_track.replay_gain.track_peak {
+                        let peak_db = 20.0 * peak.max(1e-5).log10();
+                        node.sub2 = format!("{:.1} kHz • Peak {:.1}dB", report.source_rate as f32 / 1000.0, peak_db);
+                    } else {
+                        node.sub2 = format!("{:.1} kHz", report.source_rate as f32 / 1000.0);
+                    }
                 }
-                2 => {
+                NodeType::Buffer => {
                     node.title = "RAM BUFFER".to_string();
                     node.sub1 = "RingBuffer".to_string();
                     node.sub2 = "100% Loaded".to_string();
                 }
-                4 => {
+                NodeType::Driver => {
                     node.title = "APP RESAMPLER".to_string();
                     node.sub1 = report.device_name.clone();
                     if report.is_exclusive {
@@ -1376,7 +1443,7 @@ impl LunulaApp {
                         node.sub2 = format!("1:1 Native Rate • {:.1} kHz", report.device_rate as f32 / 1000.0);
                     }
                 }
-                5 => {
+                NodeType::Endpoint => {
                     node.title = "OUTPUT DAC".to_string();
                     node.sub1 = report.device_name.clone();
                     node.sub2 = format!("{} • {:.1} kHz", report.format_desc, report.device_rate as f32 / 1000.0);
@@ -1439,8 +1506,8 @@ impl LunulaApp {
         } else {
             let dev_name = self.selected_output_device.clone().unwrap_or_else(|| "Default Audio Endpoint".to_string());
             for n in &mut self.nodes {
-                match n.id {
-                    4 => {
+                match n.node_type {
+                    NodeType::Driver => {
                         n.title = "APP RESAMPLER".to_string();
                         n.sub1 = dev_name.clone();
                         match mode {
@@ -1455,7 +1522,7 @@ impl LunulaApp {
                             }
                         }
                     }
-                    5 => {
+                    NodeType::Endpoint => {
                         n.title = "OUTPUT DAC".to_string();
                         n.sub1 = dev_name.clone();
                         n.sub2 = match mode {
@@ -1570,6 +1637,9 @@ impl LunulaApp {
     #[inline]
     pub fn invalidate_chain_cache(&self) {
         self.chain_eval_dirty.set(true);
+        self.static_analysis_dirty.set(true);
+        *self.cached_chain_eval.borrow_mut() = None;
+        *self.cached_static_analysis.borrow_mut() = None;
     }
 
     #[inline]
@@ -1591,6 +1661,194 @@ impl LunulaApp {
         *self.cached_chain_eval.borrow_mut() = Some(eval.clone());
         self.chain_eval_dirty.set(false);
         eval
+    }
+
+    /// Real-time static dataflow analysis (Abstract Interpretation) for the current modular patchbay DAG.
+    /// Incorporates the active track's peak level and effective ReplayGain to provide context-aware headroom calculation.
+    /// Returns cached report if graph topology, parameters, and audio context have not changed, or freshly computes it.
+    pub fn get_static_analysis(&self) -> crate::audio::GraphAnalysisReport {
+        if !self.static_analysis_dirty.get() {
+            if let Some(ref report) = *self.cached_static_analysis.borrow() {
+                return report.clone();
+            }
+        }
+
+        let (source_interval, track_title) = {
+            let track = &self.current_track;
+            if track.duration > 0.0 || track.file_path.is_some() {
+                let raw_peak = track.replay_gain.track_peak
+                    .or(track.replay_gain.album_peak);
+                
+                if let Some(peak) = raw_peak {
+                    if peak > 0.0 {
+                        let eff_lin = if self.replay_gain_mode != crate::models::ReplayGainMode::Disabled {
+                            self.effective_replay_gain_linear
+                        } else {
+                            1.0
+                        };
+                        let actual_peak = (peak * eff_lin).max(0.001);
+                        let interval = crate::audio::AmplitudeInterval::symmetric(actual_peak);
+                        (interval, Some(track.title.clone()))
+                    } else {
+                        (crate::audio::AmplitudeInterval::FULL_SCALE, Some(track.title.clone()))
+                    }
+                } else {
+                    (crate::audio::AmplitudeInterval::FULL_SCALE, Some(track.title.clone()))
+                }
+            } else {
+                (crate::audio::AmplitudeInterval::FULL_SCALE, None)
+            }
+        };
+
+        let graph = self.compile_signal_chain();
+        let report = crate::audio::analyze_signal_chain_advanced(
+            &graph,
+            source_interval,
+            track_title,
+            self.clipping_threshold_db,
+            self.clipping_detection_enabled,
+        );
+        *self.cached_static_analysis.borrow_mut() = Some(report.clone());
+        self.static_analysis_dirty.set(false);
+        report
+    }
+
+    /// Updates a node's parameter, subtitle text formatting, invalidates signal cache,
+    /// and dispatches the new parameter to the running DSP audio engine.
+    pub fn update_node_parameter(&mut self, node_id: usize, new_val: f32) {
+        if let Some(n) = self.nodes.iter_mut().find(|n| n.id == node_id) {
+            n.param_val = new_val;
+            match n.node_type {
+                NodeType::LowPassFilter | NodeType::HighPassFilter => {
+                    n.sub1 = if new_val >= 1000.0 {
+                        format!("Cutoff {:.1} kHz", new_val / 1000.0)
+                    } else {
+                        format!("Cutoff {:.0} Hz", new_val)
+                    };
+                }
+                NodeType::BandPassFilter => {
+                    n.sub1 = if new_val >= 1000.0 {
+                        format!("Center {:.1} kHz", new_val / 1000.0)
+                    } else {
+                        format!("Center {:.0} Hz", new_val)
+                    };
+                }
+                NodeType::Crossover => {
+                    n.sub1 = if new_val >= 1000.0 {
+                        format!("X-Over {:.1} kHz", new_val / 1000.0)
+                    } else {
+                        format!("X-Over {:.0} Hz", new_val)
+                    };
+                }
+                NodeType::Mixer => {
+                    let a_pct = (1.0 - new_val) * 100.0;
+                    let b_pct = new_val * 100.0;
+                    n.sub1 = format!("Mix: {:.0}% A • {:.0}% B", a_pct, b_pct);
+                }
+                NodeType::TubeWarmer => {
+                    n.sub1 = format!("Warmth {:.0}%", new_val);
+                }
+                NodeType::StereoWidener => {
+                    n.sub1 = format!("+{:.0}% Soundstage", new_val);
+                }
+                NodeType::VolumeBooster => {
+                    n.sub1 = format!("+{:.1} dB Gain", new_val);
+                }
+                NodeType::AnalogPreamp => {
+                    n.sub1 = format!("{:+0.1} dB Drive", new_val);
+                }
+                NodeType::DynamicLoudness => {
+                    n.sub1 = format!("Loudness {:.0}%", new_val);
+                }
+                NodeType::SteppedAttenuator => {
+                    n.sub1 = format!("{:.0} dB", new_val);
+                }
+                NodeType::OpticalLeveler => {
+                    n.sub1 = format!("Peak Red {:.0}%", new_val);
+                }
+                NodeType::StereoBalance => {
+                    if new_val.abs() < 1.0 {
+                        n.sub1 = "Center 0.0 dB".to_string();
+                    } else if new_val < 0.0 {
+                        n.sub1 = format!("L {:.0}% / R {:.0}%", 50.0 + new_val.abs() * 0.5, 50.0 - new_val.abs() * 0.5);
+                    } else {
+                        n.sub1 = format!("L {:.0}% / R {:.0}%", 50.0 - new_val * 0.5, 50.0 + new_val * 0.5);
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.invalidate_chain_cache();
+        if let Some(ref engine) = self.audio_engine {
+            engine.set_node_param(node_id as u32, 0, new_val);
+        }
+    }
+
+    /// Automatically remedies headroom deficit or clipping hazard on a specific node.
+    /// Adjusts gain, drive, or stereo width to safe levels, or engages output soft limiter.
+    pub fn apply_auto_fix_for_node(&mut self, node_id: usize) -> bool {
+        let report = self.get_static_analysis();
+        let r = match report.get_node_report(node_id as u32) {
+            Some(report) => report.clone(),
+            None => return false,
+        };
+
+        let node_type = match self.nodes.iter().find(|n| n.id == node_id) {
+            Some(n) => n.node_type.clone(),
+            None => return false,
+        };
+        let current_param = self.nodes.iter().find(|n| n.id == node_id).map(|n| n.param_val).unwrap_or(0.0);
+        let deficit = r.headroom_deficit_db;
+
+        match node_type {
+            NodeType::VolumeBooster => {
+                let safe_val = (current_param - deficit).max(0.0);
+                self.update_node_parameter(node_id, safe_val);
+                self.save_library_state();
+                true
+            }
+            NodeType::AnalogPreamp => {
+                let safe_val = (current_param - deficit).clamp(-24.0, 12.0);
+                self.update_node_parameter(node_id, safe_val);
+                self.save_library_state();
+                true
+            }
+            NodeType::StereoWidener => {
+                let current_width = 1.0 + (current_param / 100.0);
+                let attenuation_factor = 10.0f32.powf(-deficit / 20.0);
+                let target_width = (current_width * attenuation_factor).max(1.0);
+                let safe_val = ((target_width - 1.0) * 100.0).clamp(0.0, 100.0);
+                self.update_node_parameter(node_id, safe_val);
+                self.save_library_state();
+                true
+            }
+            _ => {
+                if !self.eq_limiter_enabled {
+                    self.eq_limiter_enabled = true;
+                    self.save_library_state();
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    /// Automatically applies remedies to all culprit nodes across the signal chain.
+    /// Returns the number of modules adjusted.
+    pub fn apply_all_headroom_auto_fixes(&mut self) -> usize {
+        let culprits = self.get_static_analysis().culprit_nodes.clone();
+        let mut fixed_count = 0;
+        for c_id in culprits {
+            if self.apply_auto_fix_for_node(c_id as usize) {
+                fixed_count += 1;
+            }
+        }
+        if fixed_count > 0 {
+            self.invalidate_chain_cache();
+            self.save_library_state();
+        }
+        fixed_count
     }
 
     fn compute_evaluate_signal_chain(&self) -> crate::models::ChainEvaluation {
@@ -2028,6 +2286,26 @@ impl eframe::App for LunulaApp {
                 pending.remove(&result.key);
             }
             ctx.request_repaint();
+        }
+
+        // Drain scanned track peaks from background peak scanner
+        let mut peak_received = false;
+        while let Ok((path, peak)) = self.peak_scan_rx.try_recv() {
+            if self.current_track.file_path.as_deref() == Some(&path) {
+                self.current_track.replay_gain.track_peak = Some(peak);
+                self.update_effective_replay_gain();
+                self.invalidate_chain_cache();
+            }
+            for t in self.playlist.iter_mut() {
+                if t.file_path.as_deref() == Some(&path) {
+                    t.replay_gain.track_peak = Some(peak);
+                }
+            }
+            peak_received = true;
+            ctx.request_repaint();
+        }
+        if peak_received {
+            self.save_library_state();
         }
 
         // Poll background library scanner channel
@@ -2930,6 +3208,19 @@ impl eframe::App for LunulaApp {
                                                         if ui.button(tut_text).on_hover_text("Buka modul tutorial bergambar cara kerja Signal Chain Studio").clicked() {
                                                             self.show_patchbay_tutorial = !self.show_patchbay_tutorial;
                                                         }
+
+                                                        let guard_text = if !self.clipping_detection_enabled {
+                                                            egui::RichText::new("🛡️ Guard: OFF").size(12.0).color(Color32::from_rgb(148, 163, 184))
+                                                        } else if self.clipping_threshold_db < -0.05 {
+                                                            egui::RichText::new(format!("🛡️ Guard: Strict ({:+.1} dB)", self.clipping_threshold_db)).size(12.0).strong().color(Color32::from_rgb(59, 130, 246))
+                                                        } else if self.clipping_threshold_db > 0.05 {
+                                                            egui::RichText::new(format!("🛡️ Guard: Relaxed ({:+.1} dB)", self.clipping_threshold_db)).size(12.0).strong().color(Color32::from_rgb(168, 85, 247))
+                                                        } else {
+                                                            egui::RichText::new("🛡️ Guard: 0 dB").size(12.0).strong().color(Color32::from_rgb(16, 185, 129))
+                                                        };
+                                                        if ui.button(guard_text).on_hover_text("Atur sensitivitas deteksi clipping & margin headroom aman atau nonaktifkan peringatan").clicked() {
+                                                            self.show_clipping_settings_popup = !self.show_clipping_settings_popup;
+                                                        }
                                                     });
                                                 });
 
@@ -2983,6 +3274,21 @@ impl eframe::App for LunulaApp {
                                                                 .size(12.0)
                                                                 .color(Color32::from_rgb(100, 116, 139)),
                                                         );
+
+                                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                            let guard_text = if !self.clipping_detection_enabled {
+                                                                egui::RichText::new("🛡️ Guard: OFF").size(12.0).color(Color32::from_rgb(148, 163, 184))
+                                                            } else if self.clipping_threshold_db < -0.05 {
+                                                                egui::RichText::new(format!("🛡️ Guard: Strict ({:+.1} dB)", self.clipping_threshold_db)).size(12.0).strong().color(Color32::from_rgb(59, 130, 246))
+                                                            } else if self.clipping_threshold_db > 0.05 {
+                                                                egui::RichText::new(format!("🛡️ Guard: Relaxed ({:+.1} dB)", self.clipping_threshold_db)).size(12.0).strong().color(Color32::from_rgb(168, 85, 247))
+                                                            } else {
+                                                                egui::RichText::new("🛡️ Guard: 0 dB").size(12.0).strong().color(Color32::from_rgb(16, 185, 129))
+                                                            };
+                                                            if ui.button(guard_text).on_hover_text("Atur sensitivitas deteksi clipping & margin headroom aman atau nonaktifkan peringatan").clicked() {
+                                                                self.show_clipping_settings_popup = !self.show_clipping_settings_popup;
+                                                            }
+                                                        });
                                                     });
                                                     ui.add_space(3.0);
                                                     let studio_canvas_size = ui.available_size();
@@ -3790,6 +4096,322 @@ mod tests {
         app.repeat_mode = RepeatMode::One;
         let peek_repeat_one = app.peek_next_track();
         assert_eq!(peek_repeat_one.map(|t| t.title), Some("Song 1".to_string()));
+    }
+
+    #[test]
+    fn test_static_analysis_default_chain_is_safe_and_cached() {
+        let app = LunulaApp::new_standalone();
+        let report1 = app.get_static_analysis();
+        assert!(report1.is_chain_safe, "Default chain must have 0% clipping risk");
+        assert_eq!(report1.culprit_nodes.len(), 0);
+        assert!(report1.max_peak_dbfs <= 0.0);
+
+        // Verify cached report is identical
+        let report2 = app.get_static_analysis();
+        assert_eq!(report1, report2);
+    }
+
+    #[test]
+    fn test_static_analysis_booster_triggers_culprit_and_hot_edge() {
+        use crate::audio::NodeSafetyStatus;
+
+        let mut app = LunulaApp::new_standalone();
+        // Insert Volume Booster (+6.0 dB) between Buffer (2) and Resampler (4)
+        let booster_id = 100;
+        app.nodes.push(ModularNode {
+            id: booster_id,
+            node_type: NodeType::VolumeBooster,
+            title: "⚡ VOLUME BOOSTER".to_string(),
+            sub1: "+6.0 dB Gain".to_string(),
+            sub2: "Pure Clean Amp".to_string(),
+            pos: egui::Pos2::new(100.0, 100.0),
+            is_removable: true,
+            param_val: 6.0,
+        });
+
+        // Reconnect: 1 -> 2 -> booster -> 4 -> 5
+        app.connections.retain(|c| !(c.from_node == 2 && c.to_node == 4));
+        app.connections.push(CableConnection::new(2, booster_id));
+        app.connections.push(CableConnection::new(booster_id, 4));
+        app.invalidate_chain_cache();
+
+        let report = app.get_static_analysis();
+        assert!(!report.is_chain_safe, "Chain with +6 dB booster without limiter must be flagged unsafe");
+        assert!(report.culprit_nodes.contains(&(booster_id as u32)));
+
+        let booster_rep = report.get_node_report(booster_id as u32).expect("Booster report must exist");
+        assert!(booster_rep.is_culprit);
+        assert_eq!(booster_rep.status, NodeSafetyStatus::OriginOfClipping);
+        assert!(booster_rep.headroom_deficit_db > 5.9);
+
+        // Resampler (4) and DAC (5) are downstream victims
+        let node4_rep = report.get_node_report(4).expect("Node 4 report must exist");
+        assert_eq!(node4_rep.status, NodeSafetyStatus::OverdrivenDownstream);
+
+        // Cable from booster to node 4 is hot
+        assert!(report.is_edge_hot(booster_id as u32, 0, 4, 0));
+    }
+
+    #[test]
+    fn test_static_analysis_cache_invalidation_after_preset_load() {
+        let mut app = LunulaApp::new_standalone();
+        
+        // 1. Initial state: run evaluate_signal_chain then get_static_analysis (just like canvas does)
+        let eval1 = app.evaluate_signal_chain();
+        assert!(eval1.is_complete);
+        let report1 = app.get_static_analysis();
+        assert!(report1.is_chain_safe, "Initial clean chain must be safe");
+
+        // 2. Load "Tes Clipping" preset
+        crate::preset::ensure_default_factory_presets();
+        let presets_dir = crate::preset::get_presets_dir();
+        let clip_path = presets_dir.join("Tes Clipping.lnl");
+        let _ = app.load_preset_file(&clip_path, None).expect("load Tes Clipping");
+
+        // 3. Canvas sequence: evaluate_signal_chain() runs FIRST, then get_static_analysis()
+        let eval2 = app.evaluate_signal_chain();
+        assert!(eval2.is_complete);
+        let report2 = app.get_static_analysis();
+
+        // 4. MUST NOT be stale! Must detect the clipping hazard
+        assert!(!report2.is_chain_safe, "After loading Tes Clipping, static analysis must flag unsafe");
+        assert!(report2.culprit_nodes.contains(&6), "Node 6 (Volume Booster) must be marked culprit");
+        assert!(report2.max_headroom_deficit_db > 7.0, "Headroom deficit must be > 7 dB");
+        assert!(report2.is_edge_hot(6, 0, 7, 0), "Edge 6 -> 7 must be hot");
+    }
+
+    #[test]
+    fn test_static_analysis_context_aware_with_active_track() {
+        let mut app = LunulaApp::new_standalone();
+
+        // 1. Insert Stereo Widener (+1% width) between Buffer (2) and Resampler (4)
+        let widener_id = 100;
+        app.nodes.push(ModularNode {
+            id: widener_id,
+            node_type: NodeType::StereoWidener,
+            title: "🌐 STEREO WIDENER".to_string(),
+            sub1: "Width +1%".to_string(),
+            sub2: "Haas 3D".to_string(),
+            pos: egui::Pos2::new(100.0, 100.0),
+            is_removable: true,
+            param_val: 1.0, // +1% width -> 1.01x
+        });
+        app.connections.retain(|c| !(c.from_node == 2 && c.to_node == 4));
+        app.connections.push(CableConnection::new(2, widener_id));
+        app.connections.push(CableConnection::new(widener_id, 4));
+        app.invalidate_chain_cache();
+
+        // 2. Under pure conservative full-scale (no active track peak), +1% exceeds 0 dBFS!
+        let report_worst = app.get_static_analysis();
+        assert!(!report_worst.is_chain_safe, "Worst-case analysis without track peak flags +1% as hot");
+        assert!(report_worst.culprit_nodes.contains(&(widener_id as u32)));
+
+        // 3. Load active track with measured track_peak = 0.707 (-3.0 dBFS)
+        app.current_track.duration = 240.0;
+        app.current_track.title = "Acoustic Melody".to_string();
+        app.current_track.replay_gain.track_peak = Some(0.707);
+        app.update_effective_replay_gain();
+
+        // Now static analysis incorporates the song's context:
+        // 0.707 * 1.01 = 0.714 <= 1.0 (-2.92 dBFS). MUST BE 100% SAFE!
+        let report_context = app.get_static_analysis();
+        assert!(report_context.is_chain_safe, "With -3 dBFS track, widener +1% must be completely safe!");
+        assert_eq!(report_context.culprit_nodes.len(), 0);
+        assert!(!report_context.is_edge_hot(widener_id as u32, 0, 4, 0), "Edge must NOT be hot");
+        assert_eq!(report_context.context_track_title.as_deref(), Some("Acoustic Melody"));
+        assert!(report_context.context_peak_dbfs.unwrap() < -2.9);
+
+        // 4. If width is increased to +50% (1.50x):
+        // 0.707 * 1.50 = 1.0605 > 1.0 (+0.51 dBFS). Headroom exceeded -> flags unsafe!
+        if let Some(w_node) = app.nodes.iter_mut().find(|n| n.id == widener_id) {
+            w_node.param_val = 50.0;
+        }
+        app.invalidate_chain_cache();
+        let report_wide = app.get_static_analysis();
+        assert!(!report_wide.is_chain_safe, "With +50% width on 0.707 track, headroom is exhausted");
+        assert!(report_wide.culprit_nodes.contains(&(widener_id as u32)));
+
+        // 5. Enabling ReplayGain attenuation restores safe headroom:
+        app.replay_gain_mode = crate::models::ReplayGainMode::Track;
+        app.current_track.replay_gain.track_gain_db = Some(-3.0);
+        app.update_effective_replay_gain();
+        let report_rg = app.get_static_analysis();
+        assert!(report_rg.is_chain_safe, "ReplayGain attenuation (+3 dB extra headroom) restores safe status!");
+    }
+
+    #[test]
+    fn test_canvas_tooltip_and_interactions_suppressed_when_modal_active() {
+        let ctx = egui::Context::default();
+        ctx.style_mut_of(egui::Theme::Light, |s| s.interaction.tooltip_delay = 0.0);
+        ctx.style_mut_of(egui::Theme::Dark, |s| s.interaction.tooltip_delay = 0.0);
+        let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0)));
+        let mut app = LunulaApp::default();
+        app.current_tab = AppTab::SignalChain;
+
+        // Find File Source node position
+        let source_pos = app.nodes.iter().find(|n| n.id == 1).map(|n| n.pos).unwrap();
+        let hover_pos = egui::pos2(source_pos.x + 30.0, source_pos.y + 30.0);
+
+        // Case A: When Studio Theater modal is open, is_modal_or_overlay_active MUST be true
+        app.show_interactive_theater = true;
+        assert!(app.is_modal_or_overlay_active(), "Interactive Theater must be recognized as active modal");
+
+        let mut out_modal = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: screen,
+                time: Some(0.1),
+                events: vec![egui::Event::PointerMoved(hover_pos)],
+                ..Default::default()
+            },
+            |ui| {
+                app.render_modular_patchbay_canvas(ui, egui::vec2(800.0, 600.0));
+            },
+        );
+        fn collect_shape_texts(shape: &egui::epaint::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::epaint::Shape::Text(t) => out.push(t.galley.job.text.clone()),
+                egui::epaint::Shape::Vec(shapes) => {
+                    for s in shapes {
+                        collect_shape_texts(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut texts_modal = Vec::new();
+        for s in &out_modal.shapes {
+            collect_shape_texts(&s.shape, &mut texts_modal);
+        }
+        let has_leaked_tooltip = texts_modal.iter().any(|t| t.contains("KONTEKS AUDIO"));
+        out_modal.textures_delta.clear();
+        assert!(!has_leaked_tooltip, "File Source tooltip MUST NOT bleed through when modal is active!");
+
+        // Case B: When modal is closed, hovering File Source MUST show tooltip cleanly
+        app.show_interactive_theater = false;
+        assert!(!app.is_modal_or_overlay_active());
+
+        // Prime the hover
+        let mut out_prime = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: screen,
+                time: Some(0.2),
+                events: vec![egui::Event::PointerMoved(hover_pos)],
+                ..Default::default()
+            },
+            |ui| {
+                app.render_modular_patchbay_canvas(ui, egui::vec2(800.0, 600.0));
+            },
+        );
+        out_prime.textures_delta.clear();
+
+        let mut out_clean = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: screen,
+                time: Some(2.0),
+                ..Default::default()
+            },
+            |ui| {
+                app.render_modular_patchbay_canvas(ui, egui::vec2(800.0, 600.0));
+            },
+        );
+        let mut texts_clean = Vec::new();
+        for s in &out_clean.shapes {
+            collect_shape_texts(&s.shape, &mut texts_clean);
+        }
+        let has_tooltip_now = texts_clean.iter().any(|t| t.contains("KONTEKS AUDIO"));
+        out_clean.textures_delta.clear();
+        assert!(has_tooltip_now, "File Source tooltip MUST appear normally when no modal is active!");
+    }
+
+    #[test]
+    fn test_clipping_detection_toggle_and_threshold_controls_in_app() {
+        let mut app = LunulaApp::new_standalone();
+        app.show_interactive_theater = false;
+        app.set_chain_mode(ChainMode::DspActive);
+
+        // Insert high gain Volume Booster (+12 dB)
+        app.add_modular_filter(NodeType::VolumeBooster);
+        let booster_id = app.nodes.iter().find(|n| n.node_type == NodeType::VolumeBooster).map(|n| n.id).unwrap();
+        if let Some(b) = app.nodes.iter_mut().find(|n| n.id == booster_id) {
+            b.param_val = 12.0;
+        }
+
+        // Connect 2 -> Booster -> 4
+        app.connections.retain(|c| !(c.from_node == 2 && c.to_node == 4));
+        app.connections.push(CableConnection::new(2, booster_id));
+        app.connections.push(CableConnection::new(booster_id, 4));
+        app.invalidate_chain_cache();
+
+        // 1. By default: detection is enabled, threshold is 0.0 dBFS -> flags unsafe!
+        assert!(app.clipping_detection_enabled);
+        assert_eq!(app.clipping_threshold_db, 0.0);
+        let rep1 = app.get_static_analysis();
+        assert!(!rep1.is_chain_safe);
+        assert!(rep1.culprit_nodes.contains(&(booster_id as u32)));
+
+        // 2. Turning detection OFF -> Chain becomes 100% safe, no culprits or hot cables
+        app.clipping_detection_enabled = false;
+        app.invalidate_chain_cache();
+        let rep2 = app.get_static_analysis();
+        assert!(rep2.is_chain_safe, "Disabling clipping detection must mark signal chain as safe");
+        assert_eq!(rep2.culprit_nodes.len(), 0);
+        assert!(!rep2.is_edge_hot(booster_id as u32, 0, 4, 0));
+
+        // 3. Turning detection back ON, but setting threshold to +15.0 dBFS (Relaxed beyond +12dB) -> SAFE!
+        app.clipping_detection_enabled = true;
+        app.clipping_threshold_db = 15.0;
+        app.invalidate_chain_cache();
+        let rep3 = app.get_static_analysis();
+        assert!(rep3.is_chain_safe, "Setting threshold higher than booster peak must be safe");
+        assert_eq!(rep3.culprit_nodes.len(), 0);
+
+        // 4. Test headless rendering of the clipping settings floating popup
+        let ctx = egui::Context::default();
+        let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0)));
+        app.show_clipping_settings_popup = true;
+
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: screen,
+                time: Some(0.1),
+                ..Default::default()
+            },
+            |ui| {
+                app.render_modular_patchbay_canvas(ui, egui::vec2(800.0, 600.0));
+            },
+        );
+        out.textures_delta.clear();
+        assert!(app.show_clipping_settings_popup);
+
+        // 5. Test 1-Click Auto-Fix functionality:
+        // Reset threshold to 0.0 dBFS so booster (+12dB) is unsafe again
+        app.clipping_threshold_db = 0.0;
+        app.invalidate_chain_cache();
+        assert!(!app.get_static_analysis().is_chain_safe);
+
+        // Apply auto-fix on the booster node
+        let fixed = app.apply_auto_fix_for_node(booster_id);
+        assert!(fixed, "Auto-fix must succeed on culprit booster node");
+
+        // Booster gain must have been pulled back to 0.0 dB (safe headroom)
+        let booster_node = app.nodes.iter().find(|n| n.id == booster_id).unwrap();
+        assert_eq!(booster_node.param_val, 0.0);
+        assert!(booster_node.sub1.contains("+0.0 dB Gain"));
+
+        // Chain is now 100% safe
+        assert!(app.get_static_analysis().is_chain_safe);
+        assert_eq!(app.get_static_analysis().culprit_nodes.len(), 0);
+
+        // Test apply_all_headroom_auto_fixes on multiple culprit nodes
+        if let Some(b) = app.nodes.iter_mut().find(|n| n.id == booster_id) {
+            b.param_val = 6.0;
+        }
+        app.invalidate_chain_cache();
+        assert!(!app.get_static_analysis().is_chain_safe);
+        let fixed_count = app.apply_all_headroom_auto_fixes();
+        assert_eq!(fixed_count, 1);
+        assert!(app.get_static_analysis().is_chain_safe);
     }
 }
 

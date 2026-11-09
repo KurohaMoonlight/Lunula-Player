@@ -1197,18 +1197,109 @@ pub fn get_presets_dir() -> PathBuf {
     dir
 }
 
-/// Pre-populates the local preset folder with standard Lunula factory presets if empty
+/// Pre-populates the local preset folder with standard Lunula factory presets
 pub fn ensure_default_factory_presets() {
     let dir = get_presets_dir();
-    let sample_file = dir.join("Warm Studio Master.lnl");
-    if sample_file.exists() {
+    let marker = dir.join(".v111_factory_clean_v3");
+    if marker.exists() {
         return;
     }
+    let _ = std::fs::create_dir_all(&dir);
 
-    let warm_master = SignalChainPreset {
+    let write_factory = |p: SignalChainPreset| {
+        let path = dir.join(format!("{}.lnl", p.name));
+        if let Ok(content) = p.to_lnl_string(None) {
+            let _ = std::fs::write(&path, content);
+        }
+    };
+
+    // 1. Tes Clipping (Demo Headroom & Static Analysis Clipping Risk)
+    write_factory(SignalChainPreset {
+        name: "Tes Clipping".to_string(),
+        author: "Lunula Sound Lab".to_string(),
+        description: "Preset demonstrasi static analysis: Volume Booster (+8 dB) dan Stereo Widener (+60%) memicu sinyal panas melampaui 0 dBFS.".to_string(),
+        created_at: 1794163000,
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        chain_mode: ChainMode::DspActive,
+        studio_mode: StudioMode::Simple,
+        nodes: vec![
+            PresetNode {
+                id: 1,
+                node_type: NodeType::Source,
+                title: "FILE SOURCE".to_string(),
+                sub1: "Lossless Audio".to_string(),
+                sub2: "Master Bitstream".to_string(),
+                pos: [30.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 2,
+                node_type: NodeType::Buffer,
+                title: "RAM BUFFER".to_string(),
+                sub1: "RingBuffer".to_string(),
+                sub2: "100% Loaded".to_string(),
+                pos: [270.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 6,
+                node_type: NodeType::VolumeBooster,
+                title: "⚡ VOLUME BOOSTER".to_string(),
+                sub1: "+8.0 dB Gain".to_string(),
+                sub2: "Pure Clean Amp".to_string(),
+                pos: [320.0, 205.0],
+                is_removable: true,
+                param_val: 8.0,
+            },
+            PresetNode {
+                id: 7,
+                node_type: NodeType::StereoWidener,
+                title: "🌐 STEREO WIDENER".to_string(),
+                sub1: "Haas Effect 3D".to_string(),
+                sub2: "+60% Soundstage".to_string(),
+                pos: [560.0, 205.0],
+                is_removable: true,
+                param_val: 60.0,
+            },
+            PresetNode {
+                id: 4,
+                node_type: NodeType::Driver,
+                title: "APP RESAMPLER".to_string(),
+                sub1: "System Audio Endpoint".to_string(),
+                sub2: "Rubato Sinc SRC • 48.0 kHz".to_string(),
+                pos: [810.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 5,
+                node_type: NodeType::Endpoint,
+                title: "OUTPUT DAC".to_string(),
+                sub1: "Audio Endpoint".to_string(),
+                sub2: "Native Sample Rate".to_string(),
+                pos: [1050.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+        ],
+        connections: vec![
+            CableConnection::new(1, 2),
+            CableConnection::new(2, 6),
+            CableConnection::new(6, 7),
+            CableConnection::new(7, 4),
+            CableConnection::new(4, 5),
+        ],
+        active_eq: None,
+        advance_studio_dither_mode: 0,
+    });
+
+    // 2. Warm Studio Master (Vintage Triode Tube + Stereo Widener)
+    write_factory(SignalChainPreset {
         name: "Warm Studio Master".to_string(),
         author: "Lunula Sound Lab".to_string(),
-        description: "Vintage tube warmth with enhanced stereophonic soundstage for immersive listening.".to_string(),
+        description: "Vintage triode 12AX7 tube warmth dengan pelebaran stereo stage alami untuk pengalaman mendengarkan yang hangat dan imersif.".to_string(),
         created_at: 1794163200,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         chain_mode: ChainMode::DspActive,
@@ -1220,59 +1311,77 @@ pub fn ensure_default_factory_presets() {
                 title: "FILE SOURCE".to_string(),
                 sub1: "Lossless Audio".to_string(),
                 sub2: "Master Bitstream".to_string(),
-                pos: [30.0, 80.0],
+                pos: [30.0, 60.0],
                 is_removable: false,
                 param_val: 0.0,
             },
             PresetNode {
-                id: 5,
+                id: 2,
+                node_type: NodeType::Buffer,
+                title: "RAM BUFFER".to_string(),
+                sub1: "RingBuffer".to_string(),
+                sub2: "100% Loaded".to_string(),
+                pos: [270.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 6,
                 node_type: NodeType::TubeWarmer,
-                title: "Tube Warmer".to_string(),
-                sub1: "Vintage Triode".to_string(),
-                sub2: "35% Warmth".to_string(),
-                pos: [320.0, 80.0],
+                title: "🔥 TUBE WARMER".to_string(),
+                sub1: "Warmth 35%".to_string(),
+                sub2: "Triode 12AX7".to_string(),
+                pos: [320.0, 205.0],
                 is_removable: true,
                 param_val: 35.0,
             },
             PresetNode {
-                id: 6,
+                id: 7,
                 node_type: NodeType::StereoWidener,
-                title: "Stereo Widener".to_string(),
-                sub1: "Haas Effect".to_string(),
-                sub2: "+25% Stage".to_string(),
-                pos: [580.0, 80.0],
+                title: "🌐 STEREO WIDENER".to_string(),
+                sub1: "Haas Effect 3D".to_string(),
+                sub2: "+25% Soundstage".to_string(),
+                pos: [560.0, 205.0],
                 is_removable: true,
                 param_val: 25.0,
             },
             PresetNode {
                 id: 4,
+                node_type: NodeType::Driver,
+                title: "APP RESAMPLER".to_string(),
+                sub1: "System Audio Endpoint".to_string(),
+                sub2: "Rubato Sinc SRC • 48.0 kHz".to_string(),
+                pos: [810.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 5,
                 node_type: NodeType::Endpoint,
-                title: "DAC OUTPUT".to_string(),
-                sub1: "Hardware Line".to_string(),
-                sub2: "32-bit / 384kHz".to_string(),
-                pos: [840.0, 80.0],
+                title: "OUTPUT DAC".to_string(),
+                sub1: "Audio Endpoint".to_string(),
+                sub2: "Native Sample Rate".to_string(),
+                pos: [1050.0, 60.0],
                 is_removable: false,
                 param_val: 0.0,
             },
         ],
         connections: vec![
-            CableConnection::new(1, 5),
-            CableConnection::new(5, 6),
-            CableConnection::new(6, 4),
+            CableConnection::new(1, 2),
+            CableConnection::new(2, 6),
+            CableConnection::new(6, 7),
+            CableConnection::new(7, 4),
+            CableConnection::new(4, 5),
         ],
         active_eq: None,
         advance_studio_dither_mode: 0,
-    };
+    });
 
-    if let Ok(content) = warm_master.to_lnl_string(None) {
-        let _ = std::fs::write(&sample_file, content);
-    }
-
-    let acoustic_file = dir.join("Acoustic Vocal Intimacy.lnl");
-    let acoustic = SignalChainPreset {
+    // 3. Acoustic Vocal Intimacy (LA-2A Opto + Class-A Preamp)
+    write_factory(SignalChainPreset {
         name: "Acoustic Vocal Intimacy".to_string(),
         author: "Lunula Sound Lab".to_string(),
-        description: "Optical leveling compressor with subtle analog preamp saturation for natural vocal presence.".to_string(),
+        description: "Kompresi optik LA-2A halus dengan saturasi analog preamp Class-A untuk kehangatan vokal alami dan intim.".to_string(),
         created_at: 1794163300,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         chain_mode: ChainMode::DspActive,
@@ -1284,53 +1393,543 @@ pub fn ensure_default_factory_presets() {
                 title: "FILE SOURCE".to_string(),
                 sub1: "Lossless Audio".to_string(),
                 sub2: "Master Bitstream".to_string(),
-                pos: [30.0, 80.0],
+                pos: [30.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 2,
+                node_type: NodeType::Buffer,
+                title: "RAM BUFFER".to_string(),
+                sub1: "RingBuffer".to_string(),
+                sub2: "100% Loaded".to_string(),
+                pos: [270.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 6,
+                node_type: NodeType::OpticalLeveler,
+                title: "🎚️ OPTICAL LEVELER".to_string(),
+                sub1: "Peak Red 40%".to_string(),
+                sub2: "LA-2A Opto".to_string(),
+                pos: [320.0, 205.0],
+                is_removable: true,
+                param_val: 40.0,
+            },
+            PresetNode {
+                id: 7,
+                node_type: NodeType::AnalogPreamp,
+                title: "📻 ANALOG PREAMP".to_string(),
+                sub1: "0.0 dB Drive".to_string(),
+                sub2: "Class-A Warmth".to_string(),
+                pos: [560.0, 205.0],
+                is_removable: true,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 4,
+                node_type: NodeType::Driver,
+                title: "APP RESAMPLER".to_string(),
+                sub1: "System Audio Endpoint".to_string(),
+                sub2: "Rubato Sinc SRC • 48.0 kHz".to_string(),
+                pos: [810.0, 60.0],
                 is_removable: false,
                 param_val: 0.0,
             },
             PresetNode {
                 id: 5,
-                node_type: NodeType::OpticalLeveler,
-                title: "Optical Leveler".to_string(),
-                sub1: "LA-2A Opto Cell".to_string(),
-                sub2: "40% Peak Red".to_string(),
-                pos: [320.0, 80.0],
-                is_removable: true,
-                param_val: 40.0,
-            },
-            PresetNode {
-                id: 6,
-                node_type: NodeType::AnalogPreamp,
-                title: "Analog Preamp".to_string(),
-                sub1: "Class-A Console".to_string(),
-                sub2: "+2.0 dB".to_string(),
-                pos: [580.0, 80.0],
-                is_removable: true,
-                param_val: 2.0,
-            },
-            PresetNode {
-                id: 4,
                 node_type: NodeType::Endpoint,
-                title: "DAC OUTPUT".to_string(),
-                sub1: "Hardware Line".to_string(),
-                sub2: "32-bit / 384kHz".to_string(),
-                pos: [840.0, 80.0],
+                title: "OUTPUT DAC".to_string(),
+                sub1: "Audio Endpoint".to_string(),
+                sub2: "Native Sample Rate".to_string(),
+                pos: [1050.0, 60.0],
                 is_removable: false,
                 param_val: 0.0,
             },
         ],
         connections: vec![
-            CableConnection::new(1, 5),
-            CableConnection::new(5, 6),
-            CableConnection::new(6, 4),
+            CableConnection::new(1, 2),
+            CableConnection::new(2, 6),
+            CableConnection::new(6, 7),
+            CableConnection::new(7, 4),
+            CableConnection::new(4, 5),
         ],
         active_eq: None,
         advance_studio_dither_mode: 0,
-    };
+    });
 
-    if let Ok(content) = acoustic.to_lnl_string(None) {
-        let _ = std::fs::write(&acoustic_file, content);
-    }
+    // 4. Late Night Binaural (Loudness Contour + Stepped Attenuator)
+    write_factory(SignalChainPreset {
+        name: "Late Night Binaural".to_string(),
+        author: "Lunula Sound Lab".to_string(),
+        description: "ISO 226 loudness contour untuk menjaga kedalaman bass & treble saat volume rendah dengan peredam stepped attenuator transparan.".to_string(),
+        created_at: 1794163400,
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        chain_mode: ChainMode::DspActive,
+        studio_mode: StudioMode::Simple,
+        nodes: vec![
+            PresetNode {
+                id: 1,
+                node_type: NodeType::Source,
+                title: "FILE SOURCE".to_string(),
+                sub1: "Lossless Audio".to_string(),
+                sub2: "Master Bitstream".to_string(),
+                pos: [30.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 2,
+                node_type: NodeType::Buffer,
+                title: "RAM BUFFER".to_string(),
+                sub1: "RingBuffer".to_string(),
+                sub2: "100% Loaded".to_string(),
+                pos: [270.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 6,
+                node_type: NodeType::DynamicLoudness,
+                title: "🌙 DYNAMIC LOUDNESS".to_string(),
+                sub1: "Loudness 50%".to_string(),
+                sub2: "ISO 226 Contour".to_string(),
+                pos: [320.0, 205.0],
+                is_removable: true,
+                param_val: 50.0,
+            },
+            PresetNode {
+                id: 7,
+                node_type: NodeType::SteppedAttenuator,
+                title: "🪜 STEPPED ATTENUATOR".to_string(),
+                sub1: "-12 dB".to_string(),
+                sub2: "64-Step Resistor".to_string(),
+                pos: [560.0, 205.0],
+                is_removable: true,
+                param_val: -12.0,
+            },
+            PresetNode {
+                id: 4,
+                node_type: NodeType::Driver,
+                title: "APP RESAMPLER".to_string(),
+                sub1: "System Audio Endpoint".to_string(),
+                sub2: "Rubato Sinc SRC • 48.0 kHz".to_string(),
+                pos: [810.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 5,
+                node_type: NodeType::Endpoint,
+                title: "OUTPUT DAC".to_string(),
+                sub1: "Audio Endpoint".to_string(),
+                sub2: "Native Sample Rate".to_string(),
+                pos: [1050.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+        ],
+        connections: vec![
+            CableConnection::new(1, 2),
+            CableConnection::new(2, 6),
+            CableConnection::new(6, 7),
+            CableConnection::new(7, 4),
+            CableConnection::new(4, 5),
+        ],
+        active_eq: None,
+        advance_studio_dither_mode: 0,
+    });
+
+    // 5. Analog Vinyl Lounge (Subsonic Cut 35Hz + Vintage Tube)
+    write_factory(SignalChainPreset {
+        name: "Analog Vinyl Lounge".to_string(),
+        author: "Lunula Sound Lab".to_string(),
+        description: "High-pass subsonic cut (35 Hz) untuk memotong rumble piringan hitam dipadu saturasi tabung triode 12AX7 hangat.".to_string(),
+        created_at: 1794163500,
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        chain_mode: ChainMode::DspActive,
+        studio_mode: StudioMode::Simple,
+        nodes: vec![
+            PresetNode {
+                id: 1,
+                node_type: NodeType::Source,
+                title: "FILE SOURCE".to_string(),
+                sub1: "Lossless Audio".to_string(),
+                sub2: "Master Bitstream".to_string(),
+                pos: [30.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 2,
+                node_type: NodeType::Buffer,
+                title: "RAM BUFFER".to_string(),
+                sub1: "RingBuffer".to_string(),
+                sub2: "100% Loaded".to_string(),
+                pos: [270.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 6,
+                node_type: NodeType::HighPassFilter,
+                title: "🏔️ HIGH-PASS FILTER".to_string(),
+                sub1: "Cutoff 35 Hz".to_string(),
+                sub2: "Slope 12dB • Q 0.71".to_string(),
+                pos: [320.0, 205.0],
+                is_removable: true,
+                param_val: 35.0,
+            },
+            PresetNode {
+                id: 7,
+                node_type: NodeType::TubeWarmer,
+                title: "🔥 TUBE WARMER".to_string(),
+                sub1: "Warmth 40%".to_string(),
+                sub2: "Triode 12AX7".to_string(),
+                pos: [560.0, 205.0],
+                is_removable: true,
+                param_val: 40.0,
+            },
+            PresetNode {
+                id: 4,
+                node_type: NodeType::Driver,
+                title: "APP RESAMPLER".to_string(),
+                sub1: "System Audio Endpoint".to_string(),
+                sub2: "Rubato Sinc SRC • 48.0 kHz".to_string(),
+                pos: [810.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 5,
+                node_type: NodeType::Endpoint,
+                title: "OUTPUT DAC".to_string(),
+                sub1: "Audio Endpoint".to_string(),
+                sub2: "Native Sample Rate".to_string(),
+                pos: [1050.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+        ],
+        connections: vec![
+            CableConnection::new(1, 2),
+            CableConnection::new(2, 6),
+            CableConnection::new(6, 7),
+            CableConnection::new(7, 4),
+            CableConnection::new(4, 5),
+        ],
+        active_eq: None,
+        advance_studio_dither_mode: 0,
+    });
+
+    // 6. Radio Broadcast Master (HPF + LA-2A + Analog Preamp)
+    write_factory(SignalChainPreset {
+        name: "Radio Broadcast Master".to_string(),
+        author: "Lunula Sound Lab".to_string(),
+        description: "Rantai pemrosesan siaran radio FM dengan LA-2A opto leveling dan preamp konsol Class-A untuk vokal punchy dan terdefinisi.".to_string(),
+        created_at: 1794163600,
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        chain_mode: ChainMode::DspActive,
+        studio_mode: StudioMode::Simple,
+        nodes: vec![
+            PresetNode {
+                id: 1,
+                node_type: NodeType::Source,
+                title: "FILE SOURCE".to_string(),
+                sub1: "Lossless Audio".to_string(),
+                sub2: "Master Bitstream".to_string(),
+                pos: [30.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 2,
+                node_type: NodeType::Buffer,
+                title: "RAM BUFFER".to_string(),
+                sub1: "RingBuffer".to_string(),
+                sub2: "100% Loaded".to_string(),
+                pos: [270.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 6,
+                node_type: NodeType::HighPassFilter,
+                title: "🏔️ HIGH-PASS FILTER".to_string(),
+                sub1: "Cutoff 80 Hz".to_string(),
+                sub2: "Slope 12dB • Q 0.71".to_string(),
+                pos: [270.0, 205.0],
+                is_removable: true,
+                param_val: 80.0,
+            },
+            PresetNode {
+                id: 7,
+                node_type: NodeType::OpticalLeveler,
+                title: "🎚️ OPTICAL LEVELER".to_string(),
+                sub1: "Peak Red 50%".to_string(),
+                sub2: "LA-2A Opto".to_string(),
+                pos: [510.0, 205.0],
+                is_removable: true,
+                param_val: 50.0,
+            },
+            PresetNode {
+                id: 8,
+                node_type: NodeType::AnalogPreamp,
+                title: "📻 ANALOG PREAMP".to_string(),
+                sub1: "+1.0 dB Drive".to_string(),
+                sub2: "Class-A Warmth".to_string(),
+                pos: [750.0, 205.0],
+                is_removable: true,
+                param_val: 1.0,
+            },
+            PresetNode {
+                id: 4,
+                node_type: NodeType::Driver,
+                title: "APP RESAMPLER".to_string(),
+                sub1: "System Audio Endpoint".to_string(),
+                sub2: "Rubato Sinc SRC • 48.0 kHz".to_string(),
+                pos: [880.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 5,
+                node_type: NodeType::Endpoint,
+                title: "OUTPUT DAC".to_string(),
+                sub1: "Audio Endpoint".to_string(),
+                sub2: "Native Sample Rate".to_string(),
+                pos: [1120.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+        ],
+        connections: vec![
+            CableConnection::new(1, 2),
+            CableConnection::new(2, 6),
+            CableConnection::new(6, 7),
+            CableConnection::new(7, 8),
+            CableConnection::new(8, 4),
+            CableConnection::new(4, 5),
+        ],
+        active_eq: None,
+        advance_studio_dither_mode: 0,
+    });
+
+    // 7. Subwoofer Bass Guard (120 Hz Sub Cutoff)
+    write_factory(SignalChainPreset {
+        name: "Subwoofer Bass Guard".to_string(),
+        author: "Lunula Sound Lab".to_string(),
+        description: "Filter low-pass 120 Hz terdedikasi untuk saluran subwoofer dengan pemotongan frekuensi tinggi yang bersih.".to_string(),
+        created_at: 1794163700,
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        chain_mode: ChainMode::DspActive,
+        studio_mode: StudioMode::Simple,
+        nodes: vec![
+            PresetNode {
+                id: 1,
+                node_type: NodeType::Source,
+                title: "FILE SOURCE".to_string(),
+                sub1: "Lossless Audio".to_string(),
+                sub2: "Master Bitstream".to_string(),
+                pos: [30.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 2,
+                node_type: NodeType::Buffer,
+                title: "RAM BUFFER".to_string(),
+                sub1: "RingBuffer".to_string(),
+                sub2: "100% Loaded".to_string(),
+                pos: [270.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 6,
+                node_type: NodeType::LowPassFilter,
+                title: "🌊 LOW-PASS FILTER".to_string(),
+                sub1: "Cutoff 120 Hz".to_string(),
+                sub2: "Slope 12dB • Q 0.71".to_string(),
+                pos: [440.0, 205.0],
+                is_removable: true,
+                param_val: 120.0,
+            },
+            PresetNode {
+                id: 4,
+                node_type: NodeType::Driver,
+                title: "APP RESAMPLER".to_string(),
+                sub1: "System Audio Endpoint".to_string(),
+                sub2: "Rubato Sinc SRC • 48.0 kHz".to_string(),
+                pos: [680.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 5,
+                node_type: NodeType::Endpoint,
+                title: "OUTPUT DAC".to_string(),
+                sub1: "Audio Endpoint".to_string(),
+                sub2: "Native Sample Rate".to_string(),
+                pos: [920.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+        ],
+        connections: vec![
+            CableConnection::new(1, 2),
+            CableConnection::new(2, 6),
+            CableConnection::new(6, 4),
+            CableConnection::new(4, 5),
+        ],
+        active_eq: None,
+        advance_studio_dither_mode: 0,
+    });
+
+    // 8. Wide Holographic Stage (Stereo Widener + Stepped Attenuator Headroom Pad)
+    write_factory(SignalChainPreset {
+        name: "Wide Holographic Stage".to_string(),
+        author: "Lunula Sound Lab".to_string(),
+        description: "Pelebaran soundstage 3D Haas effect (+50%) dengan pengaman Stepped Attenuator (-3 dB) untuk menjaga headroom tetap aman dari clipping.".to_string(),
+        created_at: 1794163800,
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        chain_mode: ChainMode::DspActive,
+        studio_mode: StudioMode::Simple,
+        nodes: vec![
+            PresetNode {
+                id: 1,
+                node_type: NodeType::Source,
+                title: "FILE SOURCE".to_string(),
+                sub1: "Lossless Audio".to_string(),
+                sub2: "Master Bitstream".to_string(),
+                pos: [30.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 2,
+                node_type: NodeType::Buffer,
+                title: "RAM BUFFER".to_string(),
+                sub1: "RingBuffer".to_string(),
+                sub2: "100% Loaded".to_string(),
+                pos: [270.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 6,
+                node_type: NodeType::StereoWidener,
+                title: "🌐 STEREO WIDENER".to_string(),
+                sub1: "Haas Effect 3D".to_string(),
+                sub2: "+50% Soundstage".to_string(),
+                pos: [320.0, 205.0],
+                is_removable: true,
+                param_val: 50.0,
+            },
+            PresetNode {
+                id: 7,
+                node_type: NodeType::SteppedAttenuator,
+                title: "🪜 STEPPED ATTENUATOR".to_string(),
+                sub1: "-3 dB".to_string(),
+                sub2: "64-Step Resistor".to_string(),
+                pos: [560.0, 205.0],
+                is_removable: true,
+                param_val: -3.0,
+            },
+            PresetNode {
+                id: 4,
+                node_type: NodeType::Driver,
+                title: "APP RESAMPLER".to_string(),
+                sub1: "System Audio Endpoint".to_string(),
+                sub2: "Rubato Sinc SRC • 48.0 kHz".to_string(),
+                pos: [810.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 5,
+                node_type: NodeType::Endpoint,
+                title: "OUTPUT DAC".to_string(),
+                sub1: "Audio Endpoint".to_string(),
+                sub2: "Native Sample Rate".to_string(),
+                pos: [1050.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+        ],
+        connections: vec![
+            CableConnection::new(1, 2),
+            CableConnection::new(2, 6),
+            CableConnection::new(6, 7),
+            CableConnection::new(7, 4),
+            CableConnection::new(4, 5),
+        ],
+        active_eq: None,
+        advance_studio_dither_mode: 0,
+    });
+
+    // 9. Hi-Fi Direct Bit-Perfect (Pure Bitstream Passthrough)
+    write_factory(SignalChainPreset {
+        name: "Hi-Fi Direct Bit-Perfect".to_string(),
+        author: "Lunula Sound Lab".to_string(),
+        description: "Alur audio murni 1:1 bitstream langsung ke hardware DAC tanpa interpolasi maupun pemrosesan DSP.".to_string(),
+        created_at: 1794163900,
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        chain_mode: ChainMode::BitPerfect,
+        studio_mode: StudioMode::Simple,
+        nodes: vec![
+            PresetNode {
+                id: 1,
+                node_type: NodeType::Source,
+                title: "FILE SOURCE".to_string(),
+                sub1: "Lossless Audio".to_string(),
+                sub2: "Master Bitstream".to_string(),
+                pos: [30.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 2,
+                node_type: NodeType::Buffer,
+                title: "RAM BUFFER".to_string(),
+                sub1: "RingBuffer".to_string(),
+                sub2: "100% Loaded".to_string(),
+                pos: [270.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 4,
+                node_type: NodeType::Driver,
+                title: "APP RESAMPLER".to_string(),
+                sub1: "System Audio Endpoint".to_string(),
+                sub2: "Rubato Sinc SRC • 48.0 kHz".to_string(),
+                pos: [510.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+            PresetNode {
+                id: 5,
+                node_type: NodeType::Endpoint,
+                title: "OUTPUT DAC".to_string(),
+                sub1: "Audio Endpoint".to_string(),
+                sub2: "Native Sample Rate".to_string(),
+                pos: [750.0, 60.0],
+                is_removable: false,
+                param_val: 0.0,
+            },
+        ],
+        connections: vec![
+            CableConnection::new(1, 2),
+            CableConnection::new(2, 4),
+            CableConnection::new(4, 5),
+        ],
+        active_eq: None,
+        advance_studio_dither_mode: 0,
+    });
+
+    let _ = std::fs::write(&marker, "v1.1.1");
 }
 
 /// Lists all valid `.lnl` preset files in the local presets directory
@@ -4494,5 +5093,58 @@ mod tests {
         };
         app.check_and_apply_auto_binding(&track2);
         assert!(app.preset_status_notification.is_none(), "Same preset across songs must not spam any toast notifications");
+    }
+
+    #[test]
+    fn test_factory_presets_have_correct_node_titles_and_types() {
+        let mut app = LunulaApp::new_standalone();
+        ensure_default_factory_presets();
+
+        let dir = get_presets_dir();
+
+        // 1. Acoustic Vocal Intimacy: Optical Leveler & Analog Preamp
+        let acoustic = app.load_preset_file(&dir.join("Acoustic Vocal Intimacy.lnl"), None).expect("load acoustic");
+        assert_eq!(acoustic.name, "Acoustic Vocal Intimacy");
+
+        let opto = app.nodes.iter().find(|n| n.node_type == NodeType::OpticalLeveler).expect("opto exists");
+        assert_eq!(opto.id, 6);
+        assert!(opto.title.contains("OPTICAL LEVELER"));
+
+        let preamp = app.nodes.iter().find(|n| n.node_type == NodeType::AnalogPreamp).expect("preamp exists");
+        assert_eq!(preamp.id, 7);
+        assert!(preamp.title.contains("ANALOG PREAMP"));
+
+        let resampler = app.nodes.iter().find(|n| n.node_type == NodeType::Driver).expect("resampler exists");
+        assert_eq!(resampler.id, 4);
+        assert_eq!(resampler.title, "APP RESAMPLER");
+
+        let dac = app.nodes.iter().find(|n| n.node_type == NodeType::Endpoint).expect("dac exists");
+        assert_eq!(dac.id, 5);
+        assert_eq!(dac.title, "OUTPUT DAC");
+
+        // 2. Tes Clipping: Volume Booster & Stereo Widener triggering static analysis
+        let clip_preset = app.load_preset_file(&dir.join("Tes Clipping.lnl"), None).expect("load tes clipping");
+        assert_eq!(clip_preset.name, "Tes Clipping");
+
+        let booster = app.nodes.iter().find(|n| n.node_type == NodeType::VolumeBooster).expect("booster exists");
+        assert_eq!(booster.id, 6);
+        assert!(booster.title.contains("VOLUME BOOSTER"));
+
+        let widener = app.nodes.iter().find(|n| n.node_type == NodeType::StereoWidener).expect("widener exists");
+        assert_eq!(widener.id, 7);
+        assert!(widener.title.contains("STEREO WIDENER"));
+
+        let static_rep = app.get_static_analysis();
+        assert!(!static_rep.is_chain_safe, "Tes Clipping must trigger headroom warning");
+        assert!(static_rep.culprit_nodes.contains(&6), "Volume booster must be marked culprit");
+        assert!(static_rep.max_headroom_deficit_db > 7.0);
+
+        // 3. Warm Studio Master: Tube Warmer & Stereo Widener
+        let warm = app.load_preset_file(&dir.join("Warm Studio Master.lnl"), None).expect("load warm master");
+        assert_eq!(warm.name, "Warm Studio Master");
+
+        let tube = app.nodes.iter().find(|n| n.node_type == NodeType::TubeWarmer).expect("tube exists");
+        assert_eq!(tube.id, 6);
+        assert!(tube.title.contains("TUBE WARMER"));
     }
 }

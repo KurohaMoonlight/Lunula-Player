@@ -54,6 +54,8 @@ impl LunulaApp {
                 replay_gain_preamp_db: Some(self.replay_gain_preamp_db),
                 replay_gain_clip_prevention: Some(self.replay_gain_clip_prevention),
                 crossfade_secs: Some(self.crossfade_secs),
+                clipping_detection_enabled: Some(self.clipping_detection_enabled),
+                clipping_threshold_db: Some(self.clipping_threshold_db),
             };
             if let Ok(json) = serde_json::to_string_pretty(&saved_state) {
                 let path = get_storage_path();

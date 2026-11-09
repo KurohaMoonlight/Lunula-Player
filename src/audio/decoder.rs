@@ -335,6 +335,78 @@ impl AudioDecoder {
     }
 }
 
+/// Fast background scanner to determine true linear audio peak of an audio file.
+/// Decodes frames in streaming chunks without memory allocations for playback cache.
+pub fn scan_audio_peak_fast<P: AsRef<Path>>(path: P) -> Result<f32, Box<dyn std::error::Error + Send + Sync>> {
+    let path_ref = path.as_ref();
+    let file = File::open(path_ref)?;
+    let mss_opts = MediaSourceStreamOptions {
+        buffer_len: 256 * 1024,
+    };
+    let mss = MediaSourceStream::new(Box::new(file), mss_opts);
+    let mut hint = Hint::new();
+    if let Some(ext) = path_ref.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+    let probed = symphonia::default::get_probe().format(
+        &hint,
+        mss,
+        &FormatOptions::default(),
+        &MetadataOptions::default(),
+    )?;
+    let mut format = probed.format;
+    let track = format
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .ok_or_else(|| "No valid audio track found")?;
+    let track_id = track.id;
+    let mut decoder = symphonia::default::get_codecs().make(
+        &track.codec_params,
+        &DecoderOptions::default(),
+    )?;
+
+    let mut max_peak: f32 = 0.0;
+    let mut sample_buf: Option<SampleBuffer<f32>> = None;
+
+    while let Ok(packet) = format.next_packet() {
+        if packet.track_id() != track_id {
+            continue;
+        }
+        match decoder.decode(&packet) {
+            Ok(audio_buf_ref) => {
+                let spec = *audio_buf_ref.spec();
+                let duration = audio_buf_ref.capacity() as u64;
+                let needs_new_buf = match sample_buf {
+                    Some(ref b) => b.capacity() < duration as usize,
+                    None => true,
+                };
+                if needs_new_buf {
+                    sample_buf = Some(SampleBuffer::<f32>::new(duration, spec));
+                }
+                if let Some(ref mut buf) = sample_buf {
+                    buf.copy_interleaved_ref(audio_buf_ref);
+                    for &s in buf.samples() {
+                        let a = s.abs();
+                        if a > max_peak {
+                            max_peak = a;
+                        }
+                    }
+                }
+            }
+            Err(SymphoniaError::DecodeError(_)) => continue,
+            Err(SymphoniaError::ResetRequired) => {
+                decoder.reset();
+                continue;
+            }
+            Err(SymphoniaError::IoError(ref err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(err) => return Err(Box::new(err)),
+        }
+    }
+
+    Ok(max_peak)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

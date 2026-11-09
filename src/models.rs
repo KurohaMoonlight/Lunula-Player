@@ -555,6 +555,10 @@ pub struct SavedAppState {
     pub replay_gain_clip_prevention: Option<ReplayGainClipPrevention>,
     #[serde(default)]
     pub crossfade_secs: Option<f32>,
+    #[serde(default)]
+    pub clipping_detection_enabled: Option<bool>,
+    #[serde(default)]
+    pub clipping_threshold_db: Option<f32>,
 }
 
 impl From<TrackData> for Track {

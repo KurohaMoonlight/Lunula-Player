@@ -1,5 +1,5 @@
 use super::biquad::{soft_limit, BiquadCoeffs, BiquadState};
-use crate::audio::types::{Effect, EffectType};
+use crate::audio::types::{AmplitudeInterval, Effect, EffectType};
 
 // 10-Band Graphic EQ Frequencies matching LunulaPlayer
 pub const EQ_FREQUENCIES: [f64; 10] = [
@@ -280,6 +280,10 @@ impl Effect for StereoWidenerEffect {
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
     }
+    fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        let w = self.width.clamp(1.0, 3.0) as f32;
+        input.scale(w)
+    }
 }
 
 /// Bass Guard Effect: 24 Hz 2nd-order Butterworth sub-sonic high-pass filter
@@ -375,6 +379,9 @@ impl Effect for VolumeAttenuatorEffect {
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
     }
+    fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        input.scale(self.gain)
+    }
 }
 
 /// Pure Volume Booster Effect: Uncolored linear gain (0.0 to +24.0 dB) with transparent soft-limit guard
@@ -437,6 +444,9 @@ impl Effect for VolumeBoosterEffect {
     }
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
+    }
+    fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        input.scale(self.target_gain)
     }
 }
 
@@ -509,6 +519,9 @@ impl Effect for AnalogPreampEffect {
     }
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
+    }
+    fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        input.scale(self.target_gain)
     }
 }
 
@@ -614,6 +627,15 @@ impl Effect for DynamicLoudnessEffect {
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
     }
+    fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        if self.depth < 0.5 {
+            return input;
+        }
+        let k = (self.depth / 100.0) as f32;
+        let max_boost_db = k * 8.5; // Low shelf boost up to +8.5 dB
+        let gain = 10.0_f32.powf(max_boost_db / 20.0);
+        input.scale(gain)
+    }
 }
 
 /// Audiophile Stepped Attenuator Effect: Resistor ladder 64-step passive attenuator with DIM -20dB and Mute
@@ -694,6 +716,9 @@ impl Effect for SteppedAttenuatorEffect {
     }
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
+    }
+    fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        input.scale(self.target_gain)
     }
 }
 
@@ -804,6 +829,12 @@ impl Effect for OpticalLevelerEffect {
 
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
+    }
+
+    fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        let drive = (self.target_drive / 100.0).clamp(0.0, 1.0);
+        let potential_gain = 1.0 + drive * 1.0; // Up to 2.0x (+6 dB)
+        input.scale(potential_gain)
     }
 }
 
@@ -998,6 +1029,11 @@ impl Effect for LowPassFilterEffect {
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
     }
+
+    fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        let q_peak = (self.fringe_q as f32).max(1.0);
+        input.scale(q_peak)
+    }
 }
 
 /// High-Pass Filter: Variable slope (12/24/48 dB/oct) and resonance fringe Q (0.5 to 4.0)
@@ -1126,6 +1162,11 @@ impl Effect for HighPassFilterEffect {
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
     }
+
+    fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        let q_peak = (self.fringe_q as f32).max(1.0);
+        input.scale(q_peak)
+    }
 }
 
 /// Band-Pass Filter: Constant 0 dB peak gain with variable center frequency, fringe Q/bandwidth, and slope
@@ -1241,6 +1282,11 @@ impl Effect for BandPassFilterEffect {
 
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
+    }
+
+    fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        let q_peak = (self.fringe_q as f32).max(1.0);
+        input.scale(q_peak)
     }
 }
 
@@ -1772,6 +1818,11 @@ impl Effect for CompressorEffect {
 
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
+    }
+
+    fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        let makeup_lin = 10.0_f32.powf(self.makeup_gain_db / 20.0);
+        input.scale(makeup_lin)
     }
 }
 

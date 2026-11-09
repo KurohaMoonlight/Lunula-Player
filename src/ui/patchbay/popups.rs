@@ -280,4 +280,183 @@ impl LunulaApp {
             self.save_library_state();
         }
     }
+
+    /// Floating popup widget for Headroom Guard & Clipping Detection settings.
+    /// Lets users toggle detection on/off, adjust the warning threshold slider (-3.0 to +6.0 dBFS),
+    /// or choose 1-click audiophile presets (Strict -1.0 dBFS, Standard 0.0 dBFS, Relaxed +2.0 dBFS).
+    pub fn render_clipping_settings_popup(&mut self, ui: &mut egui::Ui, canvas_rect: egui::Rect) {
+        if !self.show_clipping_settings_popup {
+            return;
+        }
+
+        let popup_w = 390.0;
+
+        // Position near top-right of canvas (with margin from top edge)
+        let x = (canvas_rect.max.x - popup_w - 16.0).max(canvas_rect.min.x + 8.0);
+        let y = canvas_rect.min.y + 16.0;
+        let popup_pos = Pos2::new(x, y);
+
+        let mut close_popup = false;
+        let mut settings_changed = false;
+
+        let popup_id = ui.scope_id().with("clipping_settings_floating_popup_area");
+        let area_resp = egui::Area::new(popup_id)
+            .order(egui::Order::Foreground)
+            .fixed_pos(popup_pos)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(255, 255, 255))
+                    .stroke(Stroke::new(1.5, Color32::from_rgb(99, 102, 241)))
+                    .corner_radius(12.0)
+                    .inner_margin(14.0)
+                    .show(ui, |ui| {
+                        ui.set_width(popup_w - 28.0);
+
+                        // Header Bar
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("🛡️ HEADROOM & CLIPPING GUARD")
+                                    .strong()
+                                    .size(13.5)
+                                    .color(Color32::from_rgb(30, 41, 59)),
+                            );
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button(egui::RichText::new("✕").size(14.0).strong().color(Color32::from_rgb(148, 163, 184))).clicked() {
+                                    close_popup = true;
+                                }
+                            });
+                        });
+
+                        ui.add_space(4.0);
+                        ui.separator();
+                        ui.add_space(6.0);
+
+                        // 1. Master Toggle On/Off Switch
+                        ui.horizontal(|ui| {
+                            let mut enabled = self.clipping_detection_enabled;
+                            let checkbox_label = if enabled {
+                                egui::RichText::new("Deteksi Headroom & Clipping: AKTIF").strong().size(12.5).color(Color32::from_rgb(16, 185, 129))
+                            } else {
+                                egui::RichText::new("Deteksi Headroom & Clipping: NONAKTIF").strong().size(12.5).color(Color32::from_rgb(239, 68, 68))
+                            };
+                            if ui.checkbox(&mut enabled, checkbox_label).changed() {
+                                self.clipping_detection_enabled = enabled;
+                                settings_changed = true;
+                            }
+                        });
+
+                        if !self.clipping_detection_enabled {
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new("💡 Peringatan kabel merah putus-putus dan badge bahaya dinonaktifkan.\nAudio internal Lunula tetap diproses dalam float 64-bit headroom tak terbatas.")
+                                    .size(11.0)
+                                    .color(Color32::from_rgb(100, 116, 139)),
+                            );
+                        } else {
+                            ui.add_space(10.0);
+                            ui.label(
+                                egui::RichText::new("Ambang Batas Peringatan (Margin Headroom):")
+                                    .strong()
+                                    .size(12.0)
+                                    .color(Color32::from_rgb(51, 65, 85)),
+                            );
+
+                            // Slider: -3.0 dBFS to +6.0 dBFS
+                            ui.horizontal(|ui| {
+                                let mut threshold = self.clipping_threshold_db;
+                                let slider = egui::Slider::new(&mut threshold, -3.0..=6.0)
+                                    .step_by(0.1)
+                                    .suffix(" dBFS")
+                                    .text_color(Color32::from_rgb(30, 41, 59));
+                                if ui.add(slider).changed() {
+                                    self.clipping_threshold_db = threshold;
+                                    settings_changed = true;
+                                }
+                            });
+
+                            ui.add_space(8.0);
+                            ui.label(egui::RichText::new("Preset Sensitivitas Audiophile:").size(11.0).color(Color32::from_rgb(100, 116, 139)));
+
+                            // 3 Quick Presets
+                            ui.horizontal(|ui| {
+                                let is_strict = (self.clipping_threshold_db - (-1.0)).abs() < 0.05;
+                                let is_standard = self.clipping_threshold_db.abs() < 0.05;
+                                let is_relaxed = (self.clipping_threshold_db - 2.0).abs() < 0.05;
+
+                                let strict_btn = if is_strict {
+                                    ui.button(egui::RichText::new("🎯 Strict (-1.0 dB)").strong().color(Color32::from_rgb(59, 130, 246)))
+                                } else {
+                                    ui.button("Strict (-1.0 dB)")
+                                };
+                                if strict_btn.on_hover_text("Aman dari Inter-Sample Peak (ISP) pada filter analog DAC. Rekomendasi EBU R128.").clicked() {
+                                    self.clipping_threshold_db = -1.0;
+                                    settings_changed = true;
+                                }
+
+                                let std_btn = if is_standard {
+                                    ui.button(egui::RichText::new("⚖️ Standar (0.0 dB)").strong().color(Color32::from_rgb(16, 185, 129)))
+                                } else {
+                                    ui.button("Standar (0.0 dB)")
+                                };
+                                if std_btn.on_hover_text("Batas mutlak 0 dBFS digital PCM. Hanya menyala jika sampel digital menabrak full-scale.").clicked() {
+                                    self.clipping_threshold_db = 0.0;
+                                    settings_changed = true;
+                                }
+
+                                let rel_btn = if is_relaxed {
+                                    ui.button(egui::RichText::new("📻 Relaxed (+2.0 dB)").strong().color(Color32::from_rgb(168, 85, 247)))
+                                } else {
+                                    ui.button("Relaxed (+2.0 dB)")
+                                };
+                                if rel_btn.on_hover_text("Toleran terhadap saturasi harmonik analog hangat (Tube Warmer / Preamp drive).").clicked() {
+                                    self.clipping_threshold_db = 2.0;
+                                    settings_changed = true;
+                                }
+                            });
+
+                            ui.add_space(8.0);
+                            let explanation = if self.clipping_threshold_db < -0.05 {
+                                "ℹ️ Mode Strict: Memberi cadangan headroom ekstra untuk DAC agar terhindar dari distorsi analog inter-sample."
+                            } else if self.clipping_threshold_db > 0.05 {
+                                "ℹ️ Mode Relaxed: Memberi ruang bagi saturasi harmonik hangat tanpa memicu kabel merah di patchbay."
+                            } else {
+                                "ℹ️ Mode Standar: Referensi presisi 0 dBFS standar studio digital tanpa margin tambahan."
+                            };
+                            ui.label(egui::RichText::new(explanation).size(11.0).color(Color32::from_rgb(71, 85, 105)));
+
+                            let static_rep = self.get_static_analysis();
+                            if !static_rep.is_chain_safe && !static_rep.culprit_nodes.is_empty() {
+                                ui.add_space(8.0);
+                                ui.separator();
+                                ui.add_space(4.0);
+                                if ui.button(egui::RichText::new("🪄 Terapkan Auto-Fix untuk Rantai Sinyal Ini").strong().color(Color32::from_rgb(99, 102, 241)))
+                                    .on_hover_text("Otomatis menyesuaikan gain modul-modul biang kerok agar berada di batas aman")
+                                    .clicked()
+                                {
+                                    self.apply_all_headroom_auto_fixes();
+                                }
+                            }
+                        }
+                    });
+            });
+
+        // Close on clicking outside the popup frame
+        if ui.input(|i| i.pointer.any_pressed()) {
+            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                let rect = area_resp.response.rect;
+                if !rect.contains(pos) {
+                    close_popup = true;
+                }
+            }
+        }
+
+        if close_popup {
+            self.show_clipping_settings_popup = false;
+        }
+
+        if settings_changed {
+            self.invalidate_chain_cache();
+            self.save_library_state();
+        }
+    }
 }

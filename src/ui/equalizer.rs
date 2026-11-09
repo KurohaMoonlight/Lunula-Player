@@ -1022,15 +1022,17 @@ impl LunulaApp {
                 FilterType::HighPass | FilterType::LowPass => format!("Slope: {}\n", band.slope.name()),
                 _ => String::new(),
             };
-            response.show_tooltip_text(format!(
-                "Band {} • {}\nFrekuensi: {}\n{}{}Q-Factor: {:0.2}\n(Gulir mouse untuk atur Q)",
-                h_idx + 1,
-                band.filter_type.name(),
-                format_freq(band.freq),
-                gain_str,
-                slope_str,
-                band.q
-            ));
+            if !self.is_modal_or_overlay_active() {
+                response.show_tooltip_text(format!(
+                    "Band {} • {}\nFrekuensi: {}\n{}{}Q-Factor: {:0.2}\n(Gulir mouse untuk atur Q)",
+                    h_idx + 1,
+                    band.filter_type.name(),
+                    format_freq(band.freq),
+                    gain_str,
+                    slope_str,
+                    band.q
+                ));
+            }
         }
     }
 

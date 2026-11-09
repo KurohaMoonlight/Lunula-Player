@@ -334,7 +334,8 @@ impl LunulaApp {
             .show(&ctx, |ui| {
                 let p = ui.painter();
 
-                // 1. Fullscreen Dark Dimmed Frosted Backdrop
+                // 1. Fullscreen Dark Dimmed Frosted Backdrop (intercepts events so underlying canvas is never touched)
+                let _ = ui.interact(screen_rect, area_id.with("theater_backdrop_block"), egui::Sense::click_and_drag());
                 p.rect_filled(screen_rect, 0.0, Color32::from_black_alpha(215));
 
                 // 2. Strict 90% Screen Geometry calculation with safe minimums

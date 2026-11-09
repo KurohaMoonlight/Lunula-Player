@@ -212,6 +212,99 @@ impl EffectType {
     }
 }
 
+/// Amplitude interval domain [min, max] for Abstract Interpretation and static headroom analysis.
+/// Represents the conservative minimum and maximum possible sample values at a given point in the signal chain.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AmplitudeInterval {
+    pub min: f32,
+    pub max: f32,
+}
+
+impl AmplitudeInterval {
+    pub const FULL_SCALE: Self = Self { min: -1.0, max: 1.0 };
+    pub const SILENCE: Self = Self { min: 0.0, max: 0.0 };
+
+    #[inline(always)]
+    pub fn new(min: f32, max: f32) -> Self {
+        Self { min: min.min(max), max: min.max(max) }
+    }
+
+    #[inline(always)]
+    pub fn symmetric(peak: f32) -> Self {
+        let p = peak.abs();
+        Self { min: -p, max: p }
+    }
+
+    #[inline(always)]
+    pub fn peak_magnitude(&self) -> f32 {
+        self.min.abs().max(self.max.abs())
+    }
+
+    #[inline(always)]
+    pub fn peak_dbfs(&self) -> f32 {
+        let mag = self.peak_magnitude();
+        if mag <= 1e-9 {
+            -120.0
+        } else {
+            20.0 * mag.log10()
+        }
+    }
+
+    #[inline(always)]
+    pub fn is_clipping(&self) -> bool {
+        self.is_clipping_threshold(0.0)
+    }
+
+    #[inline(always)]
+    pub fn is_clipping_threshold(&self, threshold_db: f32) -> bool {
+        self.peak_dbfs() > threshold_db + 0.001
+    }
+
+    #[inline(always)]
+    pub fn headroom_deficit_db(&self) -> f32 {
+        self.headroom_deficit_threshold_db(0.0)
+    }
+
+    #[inline(always)]
+    pub fn headroom_deficit_threshold_db(&self, threshold_db: f32) -> f32 {
+        let db = self.peak_dbfs();
+        if db > threshold_db {
+            db - threshold_db
+        } else {
+            0.0
+        }
+    }
+
+    #[inline(always)]
+    pub fn scale(&self, factor: f32) -> Self {
+        let p1 = self.min * factor;
+        let p2 = self.max * factor;
+        Self::new(p1.min(p2), p1.max(p2))
+    }
+
+    #[inline(always)]
+    pub fn add(&self, other: &Self) -> Self {
+        Self {
+            min: self.min + other.min,
+            max: self.max + other.max,
+        }
+    }
+
+    #[inline(always)]
+    pub fn union(&self, other: &Self) -> Self {
+        Self {
+            min: self.min.min(other.min),
+            max: self.max.max(other.max),
+        }
+    }
+}
+
+impl Default for AmplitudeInterval {
+    fn default() -> Self {
+        Self::FULL_SCALE
+    }
+}
+
 /// Trait for modular audio DSP effects that can be inserted into the signal graph.
 pub trait Effect: Send + std::fmt::Debug {
     /// Process a contiguous block of left and right samples (SIMD auto-vectorizable).
@@ -239,6 +332,11 @@ pub trait Effect: Send + std::fmt::Debug {
     /// Returns current gain reduction in decibels (e.g. 0.0 to 30.0 dB for compressors/limiters)
     fn gain_reduction_db(&self) -> f32 {
         0.0
+    }
+    /// Pure worst-case static transfer function (Abstract Interpretation).
+    /// Computes the conservative amplitude bound produced by this node.
+    fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        input
     }
     fn clone_box(&self) -> Box<dyn Effect>;
 }

@@ -2,6 +2,7 @@ use eframe::egui;
 use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 use crate::models::{CableConnection, ChainMode, ModularNode, NodeType, SignalNodeStatus};
 use crate::app::LunulaApp;
+use crate::audio::NodeSafetyStatus;
 use crate::ui::components::draw_five_finger_hand;
 use crate::ui::patchbay::types::*;
 
@@ -105,7 +106,8 @@ impl LunulaApp {
         painter.rect_filled(canvas_rect, 10.0, Color32::from_rgb(248, 250, 252));
         painter.rect_stroke(canvas_rect, 10.0, Stroke::new(1.0, Color32::from_rgb(226, 232, 240)), egui::StrokeKind::Outside);
 
-        let mouse_pos = response.interact_pointer_pos();
+        let is_modal_blocking = self.is_modal_or_overlay_active();
+        let raw_pointer_pos = response.interact_pointer_pos().or_else(|| ui.input(|i| i.pointer.latest_pos()));
 
         // Panning with Mouse Wheel / Trackpad Scroll
         let scroll = ui.input(|i| i.smooth_scroll_delta);
@@ -117,12 +119,51 @@ impl LunulaApp {
                 Pos2::new(canvas_rect.max.x - card_w - padding, canvas_rect.min.y + padding),
                 Vec2::new(card_w, card_h),
             );
-            mouse_pos.map_or(false, |p| r.contains(p))
+            raw_pointer_pos.map_or(false, |p| r.contains(p))
         } else {
             false
         };
 
-        if response.hovered() && !is_interacting_with_tutorial && (scroll.x.abs() > 0.0 || scroll.y.abs() > 0.0) {
+        let is_interacting_with_saved_eq_popup = if self.show_saved_eq_palette_popup {
+            let screen_rect = ui.ctx().input(|i| i.raw.screen_rect).unwrap_or_else(|| ui.clip_rect());
+            let popup_w = 400.0;
+            let popup_h = 440.0;
+            let (sidebar_left, anchor_y) = if let Some(a) = self.saved_eq_popup_anchor {
+                (a.x, a.y)
+            } else {
+                (screen_rect.max.x - 300.0, screen_rect.center().y)
+            };
+            let mut x = sidebar_left - popup_w - 12.0;
+            if x < screen_rect.min.x + 12.0 {
+                x = screen_rect.min.x + 12.0;
+            }
+            let min_y = screen_rect.min.y + 44.0;
+            let max_y = (screen_rect.max.y - popup_h - 16.0).max(min_y);
+            let ideal_y = anchor_y - popup_h * 0.5;
+            let y = ideal_y.clamp(min_y, max_y);
+            let popup_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(popup_w, popup_h));
+            raw_pointer_pos.map_or(false, |p| popup_rect.contains(p))
+        } else {
+            false
+        };
+
+        let is_interacting_with_clipping_popup = if self.show_clipping_settings_popup {
+            let popup_w = 390.0;
+            let popup_h = 320.0;
+            let x = (canvas_rect.max.x - popup_w - 16.0).max(canvas_rect.min.x + 8.0);
+            let y = canvas_rect.min.y + 16.0;
+            let popup_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(popup_w, popup_h));
+            raw_pointer_pos.map_or(false, |p| popup_rect.contains(p))
+        } else {
+            false
+        };
+
+        let is_interacting_with_popup = is_interacting_with_saved_eq_popup || is_interacting_with_clipping_popup;
+
+        let is_canvas_blocked = is_modal_blocking || is_interacting_with_tutorial || is_interacting_with_popup;
+        let mouse_pos = if is_canvas_blocked { None } else { raw_pointer_pos };
+
+        if response.hovered() && !is_canvas_blocked && (scroll.x.abs() > 0.0 || scroll.y.abs() > 0.0) {
             self.patchbay_pan += scroll;
         }
 
@@ -161,10 +202,11 @@ impl LunulaApp {
         let mut switch_mode: Option<ChainMode> = None;
         let mut topology_changed = false;
         let mut param_change: Option<(usize, f32)> = None;
+        let mut auto_fix_node: Option<usize> = None;
         let mut resampler_setting_change: Option<crate::models::ResamplerSettings> = None;
 
-        let pointer_pos = ui.input(|i| i.pointer.latest_pos()).or(mouse_pos);
-        let is_left_pressed = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
+        let pointer_pos = if is_canvas_blocked { None } else { ui.input(|i| i.pointer.latest_pos()).or(mouse_pos) };
+        let is_left_pressed = !is_canvas_blocked && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
 
         // Check if cursor is hovering over any node rect
         let is_hovering_any_node = self.nodes.iter().any(|node| {
@@ -182,7 +224,7 @@ impl LunulaApp {
         // 0a. Check hover & active drag on interactive node sliders, draggable headers, and whole cards
         let mut is_hovering_slider = false;
         let mut is_hovering_header = false;
-        if !is_interacting_with_tutorial {
+        if !is_canvas_blocked {
             for node in &self.nodes {
                 let n_size = get_node_size(&node.node_type);
                 let world_rect = Rect::from_min_size(
@@ -240,7 +282,7 @@ impl LunulaApp {
 
         // 0b. Mouse press down directly on slider track or thumb
         let mut clicked_slider = false;
-        if is_left_pressed && !is_interacting_with_tutorial {
+        if is_left_pressed && !is_canvas_blocked {
             if let Some(pos) = pointer_pos {
                 for node in &self.nodes {
                     let n_size = get_node_size(&node.node_type);
@@ -339,7 +381,7 @@ impl LunulaApp {
         }
 
         // 0d. Right-Click or Middle-Click Hold to Pan Canvas (when on empty background canvas)
-        if right_or_middle_pressed && response.hovered() && !is_hovering_any_node && !is_interacting_with_tutorial {
+        if right_or_middle_pressed && response.hovered() && !is_hovering_any_node && !is_canvas_blocked {
             self.is_panning_canvas = true;
             self.connecting_from_node = None;
             self.connecting_from_port = 0;
@@ -358,7 +400,7 @@ impl LunulaApp {
         // 1. Detect clicking on Pins to create cables OR clicking nodes to drag OR empty space to pan (Left Click)
         if self.dragging_slider_node.is_some() || clicked_slider {
             // Slider active, ignore canvas drag
-        } else if response.drag_started() && is_left_down && !is_right_down && !is_middle_down && !is_interacting_with_tutorial {
+        } else if response.drag_started() && is_left_down && !is_right_down && !is_middle_down && !is_canvas_blocked {
             if let Some(pos) = mouse_pos {
                 // Check if user clicked an Output Pin (Right dot) OR an Input Pin (Left dot)
                 for node in &self.nodes {
@@ -646,24 +688,29 @@ impl LunulaApp {
 
         // Cursor State Feedback:
         // Default arrow normally, custom 5-finger open hand cursor ONLY when holding right-click to pan!
-        let is_holding_pan = (is_right_down || is_middle_down) && self.is_panning_canvas;
-        if is_holding_pan {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::None);
-            if let Some(pos) = mouse_pos {
-                let top_painter = ui.ctx().layer_painter(egui::LayerId::new(
-                    egui::Order::Tooltip,
-                    ui.scope_id().with("five_finger_hand_cursor"),
-                ));
-                draw_five_finger_hand(&top_painter, pos);
+        if !is_canvas_blocked {
+            let is_holding_pan = (is_right_down || is_middle_down) && self.is_panning_canvas;
+            if is_holding_pan {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+                if let Some(pos) = mouse_pos {
+                    let top_painter = ui.ctx().layer_painter(egui::LayerId::new(
+                        egui::Order::Tooltip,
+                        ui.scope_id().with("five_finger_hand_cursor"),
+                    ));
+                    draw_five_finger_hand(&top_painter, pos);
+                }
+            } else if self.connecting_from_node.is_some() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+            } else if response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
             }
-        } else if self.connecting_from_node.is_some() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-        } else if response.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
         }
 
         // Evaluate Signal Chain reachability
         let chain_eval = self.evaluate_signal_chain();
+
+        // Real-time static headroom & clipping risk analysis (Abstract Interpretation)
+        let static_report = self.get_static_analysis();
 
         let is_fallback = self.signal_path_report.as_ref().map_or(false, |r| {
             r.requested_mode == ChainMode::BitPerfect && r.actual_mode == ChainMode::OsResampled
@@ -750,12 +797,17 @@ impl LunulaApp {
                 let is_effect_cable = (from_n.node_type.is_dsp_or_effect() || to_n.node_type.is_dsp_or_effect())
                     && (self.chain_mode == ChainMode::BitPerfect || self.chain_mode == ChainMode::OsResampled);
 
+                let is_hot_cable = static_report.is_edge_hot(conn.from_node as u32, conn.from_port, conn.to_node as u32, conn.to_port)
+                    && self.chain_mode == ChainMode::DspActive;
+
                 let cable_color = if is_selected_cable {
                     Color32::from_rgb(52, 211, 153) // Emerald green when selected for probe
                 } else if is_hover_cable {
                     Color32::from_rgb(239, 68, 68) // Red on hover to cut
                 } else if is_effect_cable {
                     Color32::from_rgb(203, 213, 225) // Muted slate gray when connected to bypassed effect
+                } else if is_hot_cable && is_flowing_cable {
+                    Color32::from_rgb(239, 68, 68) // Crimson red for hot overdriven signal (> 0 dBFS)
                 } else if is_flowing_cable {
                     theme_color
                 } else {
@@ -766,9 +818,13 @@ impl LunulaApp {
                 let shadow_pts: Vec<Pos2> = points.iter().map(|p| *p + Vec2::new(0.0, 1.5)).collect();
                 painter.add(egui::Shape::line(shadow_pts, Stroke::new(3.0, Color32::from_black_alpha(18))));
 
-                // Selected cable outer neon halo
+                // Selected cable outer neon halo or hot cable warning aura
                 if is_selected_cable {
                     painter.add(egui::Shape::line(points.clone(), Stroke::new(5.5, Color32::from_rgba_premultiplied(52, 211, 153, 90))));
+                } else if is_hot_cable && is_flowing_cable && !is_effect_cable {
+                    let pulse = (ui.input(|i| i.time) * 4.0).sin().abs() as f32;
+                    let alpha = (60.0 + pulse * 50.0) as u8;
+                    painter.add(egui::Shape::line(points.clone(), Stroke::new(5.5, Color32::from_rgba_premultiplied(239, 68, 68, alpha))));
                 }
 
                 // Cable path: draw dashed line if connected to a bypassed effect, or single batched polyline
@@ -786,7 +842,9 @@ impl LunulaApp {
                 // If flowing and song is playing: draw live animated audio data particles traveling along the cable!
                 // Only on active flowing paths, NOT through bypassed effects in Bit-Perfect or OsResampled!
                 if is_flowing_cable && !is_effect_cable && self.is_playing {
-                    let particle_glow = if is_fallback {
+                    let particle_glow = if is_hot_cable {
+                        Color32::from_rgba_premultiplied(254, 202, 202, 230) // Hot white-pinkish red
+                    } else if is_fallback {
                         Color32::from_rgba_premultiplied(253, 230, 138, 200)
                     } else {
                         match self.chain_mode {
@@ -800,16 +858,25 @@ impl LunulaApp {
                         let p_idx = (t_part * 24.0).min(23.0) as usize;
                         let pt = points[p_idx];
                         painter.circle_filled(pt, 4.0, particle_glow);
-                        painter.circle_filled(pt, 2.0, Color32::WHITE);
+                        let inner_dot = if is_hot_cable { Color32::from_rgb(255, 180, 180) } else { Color32::WHITE };
+                        painter.circle_filled(pt, 2.0, inner_dot);
                     }
                 }
 
 
-                // Cut hint bubble on hover
-                if is_hover_cable {
+                // Cut hint bubble on hover or hot signal badge
+                if !is_canvas_blocked && is_hover_cable {
+                    if is_hot_cable && is_flowing_cable {
+                        response.show_tooltip_text("⚡ KABEL PANAS (> 0 dBFS)\nSinyal melampaui batas full-scale audio.\nKlik untuk memilih kabel, klik tanda ✕ untuk memutus.");
+                    }
                     painter.circle_filled(mid, 9.5, Color32::from_rgb(239, 68, 68));
                     painter.text(mid, egui::Align2::CENTER_CENTER, "✕", egui::FontId::proportional(10.5), Color32::WHITE);
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                } else if is_hot_cable && is_flowing_cable && !is_effect_cable {
+                    // Hot signal warning badge on cable midpoint
+                    painter.circle_filled(mid, 8.5, Color32::from_rgb(239, 68, 68));
+                    painter.circle_stroke(mid, 8.5, Stroke::new(1.2, Color32::WHITE));
+                    painter.text(mid, egui::Align2::CENTER_CENTER, "⚡", egui::FontId::proportional(9.0), Color32::WHITE);
                 } else if !is_flowing_cable {
                     // Warning icon at midpoint of dead cable
                     painter.circle_filled(mid, 8.5, Color32::from_rgb(239, 68, 68));
@@ -1103,13 +1170,69 @@ impl LunulaApp {
             // Is this node part of the active flowing audio signal?
             let is_flowing = chain_eval.node_status(node.id) == SignalNodeStatus::Flowing;
 
+            // Static analysis status for this node
+            let node_rep = static_report.get_node_report(node.id as u32);
+            let is_culprit_node = node_rep.map_or(false, |r| r.is_culprit) && self.chain_mode == ChainMode::DspActive;
+            let is_overdriven_victim = node_rep.map_or(false, |r| matches!(r.status, NodeSafetyStatus::OverdrivenDownstream)) && self.chain_mode == ChainMode::DspActive;
+
             if is_active {
                 painter.rect_stroke(node_rect.expand(1.5), 10.0, Stroke::new(1.5, Color32::from_rgb(129, 140, 248)), egui::StrokeKind::Outside);
             }
 
             // Context menu on node
             let node_resp = ui.interact(node_rect, ui.scope_id().with(("patch_node_ctx", node.id)), egui::Sense::click());
-            if node_resp.clicked() {
+
+            // Static analysis diagnostic tooltip on hover (strictly suppressed if canvas is blocked or not hovered)
+            if !is_canvas_blocked && is_hovered {
+                if is_culprit_node {
+                    if let Some(r) = node_rep {
+                        let recs = if !r.recommendations.is_empty() {
+                            format!("\n\nSaran Solusi:\n• {}", r.recommendations.join("\n• "))
+                        } else {
+                            String::new()
+                        };
+                        node_resp.show_tooltip_text(format!(
+                            "💥 ASAL-USUL CLIPPING (CULPRIT)\n{}\nPeak Amplitudo: {:.2} dBFS (Defisit Headroom: +{:.2} dB){}",
+                            r.reason, r.peak_dbfs, r.headroom_deficit_db, recs
+                        ));
+                    }
+                } else if is_overdriven_victim {
+                    if let Some(r) = node_rep {
+                        node_resp.show_tooltip_text(format!(
+                            "⚠️ OVERDRIVEN DOWNSTREAM (KORBAN CLIPPING)\n{}\nPeak Amplitudo Masuk: {:.2} dBFS\nModul ini menerima sinyal terdistorsi dari modul upstream.",
+                            r.reason, r.peak_dbfs
+                        ));
+                    }
+                } else if node.node_type == NodeType::Source {
+                    if let Some(r) = node_rep {
+                        let peak_mag = r.output_interval.peak_magnitude();
+                        let peak_db = r.output_interval.peak_dbfs();
+                        let raw_headroom = -peak_db.min(0.0);
+                        let headroom_db = if raw_headroom.abs() < 0.001 { 0.0 } else { raw_headroom.max(0.0) };
+                        let track_name = static_report.context_track_title.as_deref().unwrap_or(&self.current_track.title);
+                        let guard_status_text = if !self.clipping_detection_enabled {
+                            "Headroom Guard: Nonaktif (Peringatan visual dibungkam)".to_string()
+                        } else if self.clipping_threshold_db < -0.05 {
+                            format!("Headroom Guard: Aktif [Strict {:+.1} dBFS]", self.clipping_threshold_db)
+                        } else if self.clipping_threshold_db > 0.05 {
+                            format!("Headroom Guard: Aktif [Relaxed {:+.1} dBFS]", self.clipping_threshold_db)
+                        } else {
+                            "Headroom Guard: Aktif [Standar 0.0 dBFS]".to_string()
+                        };
+                        node_resp.show_tooltip_text(format!(
+                            "🎛️ FILE SOURCE (KONTEKS AUDIO)\nLagu Aktif: {}\nAmplitudo Puncak: {:.3} ({:.2} dBFS)\nHeadroom Aman Tersisa: +{:.2} dB ke 0 dBFS\n{}\n\nStatus: Analisis statis mengukur headroom berdasarkan konteks lagu ini.",
+                            track_name, peak_mag, peak_db, headroom_db, guard_status_text
+                        ));
+                    }
+                }
+            }
+            let is_released_on_node = !is_canvas_blocked
+                && ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary))
+                && is_hovered
+                && self.connecting_from_node.is_none()
+                && !ui.input(|i| i.pointer.is_decidedly_dragging());
+            let is_node_clicked = !is_canvas_blocked && (node_resp.clicked() || (response.clicked() && is_hovered) || is_released_on_node);
+            if is_node_clicked {
                 match &node.node_type {
                     NodeType::SavedEqPreset(name) => {
                         navigate_to_eq_preset = Some(name.clone());
@@ -1121,10 +1244,18 @@ impl LunulaApp {
                 }
             }
 
-            node_resp.context_menu(|ui| {
+            if !is_canvas_blocked {
+                node_resp.context_menu(|ui| {
                 ui.label(egui::RichText::new(&node.title).strong().size(12.5).color(Color32::from_rgb(15, 23, 42)));
                 ui.label(egui::RichText::new(&node.sub1).size(10.5).color(Color32::from_rgb(100, 116, 139)));
                 ui.separator();
+                if is_culprit_node {
+                    if ui.button(egui::RichText::new("🪄 Auto-Fix Headroom (Koreksi Otomatis)").strong().color(Color32::from_rgb(16, 185, 129))).clicked() {
+                        auto_fix_node = Some(node.id);
+                        ui.close();
+                    }
+                    ui.separator();
+                }
                 if let NodeType::SavedEqPreset(ref name) = node.node_type {
                     if ui.button("🎛️ Buka & Edit di Tab Equalizer").clicked() {
                         navigate_to_eq_preset = Some(name.clone());
@@ -1160,6 +1291,7 @@ impl LunulaApp {
                     }
                 }
             });
+            }
 
             // Dynamic Soft Shadow (expands & deepens when hovered / lifted)
             painter.rect_filled(
@@ -1238,17 +1370,25 @@ impl LunulaApp {
                 }
 
                 // Click on bypassed node to re-engage Modular DSP mode
-                if node_resp.clicked() {
+                if is_node_clicked {
                     switch_mode = Some(ChainMode::DspActive);
                 }
             } else if is_flowing {
+                let border_color = if is_culprit_node {
+                    Color32::from_rgb(239, 68, 68) // Crimson hazard for clipping origin
+                } else if is_overdriven_victim {
+                    Color32::from_rgb(245, 158, 11) // Amber warning for downstream victim
+                } else {
+                    theme_color
+                };
+
                 if self.is_playing {
-                    // Pulsing luminous aura matching theme
+                    // Pulsing luminous aura matching theme or hazard
                     let aura_alpha = (60.0 + 35.0 * (self.visualizer_anim_phase * 4.0).sin()) as u8;
                     painter.rect_stroke(
                         node_rect.expand(2.0),
                         10.0,
-                        Stroke::new(1.8, Color32::from_rgba_premultiplied(theme_color.r(), theme_color.g(), theme_color.b(), aura_alpha / 2)),
+                        Stroke::new(1.8, Color32::from_rgba_premultiplied(border_color.r(), border_color.g(), border_color.b(), aura_alpha / 2)),
                         egui::StrokeKind::Outside,
                     );
 
@@ -1258,10 +1398,16 @@ impl LunulaApp {
                     let b1 = get_rect_perimeter_pos(node_rect, travel_dist);
                     let b2 = get_rect_perimeter_pos(node_rect, travel_dist + p_len * 0.5);
 
-                    let (b1_col, b2_col) = match self.chain_mode {
-                        ChainMode::BitPerfect => (Color32::from_rgb(52, 211, 153), Color32::from_rgb(34, 211, 238)),
-                        ChainMode::DspActive => (Color32::from_rgb(129, 140, 248), Color32::from_rgb(192, 132, 252)),
-                        ChainMode::OsResampled => (Color32::from_rgb(251, 191, 36), Color32::from_rgb(245, 158, 11)),
+                    let (b1_col, b2_col) = if is_culprit_node {
+                        (Color32::from_rgb(239, 68, 68), Color32::from_rgb(252, 165, 165))
+                    } else if is_overdriven_victim {
+                        (Color32::from_rgb(245, 158, 11), Color32::from_rgb(253, 230, 138))
+                    } else {
+                        match self.chain_mode {
+                            ChainMode::BitPerfect => (Color32::from_rgb(52, 211, 153), Color32::from_rgb(34, 211, 238)),
+                            ChainMode::DspActive => (Color32::from_rgb(129, 140, 248), Color32::from_rgb(192, 132, 252)),
+                            ChainMode::OsResampled => (Color32::from_rgb(251, 191, 36), Color32::from_rgb(245, 158, 11)),
+                        }
                     };
 
                     painter.circle_filled(b1, 3.8, b1_col);
@@ -1271,10 +1417,11 @@ impl LunulaApp {
 
                     // Flowing border
                     let stroke_w = 1.6 + 0.4 * (self.visualizer_anim_phase * 3.5).sin();
-                    painter.rect_stroke(node_rect, 8.0, Stroke::new(stroke_w, theme_color), egui::StrokeKind::Outside);
+                    painter.rect_stroke(node_rect, 8.0, Stroke::new(stroke_w, border_color), egui::StrokeKind::Outside);
                 } else {
                     // Ready / Paused: Crisp theme border
-                    painter.rect_stroke(node_rect, 8.0, Stroke::new(1.3, theme_color), egui::StrokeKind::Outside);
+                    let stroke_w = if is_culprit_node { 1.8 } else { 1.3 };
+                    painter.rect_stroke(node_rect, 8.0, Stroke::new(stroke_w, border_color), egui::StrokeKind::Outside);
                 }
             } else {
                 // BROKEN / NO SIGNAL: Pulsing Crimson Alert
@@ -1362,6 +1509,40 @@ impl LunulaApp {
                 egui::FontId::proportional(12.5),
                 title_col,
             );
+
+            // Culprit or Overdriven Header Badge
+            if is_culprit_node {
+                let deficit_db = node_rep.map_or(0.0, |r| r.headroom_deficit_db);
+                let badge_text = format!("💥 +{:.1}dB", deficit_db);
+                let badge_rect = Rect::from_center_size(
+                    Pos2::new(node_rect.max.x - 28.0, node_rect.min.y + 13.0),
+                    Vec2::new(48.0, 15.0),
+                );
+                painter.rect_filled(badge_rect, 4.0, Color32::from_rgb(254, 226, 226));
+                painter.rect_stroke(badge_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(239, 68, 68)), egui::StrokeKind::Outside);
+                painter.text(
+                    badge_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    badge_text,
+                    egui::FontId::proportional(9.0),
+                    Color32::from_rgb(185, 28, 28),
+                );
+            } else if is_overdriven_victim {
+                let badge_text = "⚠️ OVERDRIVE";
+                let badge_rect = Rect::from_center_size(
+                    Pos2::new(node_rect.max.x - 36.0, node_rect.min.y + 13.0),
+                    Vec2::new(64.0, 15.0),
+                );
+                painter.rect_filled(badge_rect, 4.0, Color32::from_rgb(254, 243, 199));
+                painter.rect_stroke(badge_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(245, 158, 11)), egui::StrokeKind::Outside);
+                painter.text(
+                    badge_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    badge_text,
+                    egui::FontId::proportional(8.5),
+                    Color32::from_rgb(180, 83, 9),
+                );
+            }
 
             if node.node_type == NodeType::LowPassFilter || node.node_type == NodeType::HighPassFilter || node.node_type == NodeType::BandPassFilter || node.node_type == NodeType::Crossover {
                 let default_f = match node.node_type {
@@ -2761,11 +2942,16 @@ impl LunulaApp {
                     false
                 };
 
-                let draw_single_pin = |pin_pos: Pos2, is_hover: bool, is_receptive: bool, label: Option<&str>| {
+                let draw_single_pin = |pin_pos: Pos2, is_hover: bool, is_receptive: bool, is_hot: bool, label: Option<&str>| {
                     if is_receptive {
                         let beacon_r = 7.0 + pulse * 3.5;
                         let beacon_alpha = (60.0 + pulse * 130.0) as u8;
                         painter.circle_filled(pin_pos, beacon_r, Color32::from_rgba_premultiplied(14, 165, 233, beacon_alpha));
+                    }
+
+                    if is_hot {
+                        let hot_pulse = (ui.input(|i| i.time) * 4.0).sin().abs() as f32;
+                        painter.circle_stroke(pin_pos, 7.5 + hot_pulse * 1.5, Stroke::new(1.4, Color32::from_rgba_premultiplied(239, 68, 68, 180)));
                     }
 
                     let is_snapped = is_receptive && is_hover;
@@ -2777,6 +2963,8 @@ impl LunulaApp {
                         (5.2, Color32::from_rgb(56, 189, 248))
                     } else if is_bypassed_effect {
                         (4.5, Color32::from_rgb(203, 213, 225))
+                    } else if is_hot {
+                        (4.5, Color32::from_rgb(239, 68, 68))
                     } else if is_flowing {
                         (4.5, theme_color)
                     } else {
@@ -2791,6 +2979,10 @@ impl LunulaApp {
                     painter.circle_stroke(pin_pos, r, Stroke::new(1.6, Color32::WHITE));
                     if is_hover || is_snapped {
                         painter.circle_filled(pin_pos, 2.8, Color32::WHITE);
+                    }
+
+                    if !is_canvas_blocked && is_hover && is_hot {
+                        response.show_tooltip_text("⚠️ PORT INPUT OVERDRIVEN\nSinyal yang masuk ke modul ini melebihi 0 dBFS.");
                     }
 
                     if let Some(lbl) = label {
@@ -2816,15 +3008,18 @@ impl LunulaApp {
                     if is_hover_a || is_hover_b {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
                     }
-                    draw_single_pin(pin_a, is_hover_a, is_input_receptive, Some("A"));
-                    draw_single_pin(pin_b, is_hover_b, is_input_receptive, Some("B"));
+                    let is_hot_a = static_report.edge_reports.iter().any(|e| e.to_node == node.id as u32 && e.to_port == 0 && e.is_hot) && self.chain_mode == ChainMode::DspActive;
+                    let is_hot_b = static_report.edge_reports.iter().any(|e| e.to_node == node.id as u32 && e.to_port == 1 && e.is_hot) && self.chain_mode == ChainMode::DspActive;
+                    draw_single_pin(pin_a, is_hover_a, is_input_receptive, is_hot_a, Some("A"));
+                    draw_single_pin(pin_b, is_hover_b, is_input_receptive, is_hot_b, Some("B"));
                 } else {
                     let in_pin = Pos2::new(node_rect.min.x, node_rect.center().y);
                     let is_hover_in = mouse_pos.map_or(false, |p| p.distance(in_pin) <= 18.0);
                     if is_hover_in {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
                     }
-                    draw_single_pin(in_pin, is_hover_in, is_input_receptive, None);
+                    let is_hot_in = static_report.edge_reports.iter().any(|e| e.to_node == node.id as u32 && e.to_port == 0 && e.is_hot) && self.chain_mode == ChainMode::DspActive;
+                    draw_single_pin(in_pin, is_hover_in, is_input_receptive, is_hot_in, None);
                 }
             }
 
@@ -2920,71 +3115,11 @@ impl LunulaApp {
 
         // Apply real-time node parameter adjustments (e.g. LowPassFilter cutoff or Mixer crossfader)
         if let Some((node_id, new_val)) = param_change {
-            if let Some(n) = self.nodes.iter_mut().find(|n| n.id == node_id) {
-                n.param_val = new_val;
-                match n.node_type {
-                    NodeType::LowPassFilter | NodeType::HighPassFilter => {
-                        n.sub1 = if new_val >= 1000.0 {
-                            format!("Cutoff {:.1} kHz", new_val / 1000.0)
-                        } else {
-                            format!("Cutoff {:.0} Hz", new_val)
-                        };
-                    }
-                    NodeType::BandPassFilter => {
-                        n.sub1 = if new_val >= 1000.0 {
-                            format!("Center {:.1} kHz", new_val / 1000.0)
-                        } else {
-                            format!("Center {:.0} Hz", new_val)
-                        };
-                    }
-                    NodeType::Crossover => {
-                        n.sub1 = if new_val >= 1000.0 {
-                            format!("X-Over {:.1} kHz", new_val / 1000.0)
-                        } else {
-                            format!("X-Over {:.0} Hz", new_val)
-                        };
-                    }
-                    NodeType::Mixer => {
-                        let a_pct = (1.0 - new_val) * 100.0;
-                        let b_pct = new_val * 100.0;
-                        n.sub1 = format!("Mix: {:.0}% A • {:.0}% B", a_pct, b_pct);
-                    }
-                    NodeType::TubeWarmer => {
-                        n.sub1 = format!("Warmth {:.0}%", new_val);
-                    }
-                    NodeType::StereoWidener => {
-                        n.sub1 = format!("+{:.0}% Soundstage", new_val);
-                    }
-                    NodeType::VolumeBooster => {
-                        n.sub1 = format!("+{:.1} dB Gain", new_val);
-                    }
-                    NodeType::AnalogPreamp => {
-                        n.sub1 = format!("{:+0.1} dB Drive", new_val);
-                    }
-                    NodeType::DynamicLoudness => {
-                        n.sub1 = format!("Loudness {:.0}%", new_val);
-                    }
-                    NodeType::SteppedAttenuator => {
-                        n.sub1 = format!("{:.0} dB", new_val);
-                    }
-                    NodeType::OpticalLeveler => {
-                        n.sub1 = format!("Peak Red {:.0}%", new_val);
-                    }
-                    NodeType::StereoBalance => {
-                        if new_val.abs() < 1.0 {
-                            n.sub1 = "Center 0.0 dB".to_string();
-                        } else if new_val < 0.0 {
-                            n.sub1 = format!("L {:.0}% / R {:.0}%", 50.0 + new_val.abs() * 0.5, 50.0 - new_val.abs() * 0.5);
-                        } else {
-                            n.sub1 = format!("L {:.0}% / R {:.0}%", 50.0 - new_val * 0.5, 50.0 + new_val * 0.5);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if let Some(ref engine) = self.audio_engine {
-                engine.set_node_param(node_id as u32, 0, new_val);
-            }
+            self.update_node_parameter(node_id, new_val);
+        }
+
+        if let Some(node_id) = auto_fix_node {
+            self.apply_auto_fix_for_node(node_id);
         }
 
         if let Some(ref name) = navigate_to_eq_preset {
@@ -3042,13 +3177,39 @@ impl LunulaApp {
                                 } else {
                                     format!("{} Modul ({})", flowing_fx.len(), flowing_fx[..2].join(" • ") + " • ...")
                                 };
-                                (
-                                    Color32::from_rgba_premultiplied(238, 242, 255, 230),
-                                    Stroke::new(1.0, Color32::from_rgb(199, 210, 254)),
-                                    "🟣",
-                                    format!("JALUR MODULAR AKTIF (64-BIT FLOAT) — Memproses: {}", fx_summary),
-                                    Color32::from_rgb(67, 56, 202),
-                                )
+                                if !static_report.is_chain_safe {
+                                    let context_suffix = match (&static_report.context_track_title, static_report.context_peak_dbfs) {
+                                        (Some(title), Some(peak_db)) => format!(" [Lagu: '{}' • Peak {:.1} dBFS]", title, peak_db),
+                                        (Some(title), None) => format!(" [Lagu: '{}']", title),
+                                        _ => " [Ref Konservatif 0 dBFS]".to_string(),
+                                    };
+                                    (
+                                        Color32::from_rgba_premultiplied(254, 242, 242, 240),
+                                        Stroke::new(1.2, Color32::from_rgb(252, 165, 165)),
+                                        "⚠️",
+                                        format!("PERINGATAN HEADROOM (+{:.1} dBFS) — {} modul berisiko clipping ({}){}! Kurangi gain atau pasang attenuator.",
+                                            static_report.max_headroom_deficit_db,
+                                            static_report.culprit_nodes.len(),
+                                            fx_summary,
+                                            context_suffix
+                                        ),
+                                        Color32::from_rgb(185, 28, 28),
+                                    )
+                                } else {
+                                    let context_suffix = match (&static_report.context_track_title, static_report.context_peak_dbfs) {
+                                        (Some(title), Some(peak_db)) if peak_db < -0.01 => format!(" [Konteks: '{}' • Headroom +{:.1} dB]", title, -peak_db),
+                                        (Some(title), Some(peak_db)) => format!(" [Konteks: '{}' • Peak {:.1} dBFS]", title, peak_db),
+                                        (Some(title), None) => format!(" [Konteks: '{}']", title),
+                                        _ => String::new(),
+                                    };
+                                    (
+                                        Color32::from_rgba_premultiplied(238, 242, 255, 230),
+                                        Stroke::new(1.0, Color32::from_rgb(199, 210, 254)),
+                                        "🟣",
+                                        format!("JALUR MODULAR AKTIF (64-BIT FLOAT • HEADROOM AMAN) — Memproses: {}{}", fx_summary, context_suffix),
+                                        Color32::from_rgb(67, 56, 202),
+                                    )
+                                }
                             } else {
                                 (
                                     Color32::from_rgba_premultiplied(236, 253, 245, 230),
@@ -3069,13 +3230,32 @@ impl LunulaApp {
                     }
                 }
             } else {
-                (
-                    Color32::from_rgba_premultiplied(241, 245, 249, 230),
-                    Stroke::new(1.0, Color32::from_rgb(226, 232, 240)),
-                    "⚪",
-                    "SIGNAL CHAIN LENGKAP — Rantai audio terhubung sempurna (Tekan Play untuk memutar)".to_string(),
-                    Color32::from_rgb(71, 85, 105),
-                )
+                if self.chain_mode == ChainMode::DspActive && !static_report.is_chain_safe {
+                    let context_suffix = match (&static_report.context_track_title, static_report.context_peak_dbfs) {
+                        (Some(title), Some(peak_db)) => format!(" pada lagu '{}' (Peak {:.1} dBFS)", title, peak_db),
+                        (Some(title), None) => format!(" pada lagu '{}'", title),
+                        _ => String::new(),
+                    };
+                    (
+                        Color32::from_rgba_premultiplied(254, 242, 242, 240),
+                        Stroke::new(1.2, Color32::from_rgb(252, 165, 165)),
+                        "⚠️",
+                        format!("PERINGATAN HEADROOM (+{:.1} dBFS) — Terdeteksi potensi clipping pada {} modul{} sebelum playback dimulai.",
+                            static_report.max_headroom_deficit_db,
+                            static_report.culprit_nodes.len(),
+                            context_suffix
+                        ),
+                        Color32::from_rgb(185, 28, 28),
+                    )
+                } else {
+                    (
+                        Color32::from_rgba_premultiplied(241, 245, 249, 230),
+                        Stroke::new(1.0, Color32::from_rgb(226, 232, 240)),
+                        "⚪",
+                        "SIGNAL CHAIN LENGKAP — Rantai audio terhubung sempurna (Tekan Play untuk memutar)".to_string(),
+                        Color32::from_rgb(71, 85, 105),
+                    )
+                }
             }
         } else {
             (
@@ -3089,13 +3269,52 @@ impl LunulaApp {
 
         painter.rect_filled(banner_rect, 6.0, pill_bg);
         painter.rect_stroke(banner_rect, 6.0, pill_stroke, egui::StrokeKind::Outside);
+
+        let show_fix_button = !static_report.is_chain_safe && !static_report.culprit_nodes.is_empty();
+        let text_align_pos = if show_fix_button {
+            Pos2::new(banner_rect.min.x + 16.0, banner_rect.center().y)
+        } else {
+            banner_rect.center()
+        };
+        let text_align = if show_fix_button {
+            egui::Align2::LEFT_CENTER
+        } else {
+            egui::Align2::CENTER_CENTER
+        };
+
         painter.text(
-            banner_rect.center(),
-            egui::Align2::CENTER_CENTER,
+            text_align_pos,
+            text_align,
             format!("{} {}", status_icon, status_msg),
             egui::FontId::proportional(12.5),
             text_col,
         );
+
+        if show_fix_button && !is_canvas_blocked {
+            let fix_btn_w = 126.0;
+            let fix_btn_rect = Rect::from_min_size(
+                Pos2::new(banner_rect.max.x - fix_btn_w - 6.0, banner_rect.min.y + 3.0),
+                Vec2::new(fix_btn_w, 20.0),
+            );
+            let fix_resp = ui.interact(fix_btn_rect, ui.scope_id().with("banner_auto_fix_btn"), egui::Sense::click());
+            let is_fix_hovered = fix_resp.hovered();
+            let btn_bg = if is_fix_hovered {
+                Color32::from_rgb(220, 38, 38)
+            } else {
+                Color32::from_rgb(239, 68, 68)
+            };
+            painter.rect_filled(fix_btn_rect, 4.0, btn_bg);
+            painter.text(
+                fix_btn_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "🪄 Auto-Fix Semua",
+                egui::FontId::proportional(11.5),
+                Color32::WHITE,
+            );
+            if fix_resp.on_hover_text("Otomatis sesuaikan gain modul-modul biang kerok agar berada dalam margin headroom aman").clicked() {
+                self.apply_all_headroom_auto_fixes();
+            }
+        }
 
         // Add reconnected cable
         if let Some((from_id, to_id)) = connection_to_add {
@@ -3146,7 +3365,7 @@ impl LunulaApp {
         }
 
         // Empty Canvas Context Menu: Right-Click on empty canvas background to quickly add modules
-        if !is_hovering_any_node {
+        if !is_hovering_any_node && !is_canvas_blocked {
             response.context_menu(|ui| {
                 ui.label(egui::RichText::new("➕ TAMBAH MODUL STUDIO").strong().size(12.0).color(Color32::from_rgb(15, 23, 42)));
                 ui.separator();
@@ -3227,5 +3446,8 @@ impl LunulaApp {
 
         // Render filter-specific routing tutorial module
         self.render_filter_tutorial_card(ui, canvas_rect);
+
+        // Render floating headroom guard & clipping detection settings popup
+        self.render_clipping_settings_popup(ui, canvas_rect);
     }
 }
