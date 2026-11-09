@@ -23,6 +23,7 @@ pub struct AudioEngineController {
     shared_muted: Arc<AtomicBool>,
     shared_bit_perfect: Arc<AtomicBool>,
     shared_visualizer: Arc<VisualizerRingBuffer>,
+    shared_buffer_metrics: Arc<crate::system_telemetry::BufferMetricsAtomic>,
 }
 
 impl AudioEngineController {
@@ -36,6 +37,7 @@ impl AudioEngineController {
         let shared_muted = Arc::new(AtomicBool::new(false));
         let shared_bit_perfect = Arc::new(AtomicBool::new(true));
         let shared_visualizer = Arc::new(VisualizerRingBuffer::new());
+        let shared_buffer_metrics = Arc::new(crate::system_telemetry::BufferMetricsAtomic::default());
 
         let pos_clone = Arc::clone(&shared_position_ms);
         let state_clone = Arc::clone(&shared_state);
@@ -43,11 +45,12 @@ impl AudioEngineController {
         let mute_clone = Arc::clone(&shared_muted);
         let bp_clone = Arc::clone(&shared_bit_perfect);
         let vis_clone = Arc::clone(&shared_visualizer);
+        let buf_clone = Arc::clone(&shared_buffer_metrics);
 
         thread::Builder::new()
             .name("lunula-audio-worker".into())
             .spawn(move || {
-                run_audio_worker(cmd_rx, event_tx, pos_clone, state_clone, vol_clone, mute_clone, bp_clone, vis_clone);
+                run_audio_worker(cmd_rx, event_tx, pos_clone, state_clone, vol_clone, mute_clone, bp_clone, vis_clone, buf_clone);
             })?;
 
         Ok(Self {
@@ -59,7 +62,12 @@ impl AudioEngineController {
             shared_muted,
             shared_bit_perfect,
             shared_visualizer,
+            shared_buffer_metrics,
         })
+    }
+
+    pub fn buffer_metrics(&self) -> &Arc<crate::system_telemetry::BufferMetricsAtomic> {
+        &self.shared_buffer_metrics
     }
 
     pub fn play<P: Into<PathBuf>>(&self, path: P) {
@@ -269,6 +277,7 @@ fn run_audio_worker(
     shared_muted: Arc<AtomicBool>,
     shared_bit_perfect: Arc<AtomicBool>,
     shared_visualizer: Arc<VisualizerRingBuffer>,
+    shared_buffer_metrics: Arc<crate::system_telemetry::BufferMetricsAtomic>,
 ) {
     let mut decoder: Option<AudioDecoder> = None;
     let mut next_decoder: Option<AudioDecoder> = None;
@@ -547,6 +556,7 @@ fn run_audio_worker(
                         shared_state.store(0, Ordering::Relaxed);
                         shared_position_ms.store(0, Ordering::Relaxed);
                         shared_visualizer.clear();
+                        shared_buffer_metrics.used_samples.store(0, Ordering::Relaxed);
                         let _ = event_tx.send(AudioEvent::StateChanged(PlaybackState::Stopped));
                     }
                     AudioCommand::Seek(seconds) => {
@@ -557,6 +567,7 @@ fn run_audio_worker(
                                     raw_len = 0;
                                     fade_in_remaining_samples = 0;
                                     fade_in_total_samples = 0;
+                                    shared_buffer_metrics.used_samples.store(0, Ordering::Relaxed);
 
                                     if let Some(out) = &output {
                                         if !out.flush() {
@@ -851,6 +862,13 @@ fn run_audio_worker(
 
                     if batch_samples > 0 {
                         let _ = prod.push_partial_slice(&batch_buf[..batch_samples]);
+                        let cap = prod.buffer().capacity() as u32;
+                        let used = (cap as usize).saturating_sub(prod.slots()) as u32;
+                        shared_buffer_metrics.capacity_samples.store(cap, Ordering::Relaxed);
+                        shared_buffer_metrics.used_samples.store(used, Ordering::Relaxed);
+                        shared_buffer_metrics.chunk_counter.fetch_add(1, Ordering::Relaxed);
+                        shared_buffer_metrics.total_samples_streamed.fetch_add(batch_samples as u64, Ordering::Relaxed);
+                        shared_buffer_metrics.last_chunk_frames.store((batch_samples / 2) as u32, Ordering::Relaxed);
                     }
 
                     let cur_pos = dec.current_time();
@@ -892,6 +910,7 @@ fn run_audio_worker(
                                 } else {
                                     fade_in_remaining_samples = 0;
                                     fade_in_total_samples = 0;
+                                    shared_buffer_metrics.used_samples.store(0, Ordering::Relaxed);
                                 }
                                 if let Some(out) = &output {
                                     let report = create_signal_path_report(out, next_sr, next_bd, chain_mode);

@@ -148,6 +148,7 @@ pub struct LunulaApp {
     // Library scanning state
     pub scan_rx: Option<std::sync::mpsc::Receiver<ScanMsg>>,
     pub is_scanning: bool,
+    pub system_telemetry: crate::system_telemetry::SystemTelemetrySampler,
     pub scan_status: String,
 
     pub visualizer_anim_phase: f32,
@@ -365,6 +366,12 @@ impl LunulaApp {
                 }
             });
 
+        let audio_engine = crate::audio::AudioEngineController::new().ok();
+        let mut system_telemetry = crate::system_telemetry::SystemTelemetrySampler::default();
+        if let Some(ref eng) = audio_engine {
+            system_telemetry.buffer_metrics = std::sync::Arc::clone(eng.buffer_metrics());
+        }
+
         let mut app = Self {
             current_tab: AppTab::NowPlaying,
             selected_node: None,
@@ -525,7 +532,8 @@ impl LunulaApp {
             scan_status: String::new(),
             visualizer_anim_phase: 0.0,
             waveform_mode: WaveformMode::StackedMultiBand,
-            audio_engine: crate::audio::AudioEngineController::new().ok(),
+            audio_engine,
+            system_telemetry,
             signal_path_report: None,
             fft_analyzer: crate::audio::FftAnalyzer::new(48000.0),
             spectrum_bars: [0.0; 48],
@@ -2382,6 +2390,7 @@ impl eframe::App for LunulaApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.system_telemetry.sample();
 
         // Drain loaded covers from background thread into egui texture cache (bounded to 32 entries)
         while let Ok(result) = self.cover_res_rx.try_recv() {
@@ -3855,6 +3864,23 @@ mod tests {
             out.textures_delta.clear();
         }
 
+        // Test RAM Buffer node inspection with real heap & animated chunk streaming
+        if let Some(buf_node) = app.nodes.iter().find(|n| n.node_type == crate::models::NodeType::Buffer) {
+            app.selected_node = Some(buf_node.id);
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: screen,
+                    time: Some(0.35),
+                    ..Default::default()
+                },
+                |ui| {
+                    app.render_telemetry_inspection_desk(ui, 220.0);
+                },
+            );
+            assert!(!out.shapes.is_empty(), "Must render RAM Buffer live heap & chunk streaming telemetry");
+            out.textures_delta.clear();
+        }
+
         // 3. Test cable probe mode
         app.selected_node = None;
         app.advance_studio_state.selected_cable_idx = Some(0);
@@ -4077,6 +4103,47 @@ mod tests {
         app.live_gain_reduction_db = 4.8;
         assert_eq!(app.live_isp_clip_detected, true);
         assert_eq!(app.live_gain_reduction_db, 4.8);
+    }
+
+    #[test]
+    fn test_ram_buffer_telemetry_desk_metrics_and_animation() {
+        let mut app = LunulaApp::new_standalone();
+        let ctx = egui::Context::default();
+        let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 900.0)));
+
+        // 1. Switch to Advance Studio & Select Node 2 (RAM Buffer)
+        app.studio_mode = crate::models::StudioMode::Advance;
+        app.advance_studio_state.telemetry_tab = crate::ui::patchbay::TelemetryTab::AutoInspect;
+        app.selected_node = Some(2);
+
+        // 2. Sample live system telemetry
+        app.system_telemetry.sample();
+        let mem = app.system_telemetry.memory_stats();
+        let snap = app.system_telemetry.buffer_snapshot(44100);
+
+        #[cfg(windows)]
+        {
+            assert!(mem.working_set_mb() > 1.0, "Working set must be realistic physical RAM");
+            assert!(mem.peak_working_set_mb() >= mem.working_set_mb());
+        }
+
+        assert_eq!(snap.capacity_samples, 96000);
+        assert_eq!(snap.chunk_size_frames, 512);
+        assert!((snap.chunk_size_kb - 4.0).abs() < 1e-3);
+
+        // 3. Render RAM Buffer Telemetry Desk headlessly
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: screen,
+                time: Some(1.234),
+                ..Default::default()
+            },
+            |ui| {
+                app.render_telemetry_inspection_desk(ui, 240.0);
+            },
+        );
+        assert!(!out.shapes.is_empty(), "RAM Buffer telemetry desk must render shapes and animated conveyor");
+        out.textures_delta.clear();
     }
 
     #[test]
