@@ -873,7 +873,10 @@ impl LunulaApp {
             let artist = &self.current_track.artist;
             let album = &self.current_track.album;
             let dur = self.current_track.duration;
-            let cover_url = self.current_track.file_path.as_deref();
+            let cover_url = self.current_track.file_path.as_deref().filter(|p| {
+                let lower = p.to_lowercase();
+                lower.ends_with(".jpg") || lower.ends_with(".jpeg") || lower.ends_with(".png") || lower.ends_with(".bmp")
+            });
             smtc.update_metadata(title, artist, album, dur, cover_url);
             smtc.update_playback_state(self.is_playing, self.current_time);
         }

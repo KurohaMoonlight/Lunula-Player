@@ -88,7 +88,7 @@ impl StereoResampler {
         ) {
             let in_req = resampler.input_frames_next();
             let out_req = resampler.output_frames_next();
-            self.in_buffer = vec![0.0f32; in_req * 2];
+            self.in_buffer = vec![0.0f32; (in_req + 64) * 2];
             self.out_buffer = vec![0.0f32; (out_req + 64) * 2];
             self.out_queue = Vec::with_capacity(out_req + 64);
             self.out_queue_idx = 0;
@@ -120,8 +120,14 @@ impl StereoResampler {
         self.out_queue.clear();
         self.out_queue_idx = 0;
 
-        let resampler = self.sinc_resampler.as_mut().unwrap();
+        let Some(resampler) = self.sinc_resampler.as_mut() else {
+            return fetch();
+        };
         let in_frames = resampler.input_frames_next();
+        let in_samples_needed = in_frames * 2;
+        if self.in_buffer.len() < in_samples_needed {
+            self.in_buffer.resize(in_samples_needed + 128, 0.0);
+        }
 
         let mut valid_in_frames = 0;
         while valid_in_frames < in_frames {
@@ -138,19 +144,19 @@ impl StereoResampler {
             if !self.flushed_eof {
                 self.flushed_eof = true;
                 // Zero-fill input buffer to flush the sinc filter delay line
-                self.in_buffer[..in_frames * 2].fill(0.0);
+                self.in_buffer[..in_samples_needed].fill(0.0);
                 valid_in_frames = in_frames;
             } else {
                 return None; // True EOF: sinc filter has been fully flushed
             }
         } else if valid_in_frames < in_frames {
             // Partial final chunk before EOF: zero-fill remainder
-            for i in (valid_in_frames * 2)..(in_frames * 2) {
+            for i in (valid_in_frames * 2)..in_samples_needed {
                 self.in_buffer[i] = 0.0;
             }
         }
 
-        let in_adapter = match InterleavedSlice::new(&self.in_buffer, 2, in_frames) {
+        let in_adapter = match InterleavedSlice::new(&self.in_buffer[..in_samples_needed], 2, in_frames) {
             Ok(adapter) => adapter,
             Err(e) => {
                 eprintln!("[Resampler Error] in_adapter creation failed: {}", e);
@@ -159,10 +165,11 @@ impl StereoResampler {
         };
 
         let out_frames_needed = resampler.output_frames_next();
-        if self.out_buffer.len() < out_frames_needed * 2 {
-            self.out_buffer.resize(out_frames_needed * 2, 0.0);
+        let out_samples_needed = out_frames_needed * 2;
+        if self.out_buffer.len() < out_samples_needed {
+            self.out_buffer.resize(out_samples_needed + 128, 0.0);
         }
-        let mut out_adapter = match InterleavedSlice::new_mut(&mut self.out_buffer, 2, out_frames_needed) {
+        let mut out_adapter = match InterleavedSlice::new_mut(&mut self.out_buffer[..out_samples_needed], 2, out_frames_needed) {
             Ok(adapter) => adapter,
             Err(e) => {
                 eprintln!("[Resampler Error] out_adapter creation failed: {}", e);
@@ -312,5 +319,30 @@ mod tests {
             outs += 1;
         }
         assert!(outs > 400);
+    }
+
+    #[test]
+    fn test_resampler_buffer_overrun_resilience() {
+        // Test irrational sample rate ratios over 20,000 frames to ensure
+        // fluctuating input_frames_next() never exceeds dynamic buffer bounds.
+        let rate_pairs = [(44100, 48000), (48000, 44100), (88200, 48000), (96000, 44100), (192000, 44100)];
+        for (src, dst) in rate_pairs {
+            let mut resampler = StereoResampler::new(src, dst);
+            let mut fed = 0;
+            let total_in = 20_000;
+            let mut total_out = 0;
+            while let Some((l, r)) = resampler.next_frame(|| {
+                if fed < total_in {
+                    fed += 1;
+                    Some((0.42, -0.42))
+                } else {
+                    None
+                }
+            }) {
+                total_out += 1;
+                assert!(l.is_finite() && r.is_finite());
+            }
+            assert!(total_out > 0);
+        }
     }
 }

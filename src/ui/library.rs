@@ -286,7 +286,7 @@ impl LunulaApp {
                                 for chunk in all_albums.chunks(cols) {
                                     ui.horizontal(|ui| {
                                         for (alb_name, tracks) in chunk {
-                                            let primary_artist = &tracks[0].artist;
+                                            let primary_artist = tracks.first().map(|t| t.artist.as_str()).unwrap_or("Unknown Artist");
                                             let total_size: f32 = tracks.iter().map(|t| t.file_size_mb).sum();
                                             let is_hires = tracks.iter().any(|t| t.sample_rate >= 88200 || t.bit_depth >= 24);
 
@@ -314,7 +314,7 @@ impl LunulaApp {
                                                         // Vinyl Art Box or Embedded Cover Art
                                                         let (art_rect, _) = ui.allocate_exact_size(Vec2::new(card_w - 28.0, 110.0), egui::Sense::hover());
                                                         let painter = ui.painter();
-                                                        let cover_tex = self.get_album_cover_texture(ui.ctx(), alb_name, tracks[0].file_path.as_deref());
+                                                        let cover_tex = self.get_album_cover_texture(ui.ctx(), alb_name, tracks.first().and_then(|t| t.file_path.as_deref()));
                                                         if let Some(ref tex) = cover_tex {
                                                              painter.rect_filled(art_rect, 8.0, Color32::from_rgb(15, 23, 42));
                                                              painter.image(
@@ -344,9 +344,11 @@ impl LunulaApp {
                                                         ui.add_space(10.0);
                                                         ui.horizontal(|ui| {
                                                             if ui.add_sized([58.0, 26.0], egui::Button::new(egui::RichText::new("▶ Putar").strong().size(11.5))).clicked() {
-                                                                track_to_play = Some((*tracks[0]).clone());
-                                                                if tracks.len() > 1 {
-                                                                    tracks_to_queue_bulk = Some(tracks[1..].iter().map(|&t| t.clone()).collect());
+                                                                if let Some(first_track) = tracks.first() {
+                                                                    track_to_play = Some((*first_track).clone());
+                                                                    if tracks.len() > 1 {
+                                                                        tracks_to_queue_bulk = Some(tracks[1..].iter().map(|&t| t.clone()).collect());
+                                                                    }
                                                                 }
                                                             }
                                                             if ui.add_sized([84.0, 26.0], egui::Button::new(egui::RichText::new("Lihat Lagu").size(11.5))).clicked() {
@@ -373,9 +375,11 @@ impl LunulaApp {
                                                 ui.label(egui::RichText::new(primary_artist).size(10.5).color(Color32::from_rgb(100, 116, 139)));
                                                 ui.separator();
                                                 if ui.button("▶ Putar Album Ini").clicked() {
-                                                    track_to_play = Some((*tracks[0]).clone());
-                                                    if tracks.len() > 1 {
-                                                        tracks_to_queue_bulk = Some(tracks[1..].iter().map(|&t| t.clone()).collect());
+                                                    if let Some(first_track) = tracks.first() {
+                                                        track_to_play = Some((*first_track).clone());
+                                                        if tracks.len() > 1 {
+                                                            tracks_to_queue_bulk = Some(tracks[1..].iter().map(|&t| t.clone()).collect());
+                                                        }
                                                     }
                                                     ui.close();
                                                 }
@@ -520,9 +524,11 @@ impl LunulaApp {
                                                 ui.label(egui::RichText::new(art_name).strong().size(13.0).color(Color32::from_rgb(15, 23, 42)));
                                                 ui.separator();
                                                 if ui.button("▶ Putar Semua Lagu Artis").clicked() {
-                                                    track_to_play = Some((*tracks[0]).clone());
-                                                    if tracks.len() > 1 {
-                                                        tracks_to_queue_bulk = Some(tracks[1..].iter().map(|&t| t.clone()).collect());
+                                                    if let Some(first_track) = tracks.first() {
+                                                        track_to_play = Some((*first_track).clone());
+                                                        if tracks.len() > 1 {
+                                                            tracks_to_queue_bulk = Some(tracks[1..].iter().map(|&t| t.clone()).collect());
+                                                        }
                                                     }
                                                     ui.close();
                                                 }
@@ -627,7 +633,9 @@ impl LunulaApp {
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new(format!("❤️ {} Lagu Favorit", fav_tracks.len())).strong().size(13.5).color(Color32::from_rgb(225, 29, 72)));
                                     if ui.button(egui::RichText::new("▶ Putar Semua Favorit").strong()).clicked() {
-                                        track_to_play = Some((*fav_tracks[0]).clone());
+                                        if let Some(first_fav) = fav_tracks.first() {
+                                            track_to_play = Some((*first_fav).clone());
+                                        }
                                     }
                                 });
                                 ui.add_space(6.0);
@@ -1058,9 +1066,11 @@ impl LunulaApp {
                                                             tracks_to_queue_bulk = Some(pl_tracks.clone());
                                                         }
                                                         if ui.button(egui::RichText::new("▶ Putar").strong().size(11.0)).clicked() {
-                                                            track_to_play = Some(pl_tracks[0].clone());
-                                                            if pl_tracks.len() > 1 {
-                                                                tracks_to_queue_bulk = Some(pl_tracks[1..].to_vec());
+                                                            if let Some(first_pl) = pl_tracks.first() {
+                                                                track_to_play = Some(first_pl.clone());
+                                                                if pl_tracks.len() > 1 {
+                                                                    tracks_to_queue_bulk = Some(pl_tracks[1..].to_vec());
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -1080,9 +1090,11 @@ impl LunulaApp {
                                         ui.separator();
                                         if !pl_tracks.is_empty() {
                                             if ui.button("▶ Putar Playlist Ini").clicked() {
-                                                track_to_play = Some(pl_tracks[0].clone());
-                                                if pl_tracks.len() > 1 {
-                                                    tracks_to_queue_bulk = Some(pl_tracks[1..].to_vec());
+                                                if let Some(first_pl) = pl_tracks.first() {
+                                                    track_to_play = Some(first_pl.clone());
+                                                    if pl_tracks.len() > 1 {
+                                                        tracks_to_queue_bulk = Some(pl_tracks[1..].to_vec());
+                                                    }
                                                 }
                                                 ui.close();
                                             }

@@ -22,7 +22,63 @@ fn load_app_icon() -> Option<egui::IconData> {
     }
 }
 
+#[cfg(windows)]
+fn show_crash_dialog(msg: &str) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+
+    let title: Vec<u16> = std::ffi::OsStr::new("LunulaPlayer - Fatal Error Occurred\0")
+        .encode_wide()
+        .collect();
+    let text: Vec<u16> = std::ffi::OsStr::new(&format!("{}\0", msg))
+        .encode_wide()
+        .collect();
+
+    unsafe {
+        MessageBoxW(0 as _, text.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
+    }
+}
+
+#[cfg(not(windows))]
+fn show_crash_dialog(_msg: &str) {}
+
 fn main() -> eframe::Result {
+    // Install panic hook for rock-solid stability & crash reporting
+    std::panic::set_hook(Box::new(|info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown".into());
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "Unknown panic payload".to_string()
+        };
+
+        let err_msg = format!(
+            "LunulaPlayer has encountered an unexpected error:\n\nMessage: {}\nLocation: {}\n\nA crash report has been saved to lunula_crash.log.",
+            payload, location
+        );
+        eprintln!("[FATAL PANIC] {}", err_msg);
+
+        if let Ok(mut file) = std::fs::File::create("lunula_crash.log") {
+            use std::io::Write;
+            let _ = writeln!(file, "=== LUNULAPLAYER CRASH REPORT ===");
+            let _ = writeln!(file, "Timestamp: {:?}", std::time::SystemTime::now());
+            let _ = writeln!(file, "Error: {}", payload);
+            let _ = writeln!(file, "Location: {}", location);
+            let _ = writeln!(
+                file,
+                "Thread: {:?}",
+                std::thread::current().name().unwrap_or("unnamed")
+            );
+        }
+
+        show_crash_dialog(&err_msg);
+    }));
+
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1240.0, 820.0])
         .with_min_inner_size([1040.0, 680.0])
@@ -34,6 +90,7 @@ fn main() -> eframe::Result {
 
     let options = eframe::NativeOptions {
         viewport,
+        system_font_fallback: false,
         ..Default::default()
     };
 
