@@ -164,8 +164,8 @@ fn test_severed_cable_freezes_playback_stream_zero_jump() {
     let eval_init = app.evaluate_signal_chain();
     assert!(eval_init.is_complete);
 
-    // 2. Sever the cable 2 -> 4
-    app.connections.retain(|c| !(c.from_node == 2 && c.to_node == 4));
+    // 2. Sever the cable from RAM Buffer (2 -> 5 in Bit-Perfect or 2 -> 4 in Modular FX)
+    app.connections.retain(|c| !(c.from_node == 2 && (c.to_node == 4 || c.to_node == 5)));
     app.invalidate_chain_cache();
     let eval_severed = app.evaluate_signal_chain();
     assert!(!eval_severed.is_complete, "Severing cable must break the signal chain");
@@ -272,5 +272,3 @@ fn test_interactive_theater_renders_all_5_slides_and_all_turns() {
         out.textures_delta.clear();
     }
 }
-
-

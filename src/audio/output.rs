@@ -12,7 +12,7 @@ pub struct AudioOutput {
 }
 
 impl AudioOutput {
-    // Create audio output stream connected to a lock-free RingBuffer.
+    // Create audio output stream connected to a lock-free 64-bit (`f64`) SPSC RingBuffer.
     // In Bit-Perfect mode on Windows, attempts native WASAPI Exclusive Mode first,
     // with automatic zero-glitch fallback to CPAL Shared Mode.
     pub fn new(
@@ -28,13 +28,15 @@ impl AudioOutput {
         is_dsp_active: Arc<AtomicBool>,
         event_tx: crossbeam_channel::Sender<crate::audio::types::AudioEvent>,
         prefer_exclusive: bool,
-    ) -> Result<(Self, Producer<f32>), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<(Self, Producer<f64>), Box<dyn std::error::Error + Send + Sync>> {
         #[cfg(target_os = "windows")]
         if prefer_exclusive && chain_mode != ChainMode::OsResampled {
+            let allow_rate_adaptation = chain_mode == ChainMode::DspActive;
             if let Ok((ex_backend, prod)) = WasapiExclusiveBackend::try_new(
                 preferred_device_name,
                 preferred_sample_rate,
                 preferred_bit_depth,
+                allow_rate_adaptation,
                 buffer_capacity,
                 Arc::clone(&shared_volume),
                 Arc::clone(&visualizer),
@@ -130,7 +132,7 @@ impl AudioOutput {
 mod tests {
     #[test]
     fn test_ring_buffer_creation() {
-        let (mut prod, mut cons) = rtrb::RingBuffer::<f32>::new(1024);
+        let (mut prod, mut cons) = rtrb::RingBuffer::<f64>::new(1024);
         assert_eq!(prod.slots(), 1024);
         assert_eq!(cons.slots(), 0);
 

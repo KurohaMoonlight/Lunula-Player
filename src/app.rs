@@ -305,8 +305,8 @@ impl LunulaApp {
                 id: 2,
                 node_type: NodeType::Buffer,
                 title: "RAM BUFFER".to_string(),
-                sub1: "RingBuffer".to_string(),
-                sub2: "100% Loaded".to_string(),
+                sub1: "6.0 MB f64 SPSC".to_string(),
+                sub2: "100% Lock-Free DMA".to_string(),
                 pos: Pos2::new(280.0, 60.0),
                 is_removable: false,
                 param_val: 0.0,
@@ -333,11 +333,11 @@ impl LunulaApp {
             },
         ];
 
-        // Default clean chain: 1 (File Source) -> 2 (RAM Buffer) -> 4 (Resampler) -> 5 (Output DAC)
+        // Default Bit-Perfect Direct Highway: 1 (File Source) -> 2 (RAM Buffer) ==Direct Jump==> 5 (Output DAC)
+        // Node 4 (APP RESAMPLER) is unwired / idle passthrough in Bit-Perfect mode
         let initial_connections = vec![
             CableConnection::new(1, 2),
-            CableConnection::new(2, 4),
-            CableConnection::new(4, 5),
+            CableConnection::new(2, 5),
         ];
 
         let (cover_req_tx, cover_req_rx) = std::sync::mpsc::channel::<(String, String)>();
@@ -673,6 +673,7 @@ impl LunulaApp {
             app.volume = state.volume;
             app.eq_bands = state.eq_bands;
             app.eq_bypass = state.eq_bypass;
+            app.prefer_exclusive = state.prefer_exclusive_mode;
             app.is_shuffled = state.is_shuffled;
             app.repeat_mode = state.repeat_mode;
             app.queue_cursor = state.queue_cursor;
@@ -1438,7 +1439,71 @@ impl LunulaApp {
         }
     }
 
+    /// Returns true ONLY when the active audio stream is truly 1:1 Bit-Perfect (zero resampling, no fallback).
+    /// If `ChainMode::BitPerfect` was requested, but hardware rejected the sample rate and forced a fallback
+    /// (`actual_mode == ChainMode::OsResampled` or `is_resampling == true`), this returns `false` so the canvas
+    /// honestly routes audio through Node 4 (`APP RESAMPLER`) instead of faking a direct jump to the DAC!
+    #[inline]
+    pub fn is_true_bit_perfect_highway(&self) -> bool {
+        if self.chain_mode != ChainMode::BitPerfect {
+            return false;
+        }
+        if let Some(ref r) = self.signal_path_report {
+            r.actual_mode == ChainMode::BitPerfect && !r.is_resampling
+        } else {
+            true
+        }
+    }
+
+    /// Synchronizes default patchbay wiring between Direct Bit-Perfect Jump Highway (`1 -> 2 -> 5`)
+    /// and Resampler-routed path (`1 -> 2 -> 4 -> 5`) whenever mode or hardware fallback status changes,
+    /// without disturbing any user-inserted modular DSP/effect connections.
+    pub fn sync_default_highway_connections(&mut self) {
+        let has_custom_dsp_connections = self.connections.iter().any(|c| {
+            let from_is_fx = self.nodes.iter().find(|n| n.id == c.from_node).map_or(false, |n| n.node_type.is_dsp_or_effect());
+            let to_is_fx = self.nodes.iter().find(|n| n.id == c.to_node).map_or(false, |n| n.node_type.is_dsp_or_effect());
+            from_is_fx || to_is_fx
+        });
+        if has_custom_dsp_connections {
+            return;
+        }
+
+        let is_standard_3_cable = self.connections.len() == 3
+            && self.connections.iter().any(|c| c.from_node == 1 && c.to_node == 2)
+            && self.connections.iter().any(|c| c.from_node == 2 && c.to_node == 4)
+            && self.connections.iter().any(|c| c.from_node == 4 && c.to_node == 5);
+
+        let is_pure_bp_2_cable = self.connections.len() == 2
+            && self.connections.iter().any(|c| c.from_node == 1 && c.to_node == 2)
+            && self.connections.iter().any(|c| c.from_node == 2 && c.to_node == 5);
+
+        if self.is_true_bit_perfect_highway() {
+            if self.connections.is_empty() || is_standard_3_cable {
+                self.connections = vec![
+                    CableConnection::new(1, 2),
+                    CableConnection::new(2, 5),
+                ];
+                self.invalidate_chain_cache();
+            }
+        } else {
+            // Either Modular FX (DspActive), OsResampled, or Bit-Perfect that experienced hardware rate fallback!
+            // Honestly connect through Node 4 (APP RESAMPLER): 1 -> 2 -> 4 -> 5.
+            if self.connections.is_empty() || is_pure_bp_2_cable {
+                self.connections = vec![
+                    CableConnection::new(1, 2),
+                    CableConnection::new(2, 4),
+                    CableConnection::new(4, 5),
+                ];
+                self.invalidate_chain_cache();
+            }
+        }
+    }
+
     pub fn update_signal_nodes_from_report(&mut self, report: &crate::audio::SignalPathReport) {
+        let is_bp_fallback = (report.requested_mode == ChainMode::BitPerfect
+            && (report.actual_mode == ChainMode::OsResampled || report.is_resampling))
+            || report.is_exclusive_rejected();
+
         for node in &mut self.nodes {
             match node.node_type {
                 NodeType::Source => {
@@ -1458,13 +1523,19 @@ impl LunulaApp {
                 }
                 NodeType::Buffer => {
                     node.title = "RAM BUFFER".to_string();
-                    node.sub1 = "RingBuffer".to_string();
-                    node.sub2 = "100% Loaded".to_string();
+                    node.sub1 = "6.0 MB f64 SPSC".to_string();
+                    node.sub2 = "100% Lock-Free DMA".to_string();
                 }
                 NodeType::Driver => {
                     node.title = "APP RESAMPLER".to_string();
                     node.sub1 = report.device_name.clone();
-                    if report.is_exclusive {
+                    if self.chain_mode == ChainMode::BitPerfect && !report.is_resampling && report.actual_mode == ChainMode::BitPerfect {
+                        node.sub2 = "Bypassed (1:1 Direct Highway)".to_string();
+                    } else if is_bp_fallback {
+                        node.sub2 = format!("Fallback Adapted by Rubato Sinc • {:.1}k ➔ {:.1}k", report.source_rate as f32 / 1000.0, report.device_rate as f32 / 1000.0);
+                    } else if report.is_hardware_rate_adapted() {
+                        node.sub2 = format!("{:.1}k ──▶ {:.1}k (Hardware Adapted)", report.source_rate as f32 / 1000.0, report.device_rate as f32 / 1000.0);
+                    } else if report.is_exclusive && !report.is_resampling {
                         node.sub2 = format!("Direct Bitstream • {:.1} kHz", report.device_rate as f32 / 1000.0);
                     } else if report.is_resampling {
                         node.sub2 = format!("Rubato Sinc {} ({}) • {:.1} kHz", self.resampler_settings.quality.short_name(), self.resampler_settings.profile.short_name(), report.device_rate as f32 / 1000.0);
@@ -1496,9 +1567,13 @@ impl LunulaApp {
 
     pub fn set_exclusive_mode(&mut self, prefer: bool) {
         self.prefer_exclusive = prefer;
+        if let Some(ref mut report) = self.signal_path_report {
+            report.prefer_exclusive = prefer;
+        }
         if let Some(ref engine) = self.audio_engine {
             engine.set_prefer_exclusive(prefer);
         }
+        self.save_library_state();
     }
 
     pub fn set_chain_mode(&mut self, mode: ChainMode) {
@@ -1516,14 +1591,6 @@ impl LunulaApp {
             }
         }
 
-        if self.connections.is_empty() {
-            self.connections = vec![
-                CableConnection::new(1, 2),
-                CableConnection::new(2, 4),
-                CableConnection::new(4, 5),
-            ];
-        }
-
         if let Some(ref report) = self.signal_path_report {
             let mut updated = report.clone();
             updated.requested_mode = mode;
@@ -1539,6 +1606,7 @@ impl LunulaApp {
             };
             updated.is_dsp_active = updated.actual_mode == ChainMode::DspActive;
             self.update_signal_nodes_from_report(&updated);
+            self.signal_path_report = Some(updated);
         } else {
             let dev_name = self.selected_output_device.clone().unwrap_or_else(|| "Default Audio Endpoint".to_string());
             for n in &mut self.nodes {
@@ -1570,6 +1638,8 @@ impl LunulaApp {
                 }
             }
         }
+
+        self.sync_default_highway_connections();
 
         if let Some(ref engine) = self.audio_engine {
             engine.set_chain_mode(mode);
@@ -2351,8 +2421,8 @@ impl LunulaApp {
                 id: 2,
                 node_type: NodeType::Buffer,
                 title: "RAM BUFFER".to_string(),
-                sub1: "RingBuffer".to_string(),
-                sub2: "100% Loaded".to_string(),
+                sub1: "6.0 MB f64 SPSC".to_string(),
+                sub2: "100% Lock-Free DMA".to_string(),
                 pos: Pos2::new(280.0, 60.0),
                 is_removable: false,
                 param_val: 0.0,
@@ -2378,11 +2448,18 @@ impl LunulaApp {
                 param_val: 0.0,
             },
         ];
-        self.connections = vec![
-            CableConnection::new(1, 2),
-            CableConnection::new(2, 4),
-            CableConnection::new(4, 5),
-        ];
+        self.connections = if self.is_true_bit_perfect_highway() {
+            vec![
+                CableConnection::new(1, 2),
+                CableConnection::new(2, 5),
+            ]
+        } else {
+            vec![
+                CableConnection::new(1, 2),
+                CableConnection::new(2, 4),
+                CableConnection::new(4, 5),
+            ]
+        };
         self.next_node_id = 6;
         self.selected_node = None;
         self.advance_studio_state.selected_cable_idx = None;
@@ -2636,6 +2713,8 @@ impl eframe::App for LunulaApp {
         if let Some(report) = new_signal_path {
             self.update_signal_nodes_from_report(&report);
             self.signal_path_report = Some(report);
+            self.sync_default_highway_connections();
+            self.sync_signal_chain_to_engine();
         }
 
         if let Some(d) = new_duration {
@@ -3007,44 +3086,75 @@ impl eframe::App for LunulaApp {
                     ui.label(egui::RichText::new("🌙 LunulaPlayer").strong().size(18.0).color(Color32::from_rgb(15, 23, 42)));
                     ui.label(egui::RichText::new("Pure Native Engine").strong().size(12.0).color(Color32::from_rgb(100, 116, 139)));
                     ui.add_space(8.0);
-                    // --- HARDWARE STREAM INDICATOR (NO GIMMICK) ---
+                    // --- HARDWARE STREAM INDICATOR (PURE HARDWARE TRUTH — NO GIMMICK) ---
                     if let Some(ref report) = self.signal_path_report {
-                        if report.is_exclusive {
-                            let badge = egui::Frame::new()
-                                .fill(Color32::from_rgb(236, 253, 245)) // Emerald background
-                                .stroke(Stroke::new(1.0, Color32::from_rgb(52, 211, 153)))
-                                .corner_radius(12.0)
-                                .inner_margin(egui::Margin::symmetric(8, 3))
-                                .show(ui, |ui| {
-                                    ui.label(
-                                        egui::RichText::new("🔒 WASAPI EXCLUSIVE")
-                                            .strong()
-                                            .size(10.5)
-                                            .color(Color32::from_rgb(4, 120, 87)),
-                                    );
-                                });
-                            badge.response.on_hover_text(format!(
-                                "Mode Hardware: WASAPI Exclusive Locked\n• Perangkat: {}\n• Format DAC: {}\n• Sample Rate: {:.1} kHz\n• Status: Windows Audio Mixer di-bypass penuh (Bit-Perfect)",
-                                report.device_name, report.format_desc, report.device_rate as f32 / 1000.0
-                            ));
-                        } else {
-                            let badge = egui::Frame::new()
-                                .fill(Color32::from_rgb(254, 243, 199)) // Amber background
-                                .stroke(Stroke::new(1.0, Color32::from_rgb(245, 158, 11)))
-                                .corner_radius(12.0)
-                                .inner_margin(egui::Margin::symmetric(8, 3))
-                                .show(ui, |ui| {
-                                    ui.label(
-                                        egui::RichText::new("🔊 WASAPI SHARED")
-                                            .strong()
-                                            .size(10.5)
-                                            .color(Color32::from_rgb(180, 83, 9)),
-                                    );
-                                });
-                            badge.response.on_hover_text(format!(
-                                "Mode Hardware: Windows Shared Audio\n• Perangkat: {}\n• Format DAC: {}\n• Status: Melewati OS Audio Mixer",
-                                report.device_name, report.format_desc
-                            ));
+                        match report.hardware_badge() {
+                            crate::audio::types::HardwareStreamBadge::WasapiExclusive => {
+                                let badge = egui::Frame::new()
+                                    .fill(Color32::from_rgb(236, 253, 245)) // Emerald background
+                                    .stroke(Stroke::new(1.0, Color32::from_rgb(52, 211, 153)))
+                                    .corner_radius(12.0)
+                                    .inner_margin(egui::Margin::symmetric(8, 3))
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            egui::RichText::new("🔒 WASAPI EXCLUSIVE")
+                                                .strong()
+                                                .size(10.5)
+                                                .color(Color32::from_rgb(4, 120, 87)),
+                                        );
+                                    });
+                                let rate_detail = if report.is_hardware_rate_adapted() {
+                                    format!("{:.1} kHz ──▶ {:.1} kHz (Hardware Adapted via Sinc 64-bit)", report.source_rate as f32 / 1000.0, report.device_rate as f32 / 1000.0)
+                                } else {
+                                    format!("{:.1} kHz (1:1 Native Clock)", report.device_rate as f32 / 1000.0)
+                                };
+                                badge.response.on_hover_text(format!(
+                                    "Mode Hardware: WASAPI Exclusive Locked\n• Perangkat: {}\n• Format Buffer DAC: {}\n• Sample Rate Aktual: {}\n• Status Mixer: Windows Audio Mixer 100% di-bypass penuh",
+                                    report.device_name, report.format_desc, rate_detail
+                                ));
+                            }
+                            crate::audio::types::HardwareStreamBadge::ExclusiveRejected => {
+                                let badge = egui::Frame::new()
+                                    .fill(Color32::from_rgb(254, 226, 226)) // Crimson/Red-Orange background
+                                    .stroke(Stroke::new(1.0, Color32::from_rgb(239, 68, 68)))
+                                    .corner_radius(12.0)
+                                    .inner_margin(egui::Margin::symmetric(8, 3))
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            egui::RichText::new("⚠️ EXCLUSIVE REJECTED")
+                                                .strong()
+                                                .size(10.5)
+                                                .color(Color32::from_rgb(185, 28, 28)),
+                                        );
+                                    });
+                                badge.response.on_hover_text(format!(
+                                    "Mode Hardware: Exclusive Ditolak Hardware/Driver (Fallback ke Shared)\n• Perangkat: {}\n• Format Buffer DAC: {}\n• Sample Rate File vs DAC: {:.1} kHz ➔ {:.1} kHz\n• Status Mixer: DAC menolak clock {:.1} kHz dalam Exclusive mode, terpaksa melewati Windows Audio Mixer",
+                                    report.device_name,
+                                    report.format_desc,
+                                    report.source_rate as f32 / 1000.0,
+                                    report.device_rate as f32 / 1000.0,
+                                    report.source_rate as f32 / 1000.0
+                                ));
+                            }
+                            crate::audio::types::HardwareStreamBadge::WasapiShared => {
+                                let badge = egui::Frame::new()
+                                    .fill(Color32::from_rgb(254, 243, 199)) // Amber background
+                                    .stroke(Stroke::new(1.0, Color32::from_rgb(245, 158, 11)))
+                                    .corner_radius(12.0)
+                                    .inner_margin(egui::Margin::symmetric(8, 3))
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            egui::RichText::new("🔊 WASAPI SHARED")
+                                                .strong()
+                                                .size(10.5)
+                                                .color(Color32::from_rgb(180, 83, 9)),
+                                        );
+                                    });
+                                badge.response.on_hover_text(format!(
+                                    "Mode Hardware: WASAPI Shared Audio\n• Perangkat: {}\n• Format Buffer DAC: {}\n• Sample Rate Aktual: {:.1} kHz\n• Status Mixer: Mengalir melalui Windows OS Audio Mixer",
+                                    report.device_name, report.format_desc, report.device_rate as f32 / 1000.0
+                                ));
+                            }
                         }
                     } else {
                         let badge = egui::Frame::new()
@@ -3194,9 +3304,25 @@ impl eframe::App for LunulaApp {
 
                                 ui.add_space(8.0);
 
-                                // If fallback to OS Resampled happened due to hardware rate mismatch, show honest banner
+                                // Tahap 4.4: Honest hardware clock transparency banner in Bit-Perfect / Modular FX modes
                                 if let Some(ref r) = self.signal_path_report {
-                                    if is_chain_ok && r.requested_mode == ChainMode::BitPerfect && r.actual_mode == ChainMode::OsResampled {
+                                    if is_chain_ok && r.requested_mode == ChainMode::BitPerfect && (r.actual_mode == ChainMode::OsResampled || r.is_exclusive_rejected()) {
+                                        let msg = if r.prefer_exclusive {
+                                            format!(
+                                                "DAC Hardware ('{}') tidak mendukung clock asli {:.1} kHz dalam Exclusive mode. Demi prinsip mutlak 1:1 Bit-Perfect tanpa resampling tersembunyi, status dialihkan secara transparan ke Shared ({:.1} kHz).",
+                                                r.device_name,
+                                                r.source_rate as f32 / 1000.0,
+                                                r.device_rate as f32 / 1000.0
+                                            )
+                                        } else {
+                                            format!(
+                                                "Perangkat '{}' berjalan pada {:.1} kHz (file asli {:.1} kHz). Engine melakukan adaptasi rate ke {:.1} kHz agar pemutaran tetap berjalan mulus.",
+                                                r.device_name,
+                                                r.device_rate as f32 / 1000.0,
+                                                r.source_rate as f32 / 1000.0,
+                                                r.device_rate as f32 / 1000.0
+                                            )
+                                        };
                                         egui::Frame::new()
                                             .fill(Color32::from_rgb(254, 243, 199))
                                             .stroke(Stroke::new(1.0, Color32::from_rgb(253, 230, 138)))
@@ -3204,8 +3330,8 @@ impl eframe::App for LunulaApp {
                                             .inner_margin(egui::Margin::symmetric(14, 8))
                                             .show(ui, |ui| {
                                                 ui.horizontal(|ui| {
-                                                    ui.label(egui::RichText::new("⚠️ PERINGATAN FALLBACK BIT-PERFECT:").strong().size(12.0).color(Color32::from_rgb(180, 83, 9)));
-                                                    ui.label(egui::RichText::new(format!("Perangkat '{}' tidak mendukung sample rate {:.1} kHz file lagu ini secara native. Engine beralih jujur ke OS Resampling {:.1} kHz agar pemutaran tidak rusak.", r.device_name, r.source_rate as f32 / 1000.0, r.device_rate as f32 / 1000.0)).size(11.5).color(Color32::from_rgb(146, 64, 14)));
+                                                    ui.label(egui::RichText::new("⚠️ TRANSPARANSI HARDWARE BIT-PERFECT:").strong().size(12.0).color(Color32::from_rgb(180, 83, 9)));
+                                                    ui.label(egui::RichText::new(msg).size(11.5).color(Color32::from_rgb(146, 64, 14)));
                                                 });
                                             });
                                         ui.add_space(6.0);
@@ -3842,14 +3968,16 @@ mod tests {
         let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0)));
 
         let mut app = LunulaApp::default();
-        // 1. Add LowPassFilter and route audio 1 -> 2 -> 6 -> 4 -> 5
+        // 1. Switch to Modular FX (DspActive), add LowPassFilter and route audio 1 -> 2 -> 6 -> 4 -> 5
+        app.set_chain_mode(ChainMode::DspActive);
         app.add_modular_filter(NodeType::LowPassFilter);
         let lpf_id = app.nodes.iter().find(|n| n.node_type == NodeType::LowPassFilter).map(|n| n.id).unwrap();
         app.connections.retain(|c| !(c.from_node == 2 && c.to_node == 4));
         app.connections.push(crate::models::CableConnection::new(2, lpf_id));
         app.connections.push(crate::models::CableConnection::new(lpf_id, 4));
+        app.invalidate_chain_cache();
 
-        // 2. Switch to Bit-Perfect mode (modular nodes are bypassed, direct bypass cable must activate)
+        // 2. Switch to Bit-Perfect mode (modular nodes and Node 4 resampler are bypassed, direct jump cable 2 -> 5 activates)
         app.set_chain_mode(ChainMode::BitPerfect);
         app.is_playing = true;
 
@@ -3866,10 +3994,18 @@ mod tests {
         assert!(!out.shapes.is_empty(), "Direct bypass cable in Bit-Perfect mode renders without error");
         out.textures_delta.clear();
 
-        // 3. Test reset_to_default_signal_chain()
+        // 3. Test reset_to_default_signal_chain() in Bit-Perfect mode -> Direct Jump Highway (1,2), (2,5)
         app.reset_to_default_signal_chain();
         assert_eq!(app.nodes.len(), 4, "Resetting chain leaves exactly 4 standard nodes");
-        assert_eq!(app.connections.len(), 3, "Resetting chain restores standard connections (1,2), (2,4), (4,5)");
+        assert_eq!(app.connections.len(), 2, "Resetting chain in Bit-Perfect restores Direct Jump Highway (1,2), (2,5)");
+        assert!(app.connections.iter().any(|c| c.from_node == 1 && c.to_node == 2));
+        assert!(app.connections.iter().any(|c| c.from_node == 2 && c.to_node == 5));
+        assert!(!app.connections.iter().any(|c| c.from_node == 2 && c.to_node == 4));
+        assert!(!app.connections.iter().any(|c| c.from_node == 4 && c.to_node == 5));
+
+        // 4. Switching to DspActive automatically wires App Resampler back into the chain (1,2), (2,4), (4,5)
+        app.set_chain_mode(ChainMode::DspActive);
+        assert_eq!(app.connections.len(), 3, "Switching to DspActive restores modular chain (1,2), (2,4), (4,5)");
         assert!(app.connections.iter().any(|c| c.from_node == 1 && c.to_node == 2));
         assert!(app.connections.iter().any(|c| c.from_node == 2 && c.to_node == 4));
         assert!(app.connections.iter().any(|c| c.from_node == 4 && c.to_node == 5));
@@ -4263,9 +4399,11 @@ mod tests {
             assert!(mem.peak_working_set_mb() >= mem.working_set_mb());
         }
 
-        assert_eq!(snap.capacity_samples, 96000);
+        assert_eq!(snap.capacity_samples, crate::system_telemetry::SPSC_RING_BUFFER_CAPACITY);
+        assert!((snap.capacity_mb - 6.0).abs() < 1e-3);
+        assert!((snap.capacity_kb - 6144.0).abs() < 1e-3);
         assert_eq!(snap.chunk_size_frames, 512);
-        assert!((snap.chunk_size_kb - 4.0).abs() < 1e-3);
+        assert!((snap.chunk_size_kb - 8.0).abs() < 1e-3);
 
         // 3. Render RAM Buffer Telemetry Desk headlessly
         let mut out = ctx.run_ui(
@@ -4441,6 +4579,7 @@ mod tests {
         use crate::audio::NodeSafetyStatus;
 
         let mut app = LunulaApp::new_standalone();
+        app.set_chain_mode(ChainMode::DspActive);
         // Insert Volume Booster (+6.0 dB) between Buffer (2) and Resampler (4)
         let booster_id = 100;
         app.nodes.push(ModularNode {
@@ -4508,6 +4647,7 @@ mod tests {
     #[test]
     fn test_static_analysis_context_aware_with_active_track() {
         let mut app = LunulaApp::new_standalone();
+        app.set_chain_mode(ChainMode::DspActive);
 
         // 1. Insert Stereo Widener (+1% width) between Buffer (2) and Resampler (4)
         let widener_id = 100;
@@ -4766,6 +4906,7 @@ mod tests {
 
         // Test in LunulaApp: if cycle is injected into flowing cables, compile_signal_chain must reject graph
         let mut app = LunulaApp::default();
+        app.set_chain_mode(ChainMode::DspActive);
         app.connections.push(crate::models::CableConnection::new(4, 2)); // 4 (Engine) -> 2 (RAM) forms cycle
         app.invalidate_chain_cache();
         let compiled = app.compile_signal_chain();
@@ -4830,7 +4971,14 @@ mod tests {
         app.add_modular_filter(crate::models::NodeType::StereoWidener);
         app.add_modular_filter(crate::models::NodeType::BassGuard);
 
-        // Active chain is default linear 1 -> 2 -> 4 -> 5
+        // In default Bit-Perfect mode, active chain is Direct Jump Highway: 1 -> 2 -> 5 (Node 4 is unwired/isolated!)
+        let eval_bp = app.evaluate_signal_chain();
+        assert!(eval_bp.is_complete);
+        assert_eq!(eval_bp.flowing_nodes.len(), 3);
+        assert!(!eval_bp.flowing_nodes.contains(&4), "Node 4 (APP RESAMPLER) must be isolated in Bit-Perfect Direct Highway");
+
+        // Switch to DspActive: active chain is 1 -> 2 -> 4 -> 5
+        app.set_chain_mode(ChainMode::DspActive);
         let eval = app.evaluate_signal_chain();
         assert!(eval.is_complete);
 
@@ -4851,6 +4999,7 @@ mod tests {
     #[test]
     fn test_advanced_dsp_nodes_time_alignment_and_stereo_matrix_pipeline() {
         let mut app = LunulaApp::default();
+        app.set_chain_mode(ChainMode::DspActive);
         // Insert Time Alignment and Stereo Matrix
         app.add_modular_filter(crate::models::NodeType::TimeAlignment);
         app.add_modular_filter(crate::models::NodeType::StereoMatrix);
@@ -4932,5 +5081,285 @@ mod tests {
             assert!(cache.len() <= 32);
         }
     }
-}
 
+    #[test]
+    fn test_stage_4_1_direct_bit_perfect_jump_highway() {
+        let mut app = LunulaApp::default();
+
+        // 1. Default mode is Bit-Perfect with Direct Jump Highway: 1 (Source) -> 2 (RAM Buffer) ==> 5 (Output DAC)
+        assert_eq!(app.chain_mode, ChainMode::BitPerfect);
+        assert_eq!(app.connections.len(), 2);
+        assert!(app.connections.iter().any(|c| c.from_node == 1 && c.to_node == 2));
+        assert!(app.connections.iter().any(|c| c.from_node == 2 && c.to_node == 5));
+        assert!(!app.connections.iter().any(|c| c.from_node == 2 && c.to_node == 4));
+        assert!(!app.connections.iter().any(|c| c.from_node == 4 && c.to_node == 5));
+
+        // 2. Verify signal chain evaluation in Bit-Perfect mode:
+        // Flowing nodes are strictly {1, 2, 5}. Node 4 (APP RESAMPLER) is unwired / idle passthrough!
+        let eval_bp = app.evaluate_signal_chain();
+        assert!(eval_bp.is_complete);
+        assert!(eval_bp.flowing_nodes.contains(&1));
+        assert!(eval_bp.flowing_nodes.contains(&2));
+        assert!(eval_bp.flowing_nodes.contains(&5));
+        assert!(!eval_bp.flowing_nodes.contains(&4), "Node 4 (APP RESAMPLER) must NOT be in flowing_nodes during Bit-Perfect Direct Highway");
+
+        let compiled_bp = app.compile_signal_chain();
+        assert!(compiled_bp.is_complete);
+        assert_eq!(compiled_bp.topological_order, vec![1, 2, 5]);
+
+        // 3. Switching to Modular FX (DspActive) automatically connects Node 4 (APP RESAMPLER): 1 -> 2 -> 4 -> 5
+        app.set_chain_mode(ChainMode::DspActive);
+        assert_eq!(app.chain_mode, ChainMode::DspActive);
+        assert_eq!(app.connections.len(), 3);
+        assert!(app.connections.iter().any(|c| c.from_node == 1 && c.to_node == 2));
+        assert!(app.connections.iter().any(|c| c.from_node == 2 && c.to_node == 4));
+        assert!(app.connections.iter().any(|c| c.from_node == 4 && c.to_node == 5));
+
+        let eval_dsp = app.evaluate_signal_chain();
+        assert!(eval_dsp.is_complete);
+        assert!(eval_dsp.flowing_nodes.contains(&4), "Node 4 (APP RESAMPLER) must be active in Modular FX mode");
+
+        // 4. Switching back to Bit-Perfect automatically jumps 2 ==> 5 and unwires Node 4
+        app.set_chain_mode(ChainMode::BitPerfect);
+        assert_eq!(app.connections.len(), 2);
+        assert!(app.connections.iter().any(|c| c.from_node == 1 && c.to_node == 2));
+        assert!(app.connections.iter().any(|c| c.from_node == 2 && c.to_node == 5));
+        assert!(!app.evaluate_signal_chain().flowing_nodes.contains(&4));
+    }
+
+    #[test]
+    fn test_stage_4_2_full_4_combinations_chain_mode_vs_output_mode() {
+        use crate::audio::types::{HardwareStreamBadge, SignalPathReport};
+        let mut app = LunulaApp::new_standalone();
+
+        // Combination 1: [ Modular FX ] + [ 🔒 Exclusive ]
+        app.set_chain_mode(ChainMode::DspActive);
+        app.set_exclusive_mode(true);
+        assert_eq!(app.chain_mode, ChainMode::DspActive);
+        assert!(app.prefer_exclusive);
+        assert!(!app.eq_bypass);
+        assert_eq!(app.connections.len(), 3, "Modular FX wires (1,2), (2,4), (4,5)");
+
+        // Combination 2: [ Modular FX ] + [ 🔊 Shared ]
+        app.set_exclusive_mode(false);
+        assert_eq!(app.chain_mode, ChainMode::DspActive, "Switching to Shared preserves Modular FX mode");
+        assert!(!app.prefer_exclusive);
+        assert_eq!(app.connections.len(), 3);
+
+        // Combination 3: [ Bit-Perfect ] + [ 🔒 Exclusive ]
+        app.set_chain_mode(ChainMode::BitPerfect);
+        app.set_exclusive_mode(true);
+        assert_eq!(app.chain_mode, ChainMode::BitPerfect);
+        assert!(app.prefer_exclusive);
+        assert!(app.eq_bypass);
+        assert_eq!(app.connections.len(), 2, "Bit-Perfect wires Direct Jump Highway (1,2), (2,5)");
+
+        // Combination 4: [ Bit-Perfect ] + [ 🔊 Shared ]
+        app.set_exclusive_mode(false);
+        assert_eq!(app.chain_mode, ChainMode::BitPerfect, "Switching to Shared preserves Bit-Perfect 1:1 passthrough mode");
+        assert!(!app.prefer_exclusive);
+        assert_eq!(app.connections.len(), 2);
+
+        // Verify SignalPathReport in [ Bit-Perfect ] + [ 🔊 Shared ] with matching sample rate stays actual_mode == BitPerfect
+        let rep_bp_shared = SignalPathReport {
+            device_name: "USB Hi-Fi DAC".to_string(),
+            source_rate: 44100,
+            device_rate: 44100,
+            source_bit_depth: 24,
+            format_desc: "32-bit Float Shared".to_string(),
+            requested_mode: ChainMode::BitPerfect,
+            actual_mode: ChainMode::BitPerfect,
+            prefer_exclusive: false,
+            is_exclusive: false,
+            is_resampling: false,
+            is_dsp_active: false,
+            is_volume_applied: false,
+        };
+        assert_eq!(rep_bp_shared.hardware_badge(), HardwareStreamBadge::WasapiShared);
+        assert!(!rep_bp_shared.is_exclusive_rejected());
+    }
+
+    #[test]
+    fn test_stage_4_3_and_4_4_hardware_truth_badges_and_locked_dac_adaptation() {
+        use crate::audio::types::{HardwareStreamBadge, SignalPathReport};
+        let mut app = LunulaApp::new_standalone();
+
+        // Case A: 🟢 [ 🔒 WASAPI EXCLUSIVE ] (Native 1:1 rate locked)
+        let rep_ex = SignalPathReport {
+            device_name: "Topping E30 II".to_string(),
+            source_rate: 96000,
+            device_rate: 96000,
+            source_bit_depth: 24,
+            format_desc: "24-bit in 32-bit PCM (WASAPI Exclusive)".to_string(),
+            requested_mode: ChainMode::BitPerfect,
+            actual_mode: ChainMode::BitPerfect,
+            prefer_exclusive: true,
+            is_exclusive: true,
+            is_resampling: false,
+            is_dsp_active: false,
+            is_volume_applied: false,
+        };
+        assert_eq!(rep_ex.hardware_badge(), HardwareStreamBadge::WasapiExclusive);
+        assert!(!rep_ex.is_exclusive_rejected());
+        assert!(!rep_ex.is_hardware_rate_adapted());
+
+        // Case B: 🔴 [ ⚠️ EXCLUSIVE REJECTED ] (Bit-Perfect on Realtek 48 kHz locked DAC playing 44.1 kHz track)
+        app.set_chain_mode(ChainMode::BitPerfect);
+        app.set_exclusive_mode(true);
+        // Before fallback report arrives, default is 2-cable Direct Highway (1 -> 2 -> 5)
+        assert_eq!(app.connections.len(), 2);
+        assert!(app.is_true_bit_perfect_highway());
+
+        let rep_rejected = SignalPathReport {
+            device_name: "Realtek High Definition Audio".to_string(),
+            source_rate: 44100,
+            device_rate: 48000,
+            source_bit_depth: 16,
+            format_desc: "32-bit Float (WASAPI Shared)".to_string(),
+            requested_mode: ChainMode::BitPerfect,
+            actual_mode: ChainMode::OsResampled,
+            prefer_exclusive: true,
+            is_exclusive: false,
+            is_resampling: true,
+            is_dsp_active: false,
+            is_volume_applied: true,
+        };
+        assert_eq!(rep_rejected.hardware_badge(), HardwareStreamBadge::ExclusiveRejected);
+        assert!(rep_rejected.is_exclusive_rejected());
+        assert!(!rep_rejected.is_hardware_rate_adapted());
+
+        // When fallback happens in Bit-Perfect mode, it is NO LONGER a true 1:1 direct jump!
+        // It must honestly reconnect through Node 4 (APP RESAMPLER): 1 -> 2 -> 4 -> 5
+        app.update_signal_nodes_from_report(&rep_rejected);
+        app.signal_path_report = Some(rep_rejected);
+        app.sync_default_highway_connections();
+
+        assert!(!app.is_true_bit_perfect_highway(), "Fallback stream must not claim a 1:1 direct jump highway");
+        assert_eq!(app.connections.len(), 3, "Fallback stream must honestly connect through Node 4 (1->2, 2->4, 4->5)");
+        assert!(app.connections.iter().any(|c| c.from_node == 1 && c.to_node == 2));
+        assert!(app.connections.iter().any(|c| c.from_node == 2 && c.to_node == 4));
+        assert!(app.connections.iter().any(|c| c.from_node == 4 && c.to_node == 5));
+        assert!(app.evaluate_signal_chain().flowing_nodes.contains(&4), "Node 4 (APP RESAMPLER) must be flowing during fallback");
+
+        let node4_fb = app.nodes.iter().find(|n| n.id == 4).expect("Node 4 must exist");
+        assert_eq!(node4_fb.sub2, "Fallback Adapted by Rubato Sinc • 44.1k ➔ 48.0k");
+
+        // When a truly bit-perfect track (e.g. 48.0 kHz matching the 48.0 kHz DAC) plays next,
+        // it automatically jumps directly 2 ==> 5 again!
+        app.update_signal_nodes_from_report(&rep_ex);
+        app.signal_path_report = Some(rep_ex);
+        app.sync_default_highway_connections();
+        assert!(app.is_true_bit_perfect_highway());
+        assert_eq!(app.connections.len(), 2, "True 1:1 Bit-Perfect restores Direct Jump Highway (1->2, 2->5)");
+        assert!(app.connections.iter().any(|c| c.from_node == 2 && c.to_node == 5));
+
+        // Case C: 🟢 [ 🔒 WASAPI EXCLUSIVE ] + Hardware Adapted (44.1k ──▶ 48.0k) in Modular FX mode on Realtek 48 kHz DAC
+        app.set_chain_mode(ChainMode::DspActive);
+        app.set_exclusive_mode(true);
+        let rep_adapted = SignalPathReport {
+            device_name: "Realtek High Definition Audio".to_string(),
+            source_rate: 44100,
+            device_rate: 48000,
+            source_bit_depth: 16,
+            format_desc: "24-bit in 32-bit PCM (WASAPI Exclusive)".to_string(),
+            requested_mode: ChainMode::DspActive,
+            actual_mode: ChainMode::DspActive,
+            prefer_exclusive: true,
+            is_exclusive: true,
+            is_resampling: true,
+            is_dsp_active: true,
+            is_volume_applied: true,
+        };
+        assert_eq!(rep_adapted.hardware_badge(), HardwareStreamBadge::WasapiExclusive);
+        assert!(!rep_adapted.is_exclusive_rejected());
+        assert!(rep_adapted.is_hardware_rate_adapted());
+
+        app.update_signal_nodes_from_report(&rep_adapted);
+        app.signal_path_report = Some(rep_adapted);
+        let node4 = app.nodes.iter().find(|n| n.id == 4).expect("Node 4 must exist");
+        assert_eq!(node4.sub2, "44.1k ──▶ 48.0k (Hardware Adapted)");
+    }
+
+    #[test]
+    fn test_true_64bit_f64_dsp_bus_precision_and_modular_exclusive_rejected_fallback() {
+        use crate::audio::types::{HardwareStreamBadge, SignalPathReport, GraphEdge, GraphNode, SignalChainGraph};
+        use crate::audio::dsp::DspPipeline;
+        use crate::audio::{VolumeAttenuatorEffect, VolumeBoosterEffect};
+
+        // 1. Mathematical proof of True 64-bit (f64) inter-node DSP bus:
+        // We attenuate a full-scale signal by -180 dB (6x -30 dB VolumeAttenuator nodes in series, factor 10^-9)
+        // or -300 dB (which would underflow or lose precision in f32 if subnormal/quantized, or we add a tiny 1e-11 signal on top of 0.5 DC).
+        // Let's test adding a micro-detail signal (delta = 1e-11, well below f32's 1e-7 epsilon!) riding on a 0.5 carrier:
+        // In f32, (0.5f32 + 1e-11) == 0.5f32 (the 1e-11 detail is 100% annihilated by 32-bit float mantissa!).
+        // In True 64-bit f64, (0.5f64 + 1e-11) preserves the 1e-11 detail across the entire multi-node DAG!
+        let mut dsp = DspPipeline::new(48000.0);
+        let mut g = SignalChainGraph::default();
+        g.is_complete = true;
+        g.topological_order = vec![1, 2, 3];
+        g.nodes.push(GraphNode {
+            id: 1,
+            name: "Attenuator -6dB".to_string(),
+            effect: Box::new(VolumeAttenuatorEffect::new(-6.020599913279624)), // exact 0.5x
+        });
+        g.nodes.push(GraphNode {
+            id: 2,
+            name: "Stereo Matrix M/S Encode".to_string(),
+            effect: Box::new(crate::audio::StereoMatrixEffect::new(3, 0.0, 48000.0)),
+        });
+        g.nodes.push(GraphNode {
+            id: 3,
+            name: "Stereo Matrix M/S Decode".to_string(),
+            effect: Box::new(crate::audio::StereoMatrixEffect::new(4, 0.0, 48000.0)),
+        });
+        g.edges.push(GraphEdge::with_ports(1, 0, 2, 0));
+        g.edges.push(GraphEdge::with_ports(2, 0, 3, 0));
+        dsp.set_signal_chain(g);
+
+        let base_l = 0.5_f64;
+        let micro_detail = 1.0e-11_f64; // 4 orders of magnitude smaller than f32 machine epsilon (~6e-8 at 0.5)!
+        let mut l_a = [base_l];
+        let mut r_a = [base_l];
+        let mut l_b = [base_l + micro_detail];
+        let mut r_b = [base_l - micro_detail];
+
+        dsp.process_block_f64(&mut l_a, &mut r_a);
+        dsp.reset_states();
+        dsp.process_block_f64(&mut l_b, &mut r_b);
+
+        let diff_l = (l_b[0] - l_a[0]).abs();
+        // After -6.02 dB (0.5x) and M/S encode+decode roundtrip, diff must be exactly 0.5 * 1e-11 = 5e-12!
+        assert!(
+            (diff_l - 0.5e-11).abs() < 1e-15,
+            "True 64-bit f64 DSP bus must preserve 1e-11 sub-f32 micro-detail without truncation! Got diff={:e}",
+            diff_l
+        );
+
+        // 2. Verify Modular FX mode when Exclusive is chosen and rejected by hardware:
+        // Node 4 (APP RESAMPLER) must display "Fallback Adapted by Rubato Sinc • 44.1k ➔ 48.0k"
+        let mut app = LunulaApp::new_standalone();
+        app.set_chain_mode(ChainMode::DspActive);
+        app.set_exclusive_mode(true);
+
+        let rep_mod_ex_rejected = SignalPathReport {
+            device_name: "Locked Onboard Audio".to_string(),
+            source_rate: 44100,
+            device_rate: 48000,
+            source_bit_depth: 24,
+            format_desc: "32-bit Float (WASAPI Shared)".to_string(),
+            requested_mode: ChainMode::DspActive,
+            actual_mode: ChainMode::DspActive,
+            prefer_exclusive: true,
+            is_exclusive: false, // Exclusive failed / rejected!
+            is_resampling: true,
+            is_dsp_active: true,
+            is_volume_applied: true,
+        };
+        assert_eq!(rep_mod_ex_rejected.hardware_badge(), HardwareStreamBadge::ExclusiveRejected);
+        assert!(rep_mod_ex_rejected.is_exclusive_rejected());
+
+        app.update_signal_nodes_from_report(&rep_mod_ex_rejected);
+        app.signal_path_report = Some(rep_mod_ex_rejected);
+        let node4 = app.nodes.iter().find(|n| n.id == 4).expect("Node 4 must exist");
+        assert_eq!(node4.sub2, "Fallback Adapted by Rubato Sinc • 44.1k ➔ 48.0k");
+    }
+}

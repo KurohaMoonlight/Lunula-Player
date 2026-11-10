@@ -112,7 +112,7 @@ impl CpalBackend {
         source_bit_depth: u8,
         is_dsp_active: Arc<AtomicBool>,
         event_tx: Option<Sender<crate::audio::types::AudioEvent>>,
-    ) -> Result<(Self, Producer<f32>), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<(Self, Producer<f64>), Box<dyn std::error::Error + Send + Sync>> {
         let host = cpal::default_host();
         let device = if let Some(target_name) = preferred_device_name {
             host.output_devices()
@@ -167,7 +167,7 @@ impl CpalBackend {
             _ => 16,
         };
 
-        let (producer, consumer) = RingBuffer::<f32>::new(buffer_capacity);
+        let (producer, consumer) = RingBuffer::<f64>::new(buffer_capacity);
         let (dsp_tx, dsp_rx) = crossbeam_channel::unbounded::<DspCommand>();
         let (gc_tx, gc_rx) = crossbeam_channel::bounded::<crate::audio::dsp::executor::ExecutionPlan>(32);
         let stream = Self::build_stream(
@@ -250,7 +250,7 @@ impl CpalBackend {
         device: &cpal::Device,
         config: &StreamConfig,
         sample_format: SampleFormat,
-        mut consumer: Consumer<f32>,
+        mut consumer: Consumer<f64>,
         is_paused: Arc<AtomicBool>,
         flush_requested: Arc<AtomicBool>,
         flush_ack: Arc<AtomicBool>,
@@ -428,11 +428,11 @@ impl CpalBackend {
         Ok(stream)
     }
 
-    // Direct F32 Hardware Rendering
+    // Direct F32 Hardware Rendering from 64-bit (`f64`) SPSC RingBuffer & Master DSP Bus
     fn render_samples_f32(
         data: &mut [f32],
         channels: usize,
-        consumer: &mut Consumer<f32>,
+        consumer: &mut Consumer<f64>,
         is_paused: &AtomicBool,
         flush_requested: &AtomicBool,
         flush_ack: &AtomicBool,
@@ -467,34 +467,37 @@ impl CpalBackend {
         let is_muted = muted.load(Ordering::Relaxed);
         let vol_raw = f32::from_bits(volume.load(Ordering::Relaxed));
         let vol = crate::audio::types::calculate_effective_volume(is_bp, is_muted, vol_raw);
+        let vol_f64 = vol as f64;
 
         if channels == 2 {
-            // High-Performance Batch Pop: drains hardware buffer in 1 atomic operation
-            let (popped, _) = consumer.pop_partial_slice(data);
-            let popped_len = popped.len();
-            if popped_len < data.len() {
-                data[popped_len..].fill(0.0);
-            }
-            if vol <= 0.0001 || !dsp.is_chain_complete() {
-                data.fill(0.0);
-                for _ in 0..(data.len() / 2) {
-                    visualizer.push_sample(0.0);
+            // High-Performance 64-bit Batch Pop: drains SPSC RingBuffer<f64> and runs 64-bit DSP directly
+            let mut temp_buf = [0.0f64; 1024];
+            for frame_chunk in data.chunks_mut(1024) {
+                let needed = frame_chunk.len();
+                let (popped, _) = consumer.pop_partial_slice(&mut temp_buf[..needed]);
+                let popped_len = popped.len();
+                if popped_len < needed {
+                    temp_buf[popped_len..needed].fill(0.0);
                 }
-                return;
-            }
-            if !is_bp {
-                dsp.process_interleaved(data);
-                visualizer.set_gain_reduction(dsp.get_max_gain_reduction());
-            } else {
-                visualizer.set_gain_reduction(0.0);
-            }
-            if (vol - 1.0).abs() > 0.0001 {
-                for s in data.iter_mut() {
-                    *s *= vol;
+                if vol <= 0.0001 || !dsp.is_chain_complete() {
+                    frame_chunk.fill(0.0);
+                    for _ in 0..(needed / 2) {
+                        visualizer.push_sample(0.0);
+                    }
+                    continue;
                 }
-            }
-            for frame in data.chunks_exact(2) {
-                visualizer.push_stereo(frame[0], frame[1]);
+                if !is_bp {
+                    dsp.process_interleaved_f64(&mut temp_buf[..needed]);
+                    visualizer.set_gain_reduction(dsp.get_max_gain_reduction());
+                } else {
+                    visualizer.set_gain_reduction(0.0);
+                }
+                for (dst, &src) in frame_chunk.iter_mut().zip(&temp_buf[..needed]) {
+                    *dst = (src * vol_f64) as f32;
+                }
+                for frame in frame_chunk.chunks_exact(2) {
+                    visualizer.push_stereo(frame[0], frame[1]);
+                }
             }
         } else if channels == 1 {
             for out in data.iter_mut() {
@@ -504,7 +507,7 @@ impl CpalBackend {
                     *out = 0.0;
                     visualizer.push_sample(0.0);
                 } else {
-                    let s = ((l + r) * 0.5) * vol;
+                    let s = (((l + r) * 0.5) * vol_f64) as f32;
                     *out = s;
                     visualizer.push_stereo(s, s);
                 }
@@ -517,24 +520,26 @@ impl CpalBackend {
                     frame.fill(0.0);
                     visualizer.push_sample(0.0);
                 } else {
-                    frame[0] = l * vol;
+                    let l_out = (l * vol_f64) as f32;
+                    let r_out = (r * vol_f64) as f32;
+                    frame[0] = l_out;
                     if frame.len() > 1 {
-                        frame[1] = r * vol;
+                        frame[1] = r_out;
                     }
                     for ch in 2..frame.len() {
                         frame[ch] = 0.0;
                     }
-                    visualizer.push_stereo(l * vol, r * vol);
+                    visualizer.push_stereo(l_out, r_out);
                 }
             }
         }
     }
 
-    // 32-bit Integer PCM Rendering (24-bit/32-bit Audiophile DACs)
+    // 32-bit Integer PCM Rendering (24-bit/32-bit Audiophile DACs) from 64-bit (`f64`) SPSC RingBuffer
     fn render_samples_i32(
         data: &mut [i32],
         channels: usize,
-        consumer: &mut Consumer<f32>,
+        consumer: &mut Consumer<f64>,
         is_paused: &AtomicBool,
         flush_requested: &AtomicBool,
         flush_ack: &AtomicBool,
@@ -570,13 +575,14 @@ impl CpalBackend {
         let is_muted = muted.load(Ordering::Relaxed);
         let vol_raw = f32::from_bits(volume.load(Ordering::Relaxed));
         let vol = crate::audio::types::calculate_effective_volume(is_bp, is_muted, vol_raw);
+        let vol_f64 = vol as f64;
 
-        let to_i32 = |s: f32| -> i32 {
-            crate::audio::types::encode_sample_i32(s, source_bit_depth)
+        let to_i32 = |s: f64| -> i32 {
+            crate::audio::types::encode_sample_i32_f64(s, source_bit_depth)
         };
 
         if channels == 2 {
-            let mut temp_buf = [0.0f32; 512];
+            let mut temp_buf = [0.0f64; 512];
             for frame_chunk in data.chunks_mut(512) {
                 let needed = frame_chunk.len();
                 let (popped, _) = consumer.pop_partial_slice(&mut temp_buf[..needed]);
@@ -592,16 +598,16 @@ impl CpalBackend {
                     continue;
                 }
                 if !is_bp {
-                    dsp.process_interleaved(&mut temp_buf[..needed]);
+                    dsp.process_interleaved_f64(&mut temp_buf[..needed]);
                     visualizer.set_gain_reduction(dsp.get_max_gain_reduction());
                 } else {
                     visualizer.set_gain_reduction(0.0);
                 }
                 for (dst, &src) in frame_chunk.iter_mut().zip(&temp_buf[..needed]) {
-                    *dst = to_i32(src * vol);
+                    *dst = to_i32(src * vol_f64);
                 }
                 for pair in temp_buf[..needed].chunks_exact(2) {
-                    visualizer.push_stereo(pair[0] * vol, pair[1] * vol);
+                    visualizer.push_stereo((pair[0] * vol_f64) as f32, (pair[1] * vol_f64) as f32);
                 }
             }
         } else if channels == 1 {
@@ -612,9 +618,9 @@ impl CpalBackend {
                     *out = 0;
                     visualizer.push_sample(0.0);
                 } else {
-                    let s = ((l + r) * 0.5) * vol;
+                    let s = ((l + r) * 0.5) * vol_f64;
                     *out = to_i32(s);
-                    visualizer.push_stereo(s, s);
+                    visualizer.push_stereo(s as f32, s as f32);
                 }
             }
         } else {
@@ -625,24 +631,24 @@ impl CpalBackend {
                     frame.fill(0);
                     visualizer.push_sample(0.0);
                 } else {
-                    frame[0] = to_i32(l * vol);
+                    frame[0] = to_i32(l * vol_f64);
                     if frame.len() > 1 {
-                        frame[1] = to_i32(r * vol);
+                        frame[1] = to_i32(r * vol_f64);
                     }
                     for ch in 2..frame.len() {
                         frame[ch] = 0;
                     }
-                    visualizer.push_stereo(l * vol, r * vol);
+                    visualizer.push_stereo((l * vol_f64) as f32, (r * vol_f64) as f32);
                 }
             }
         }
     }
 
-    // 16-bit Integer PCM Rendering with Precision Rounding & Conditional TPDF Dither
+    // 16-bit Integer PCM Rendering with Precision Rounding & Conditional TPDF Dither from 64-bit (`f64`) SPSC RingBuffer
     fn render_samples_i16(
         data: &mut [i16],
         channels: usize,
-        consumer: &mut Consumer<f32>,
+        consumer: &mut Consumer<f64>,
         is_paused: &AtomicBool,
         flush_requested: &AtomicBool,
         flush_ack: &AtomicBool,
@@ -678,17 +684,18 @@ impl CpalBackend {
         let is_muted = muted.load(Ordering::Relaxed);
         let vol_raw = f32::from_bits(volume.load(Ordering::Relaxed));
         let vol = crate::audio::types::calculate_effective_volume(is_bp, is_muted, vol_raw);
+        let vol_f64 = vol as f64;
 
         // Apply TPDF dither ONLY when converting higher bit depth (e.g. 24-bit) down to 16-bit
         // AND NEVER in Bit-Perfect mode (Bit-Perfect keeps pure unmodified bits)
         let should_dither = source_bit_depth > 16 && !is_bp;
 
-        let to_i16 = |s: f32, state: &mut u32| -> i16 {
-            crate::audio::types::encode_sample_i16(s, should_dither, state)
+        let to_i16 = |s: f64, state: &mut u32| -> i16 {
+            crate::audio::types::encode_sample_i16_f64(s, should_dither, state)
         };
 
         if channels == 2 {
-            let mut temp_buf = [0.0f32; 512];
+            let mut temp_buf = [0.0f64; 512];
             for frame_chunk in data.chunks_mut(512) {
                 let needed = frame_chunk.len();
                 let (popped, _) = consumer.pop_partial_slice(&mut temp_buf[..needed]);
@@ -704,16 +711,16 @@ impl CpalBackend {
                     continue;
                 }
                 if !is_bp {
-                    dsp.process_interleaved(&mut temp_buf[..needed]);
+                    dsp.process_interleaved_f64(&mut temp_buf[..needed]);
                     visualizer.set_gain_reduction(dsp.get_max_gain_reduction());
                 } else {
                     visualizer.set_gain_reduction(0.0);
                 }
                 for (dst, &src) in frame_chunk.iter_mut().zip(&temp_buf[..needed]) {
-                    *dst = to_i16(src * vol, dither_state);
+                    *dst = to_i16(src * vol_f64, dither_state);
                 }
                 for pair in temp_buf[..needed].chunks_exact(2) {
-                    visualizer.push_stereo(pair[0] * vol, pair[1] * vol);
+                    visualizer.push_stereo((pair[0] * vol_f64) as f32, (pair[1] * vol_f64) as f32);
                 }
             }
         } else if channels == 1 {
@@ -724,9 +731,9 @@ impl CpalBackend {
                     *out = 0;
                     visualizer.push_sample(0.0);
                 } else {
-                    let s = ((l + r) * 0.5) * vol;
+                    let s = ((l + r) * 0.5) * vol_f64;
                     *out = to_i16(s, dither_state);
-                    visualizer.push_stereo(s, s);
+                    visualizer.push_stereo(s as f32, s as f32);
                 }
             }
         } else {
@@ -737,24 +744,24 @@ impl CpalBackend {
                     frame.fill(0);
                     visualizer.push_sample(0.0);
                 } else {
-                    frame[0] = to_i16(l * vol, dither_state);
+                    frame[0] = to_i16(l * vol_f64, dither_state);
                     if frame.len() > 1 {
-                        frame[1] = to_i16(r * vol, dither_state);
+                        frame[1] = to_i16(r * vol_f64, dither_state);
                     }
                     for ch in 2..frame.len() {
                         frame[ch] = 0;
                     }
-                    visualizer.push_stereo(l * vol, r * vol);
+                    visualizer.push_stereo((l * vol_f64) as f32, (r * vol_f64) as f32);
                 }
             }
         }
     }
 
-    // 16-bit Unsigned PCM Rendering
+    // 16-bit Unsigned PCM Rendering from 64-bit (`f64`) SPSC RingBuffer
     fn render_samples_u16(
         data: &mut [u16],
         channels: usize,
-        consumer: &mut Consumer<f32>,
+        consumer: &mut Consumer<f64>,
         is_paused: &AtomicBool,
         flush_requested: &AtomicBool,
         flush_ack: &AtomicBool,
@@ -785,8 +792,9 @@ impl CpalBackend {
         let is_muted = muted.load(Ordering::Relaxed);
         let vol_raw = f32::from_bits(volume.load(Ordering::Relaxed));
         let vol = crate::audio::types::calculate_effective_volume(is_bp, is_muted, vol_raw);
+        let vol_f64 = vol as f64;
 
-        let to_u16 = |s: f32| -> u16 {
+        let to_u16 = |s: f64| -> u16 {
             let clamped = (s * 0.5 + 0.5).clamp(0.0, 1.0);
             (clamped * 65535.0).round() as u16
         };
@@ -800,9 +808,9 @@ impl CpalBackend {
                     frame[1] = 32768;
                     visualizer.push_sample(0.0);
                 } else {
-                    frame[0] = to_u16(l * vol);
-                    frame[1] = to_u16(r * vol);
-                    visualizer.push_sample((l + r) * 0.5 * vol);
+                    frame[0] = to_u16(l * vol_f64);
+                    frame[1] = to_u16(r * vol_f64);
+                    visualizer.push_sample(((l + r) * 0.5 * vol_f64) as f32);
                 }
             }
         } else if channels == 1 {
@@ -813,9 +821,9 @@ impl CpalBackend {
                     *out = 32768;
                     visualizer.push_sample(0.0);
                 } else {
-                    let s = ((l + r) * 0.5) * vol;
+                    let s = ((l + r) * 0.5) * vol_f64;
                     *out = to_u16(s);
-                    visualizer.push_sample(s);
+                    visualizer.push_sample(s as f32);
                 }
             }
         } else {
@@ -826,14 +834,14 @@ impl CpalBackend {
                     frame.fill(32768);
                     visualizer.push_sample(0.0);
                 } else {
-                    frame[0] = to_u16(l * vol);
+                    frame[0] = to_u16(l * vol_f64);
                     if frame.len() > 1 {
-                        frame[1] = to_u16(r * vol);
+                        frame[1] = to_u16(r * vol_f64);
                     }
                     for ch in 2..frame.len() {
                         frame[ch] = 32768;
                     }
-                    visualizer.push_sample((l + r) * 0.5 * vol);
+                    visualizer.push_sample(((l + r) * 0.5 * vol_f64) as f32);
                 }
             }
         }

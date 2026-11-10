@@ -22,6 +22,6 @@ pub use resampler::StereoResampler;
 pub use types::{
     AmplitudeInterval, AudioCommand, AudioEvent, ChainMode, ChannelContract, EdgeIr, Effect, EffectType,
     GraphCompilationError, GraphEdge, GraphIr, GraphNode, NodeIr, PlaybackState, ResamplerSettings, RollOffProfile,
-    SignalChainGraph, SignalPathReport, SincQuality,
+    SignalChainGraph, HardwareStreamBadge, SignalPathReport, SincQuality,
 };
 pub use visualizer::{FftAnalyzer, VisualizerRingBuffer, FFT_SIZE, NUM_BANDS};

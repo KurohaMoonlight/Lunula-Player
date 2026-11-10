@@ -717,8 +717,9 @@ impl LunulaApp {
         let static_report = self.get_static_analysis();
 
         let is_fallback = self.signal_path_report.as_ref().map_or(false, |r| {
-            r.requested_mode == ChainMode::BitPerfect && r.actual_mode == ChainMode::OsResampled
+            r.requested_mode == ChainMode::BitPerfect && (r.actual_mode == ChainMode::OsResampled || r.is_resampling)
         });
+        let is_true_bp_highway = self.is_true_bit_perfect_highway();
 
         let theme_color = if is_fallback {
             Color32::from_rgb(245, 158, 11)
@@ -783,7 +784,7 @@ impl LunulaApp {
 
                 // Check if user clicked or right-clicked on cable to disconnect
                 let mid = points[12];
-                if conn.from_node == 2 && conn.to_node == 4 {
+                if conn.from_node == 2 && (conn.to_node == 4 || conn.to_node == 5) {
                     self.quest_rect_cable_mute_target = Some(Rect::from_center_size(mid, Vec2::new(90.0, 50.0)));
                 }
                 let is_hover_cut = mouse_pos.map_or(false, |p| p.distance(mid) <= 10.0);
@@ -798,8 +799,11 @@ impl LunulaApp {
 
                 let is_selected_cable = self.advance_studio_state.selected_cable_idx == Some(conn_idx);
 
-                let is_effect_cable = (from_n.node_type.is_dsp_or_effect() || to_n.node_type.is_dsp_or_effect())
-                    && (self.chain_mode == ChainMode::BitPerfect || self.chain_mode == ChainMode::OsResampled);
+                let is_bypassed_resampler_cable = is_true_bp_highway
+                    && (from_n.node_type == NodeType::Driver || to_n.node_type == NodeType::Driver);
+                let is_effect_cable = ((from_n.node_type.is_dsp_or_effect() || to_n.node_type.is_dsp_or_effect())
+                    && (self.chain_mode == ChainMode::BitPerfect || self.chain_mode == ChainMode::OsResampled))
+                    || is_bypassed_resampler_cable;
 
                 let is_hot_cable = static_report.is_edge_hot(conn.from_node as u32, conn.from_port, conn.to_node as u32, conn.to_port)
                     && self.chain_mode == ChainMode::DspActive;
@@ -889,26 +893,31 @@ impl LunulaApp {
             }
         }
 
-        // 4c. Bit-Perfect / Passthrough Direct Bypass Cable
-        // When in Bit-Perfect or OsResampled mode and intermediate effect nodes exist in the chain,
-        // intermediate DSP nodes are bypassed. We render the active direct bypass cable from
-        // RAM BUFFER (Node 2) directly into APP RESAMPLER (Node 4) with animated audio particles.
+        // 4c. Bit-Perfect Direct Jump Highway (RAM Buffer Node 2 ──▶ Output DAC Node 5)
+        // ONLY when truly Bit-Perfect 1:1 (`is_true_bp_highway`), signal jumps directly from Node 2 (RAM BUFFER)
+        // to Node 5 (OUTPUT DAC), bypassing both modular DSP effects and Node 4 (APP RESAMPLER).
+        // If fallback occurred (`!is_true_bp_highway`), signal bypasses modular DSP effects into Node 4 (APP RESAMPLER)
+        // because Rubato Sinc is actively adapting the sample rate!
         let is_bypass_mode = self.chain_mode == ChainMode::BitPerfect || self.chain_mode == ChainMode::OsResampled;
-        if is_bypass_mode {
+        if is_bypass_mode && chain_eval.is_complete {
             let node2 = self.nodes.iter().find(|n| n.id == 2 || n.node_type == NodeType::Buffer);
-            let node4 = self.nodes.iter().find(|n| n.id == 4 || n.node_type == NodeType::Driver);
-            if let (Some(n2), Some(n4)) = (node2, node4) {
-                let has_direct_conn = self.connections.iter().any(|c| c.from_node == n2.id && c.to_node == n4.id);
+            let target_node = if is_true_bp_highway {
+                self.nodes.iter().find(|n| n.id == 5 || n.node_type == NodeType::Endpoint)
+            } else {
+                self.nodes.iter().find(|n| n.id == 4 || n.node_type == NodeType::Driver)
+            };
+            if let (Some(n2), Some(n_target)) = (node2, target_node) {
+                let has_direct_conn = self.connections.iter().any(|c| c.from_node == n2.id && c.to_node == n_target.id);
                 if !has_direct_conn {
                     let n2_size = get_node_size(&n2.node_type);
-                    let n4_size = get_node_size(&n4.node_type);
+                    let target_size = get_node_size(&n_target.node_type);
                     let p_start = Pos2::new(
                         canvas_rect.min.x + self.patchbay_pan.x + n2.pos.x + n2_size.x,
                         canvas_rect.min.y + self.patchbay_pan.y + n2.pos.y + n2_size.y * 0.5,
                     );
                     let p_end = Pos2::new(
-                        canvas_rect.min.x + self.patchbay_pan.x + n4.pos.x,
-                        canvas_rect.min.y + self.patchbay_pan.y + n4.pos.y + n4_size.y * 0.5,
+                        canvas_rect.min.x + self.patchbay_pan.x + n_target.pos.x,
+                        canvas_rect.min.y + self.patchbay_pan.y + n_target.pos.y + target_size.y * 0.5,
                     );
 
                     let dx = (p_end.x - p_start.x).abs().max(40.0) * 0.5;
@@ -927,7 +936,7 @@ impl LunulaApp {
                         points.push(Pos2::new(x, y));
                     }
 
-                    let (bypass_col, halo_col, badge_text, badge_bg, badge_stroke, badge_text_col) = if self.chain_mode == ChainMode::BitPerfect {
+                    let (bypass_col, halo_col, badge_text, badge_bg, badge_stroke, badge_text_col) = if is_true_bp_highway {
                         (
                             Color32::from_rgb(16, 185, 129),
                             Color32::from_rgba_premultiplied(52, 211, 153, 90),
@@ -940,7 +949,7 @@ impl LunulaApp {
                         (
                             Color32::from_rgb(245, 158, 11),
                             Color32::from_rgba_premultiplied(251, 191, 36, 90),
-                            "⚡ BYPASS OS-RESAMPLED",
+                            "⚡ FALLBACK TO RESAMPLER",
                             Color32::from_rgb(254, 243, 199),
                             Color32::from_rgb(245, 158, 11),
                             Color32::from_rgb(180, 83, 9),
@@ -1009,7 +1018,11 @@ impl LunulaApp {
         // If from_id can already reach to_id (e.g. through an EQ preset or modular filter),
         // the connection is fully satisfied and NO red dashed line is drawn!
         if !chain_eval.is_complete {
-            let standard_pairs: Vec<(usize, usize)> = vec![(1, 2), (2, 4), (4, 5)];
+            let standard_pairs: Vec<(usize, usize)> = if is_true_bp_highway {
+                vec![(1, 2), (2, 5)]
+            } else {
+                vec![(1, 2), (2, 4), (4, 5)]
+            };
             for (from_id, to_id) in standard_pairs {
                 // If from_id can already reach to_id through modular filters, it is NOT broken!
                 if self.can_reach_node(from_id, to_id) {
@@ -1314,8 +1327,60 @@ impl LunulaApp {
                 }
             };
 
-            let is_bypassed_effect = node.node_type.is_dsp_or_effect()
-                && (self.chain_mode == ChainMode::BitPerfect || self.chain_mode == ChainMode::OsResampled);
+            let is_bypassed_resampler = node.node_type == NodeType::Driver && is_true_bp_highway;
+            let is_bypassed_effect = (node.node_type.is_dsp_or_effect()
+                && (self.chain_mode == ChainMode::BitPerfect || self.chain_mode == ChainMode::OsResampled))
+                || is_bypassed_resampler;
+
+            // Floating Honest Banner above Node 4 (APP RESAMPLER) whenever fallback, exclusive rejection, or Rubato Sinc rate adaptation is active!
+            if node.node_type == NodeType::Driver {
+                let is_hw_adapted = self.signal_path_report.as_ref().map_or(false, |r| r.is_hardware_rate_adapted());
+                let is_ex_rejected = self.signal_path_report.as_ref().map_or(false, |r| r.is_exclusive_rejected());
+                let is_resamp_active = self.signal_path_report.as_ref().map_or(false, |r| r.is_resampling);
+
+                if is_fallback || is_ex_rejected || is_hw_adapted || (self.chain_mode != ChainMode::BitPerfect && is_resamp_active) {
+                    let (float_txt, float_bg, float_stroke, float_fg) = if is_fallback || is_ex_rejected {
+                        (
+                            "⚠️ FALLBACK ADAPTED BY RUBATO SINC",
+                            Color32::from_rgb(254, 243, 199),
+                            Color32::from_rgb(245, 158, 11),
+                            Color32::from_rgb(180, 83, 9),
+                        )
+                    } else if is_hw_adapted {
+                        (
+                            "⚡ HARDWARE ADAPTED BY RUBATO SINC",
+                            Color32::from_rgb(224, 242, 254),
+                            Color32::from_rgb(14, 165, 233),
+                            Color32::from_rgb(3, 105, 161),
+                        )
+                    } else {
+                        (
+                            "🔄 ADAPTED BY RUBATO SINC",
+                            Color32::from_rgb(238, 242, 255),
+                            Color32::from_rgb(99, 102, 241),
+                            Color32::from_rgb(67, 56, 202),
+                        )
+                    };
+                    let float_rect = Rect::from_center_size(
+                        Pos2::new(node_rect.center().x, node_rect.min.y - 14.0),
+                        Vec2::new(222.0, 20.0),
+                    );
+                    painter.rect_filled(
+                        float_rect.translate(Vec2::new(0.0, 1.5)),
+                        10.0,
+                        Color32::from_black_alpha(18),
+                    );
+                    painter.rect_filled(float_rect, 10.0, float_bg);
+                    painter.rect_stroke(float_rect, 10.0, Stroke::new(1.2, float_stroke), egui::StrokeKind::Outside);
+                    painter.text(
+                        float_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        float_txt,
+                        egui::FontId::proportional(9.5),
+                        float_fg,
+                    );
+                }
+            }
 
             let bg = if is_dragging {
                 Color32::from_rgb(241, 245, 249)
@@ -2666,7 +2731,9 @@ impl LunulaApp {
                 }
 
                 // Micro badge in top-right
-                let (badge_txt, badge_col) = if is_active_audio {
+                let (badge_txt, badge_col) = if is_bypassed_resampler {
+                    ("BYPASSED (1:1)", Color32::from_rgb(148, 163, 184))
+                } else if is_active_audio {
                     ("LIVE", Color32::from_rgb(52, 211, 153))
                 } else {
                     (self.resampler_settings.quality.short_name(), Color32::from_rgb(56, 189, 248))
@@ -2696,8 +2763,14 @@ impl LunulaApp {
                 painter.rect_stroke(b2_rect, 3.0, Stroke::new(1.0, if b2_hov { Color32::from_rgb(16, 185, 129) } else { Color32::from_rgb(51, 65, 85) }), egui::StrokeKind::Inside);
                 painter.text(b2_rect.center(), egui::Align2::CENTER_CENTER, self.resampler_settings.profile.short_name(), egui::FontId::proportional(9.5), Color32::from_rgb(167, 243, 208));
 
-                // Right text: hardware rate
-                let rate_text = self.signal_path_report.as_ref().map_or("48.0k".to_string(), |r| format!("{:.1}k", r.device_rate as f32 / 1000.0));
+                // Right text: hardware rate (shows "44.1k ──▶ 48.0k" when Hardware Adapted in WASAPI Exclusive Modular FX)
+                let rate_text = self.signal_path_report.as_ref().map_or("48.0k".to_string(), |r| {
+                    if r.is_hardware_rate_adapted() {
+                        format!("{:.1}k➔{:.1}k", r.source_rate as f32 / 1000.0, r.device_rate as f32 / 1000.0)
+                    } else {
+                        format!("{:.1}k", r.device_rate as f32 / 1000.0)
+                    }
+                });
                 painter.text(
                     Pos2::new(node_rect.max.x - 18.0, node_rect.min.y + 66.5),
                     egui::Align2::RIGHT_CENTER,
@@ -3145,12 +3218,13 @@ impl LunulaApp {
         let (pill_bg, pill_stroke, status_icon, status_msg, text_col) = if chain_eval.is_complete {
             if self.is_playing {
                 if is_fallback {
-                    let is_ex = self.signal_path_report.as_ref().map_or(false, |r| r.is_exclusive);
-                    let fallback_msg = if is_ex {
-                        let dev_rate = self.signal_path_report.as_ref().map_or(48.0, |r| r.device_rate as f32 / 1000.0);
-                        format!("HARDWARE RESAMPLED — DAC hanya mendukung {:.1} kHz dalam Exclusive Mode, di-resample via Sinc Engine (Mixer OS tetap di-bypass)", dev_rate)
+                    let src_rate = self.signal_path_report.as_ref().map_or(44.1, |r| r.source_rate as f32 / 1000.0);
+                    let dev_rate = self.signal_path_report.as_ref().map_or(48.0, |r| r.device_rate as f32 / 1000.0);
+                    let is_ex_rej = self.signal_path_report.as_ref().map_or(false, |r| r.is_exclusive_rejected());
+                    let fallback_msg = if is_ex_rej {
+                        format!("DAC Hardware tidak mendukung clock asli {:.1} kHz dalam Exclusive mode — dialihkan jujur ke Shared ({:.1} kHz)", src_rate, dev_rate)
                     } else {
-                        "FALLBACK KE OS RESAMPLED — Hardware tidak mendukung sample rate asli file, dialihkan ke 48.0 kHz".to_string()
+                        format!("FALLBACK KE OS RESAMPLED — DAC Hardware tidak mendukung sample rate {:.1} kHz, dialihkan ke {:.1} kHz", src_rate, dev_rate)
                     };
                     (
                         Color32::from_rgba_premultiplied(254, 243, 199, 230),
@@ -3207,11 +3281,14 @@ impl LunulaApp {
                                         Color32::from_rgb(185, 28, 28),
                                     )
                                 } else {
+                                    let adapt_suffix = self.signal_path_report.as_ref().filter(|r| r.is_hardware_rate_adapted()).map_or(String::new(), |r| {
+                                        format!(" • {:.1}k ──▶ {:.1}k (Hardware Adapted • Exclusive Locked)", r.source_rate as f32 / 1000.0, r.device_rate as f32 / 1000.0)
+                                    });
                                     let context_suffix = match (&static_report.context_track_title, static_report.context_peak_dbfs) {
-                                        (Some(title), Some(peak_db)) if peak_db < -0.01 => format!(" [Konteks: '{}' • Headroom +{:.1} dB]", title, -peak_db),
-                                        (Some(title), Some(peak_db)) => format!(" [Konteks: '{}' • Peak {:.1} dBFS]", title, peak_db),
-                                        (Some(title), None) => format!(" [Konteks: '{}']", title),
-                                        _ => String::new(),
+                                        (Some(title), Some(peak_db)) if peak_db < -0.01 => format!("{} [Konteks: '{}' • Headroom +{:.1} dB]", adapt_suffix, title, -peak_db),
+                                        (Some(title), Some(peak_db)) => format!("{} [Konteks: '{}' • Peak {:.1} dBFS]", adapt_suffix, title, peak_db),
+                                        (Some(title), None) => format!("{} [Konteks: '{}']", adapt_suffix, title),
+                                        _ => adapt_suffix,
                                     };
                                     (
                                         Color32::from_rgba_premultiplied(238, 242, 255, 230),

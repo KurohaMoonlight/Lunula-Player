@@ -68,6 +68,11 @@ impl DspPipeline {
     }
 
     #[inline(always)]
+    pub fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
+        self.executor.process_block_f64(left, right);
+    }
+
+    #[inline(always)]
     pub fn process_interleaved(&mut self, stereo: &mut [f32]) {
         let num_frames = stereo.len() / 2;
         if num_frames == 0 {
@@ -90,11 +95,40 @@ impl DspPipeline {
     }
 
     #[inline(always)]
+    pub fn process_interleaved_f64(&mut self, stereo: &mut [f64]) {
+        let num_frames = stereo.len() / 2;
+        if num_frames == 0 {
+            return;
+        }
+        let mut scratch_l = [0.0f64; 1024];
+        let mut scratch_r = [0.0f64; 1024];
+        for chunk in stereo.chunks_mut(2048) {
+            let frames = chunk.len() / 2;
+            for i in 0..frames {
+                scratch_l[i] = chunk[i * 2];
+                scratch_r[i] = chunk[i * 2 + 1];
+            }
+            self.executor.process_block_f64(&mut scratch_l[..frames], &mut scratch_r[..frames]);
+            for i in 0..frames {
+                chunk[i * 2] = scratch_l[i];
+                chunk[i * 2 + 1] = scratch_r[i];
+            }
+        }
+    }
+
+    #[inline(always)]
     pub fn process_frame(&mut self, l: f32, r: f32) -> (f32, f32) {
         let mut left = [l];
         let mut right = [r];
         self.executor.process_block(&mut left, &mut right);
         (left[0], right[0])
     }
-}
 
+    #[inline(always)]
+    pub fn process_frame_f64(&mut self, l: f64, r: f64) -> (f64, f64) {
+        let mut left = [l];
+        let mut right = [r];
+        self.executor.process_block_f64(&mut left, &mut right);
+        (left[0], right[0])
+    }
+}

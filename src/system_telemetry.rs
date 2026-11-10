@@ -2,6 +2,12 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+/// High-capacity audiophile lock-free SPSC Ring Buffer size in stereo `f64` samples:
+/// 786,432 samples = 393,216 stereo frames = 768 chunks of 512 frames.
+/// In 64-bit float (`f64`, 8 bytes/sample), this pre-allocates exactly 6.00 MB (6,144.0 KB / 6,291,456 bytes),
+/// providing >2.04 seconds of zero-jitter DMA headroom at 192 kHz stereo and ~8.9 seconds at 44.1 kHz stereo.
+pub const SPSC_RING_BUFFER_CAPACITY: usize = 786_432;
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProcessMemoryStats {
     pub working_set_bytes: usize,
@@ -38,7 +44,7 @@ pub struct BufferMetricsAtomic {
 impl Default for BufferMetricsAtomic {
     fn default() -> Self {
         Self {
-            capacity_samples: AtomicU32::new(96000),
+            capacity_samples: AtomicU32::new(SPSC_RING_BUFFER_CAPACITY as u32),
             used_samples: AtomicU32::new(0),
             chunk_counter: AtomicU64::new(0),
             total_samples_streamed: AtomicU64::new(0),
@@ -51,6 +57,8 @@ impl Default for BufferMetricsAtomic {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BufferTelemetrySnapshot {
     pub capacity_samples: usize,
+    pub capacity_kb: f32,
+    pub capacity_mb: f32,
     pub used_samples: usize,
     pub fill_pct: f32,
     pub latency_ms: f32,
@@ -150,13 +158,19 @@ impl SystemTelemetrySampler {
             0.0
         };
 
+        let sample_bytes = std::mem::size_of::<f64>();
+        let capacity_kb = (cap * sample_bytes) as f32 / 1024.0;
+        let capacity_mb = (cap * sample_bytes) as f32 / (1024.0 * 1024.0);
+
         let rate = sample_rate.max(1) as f32;
         let latency_ms = ((used as f32 / 2.0) / rate) * 1000.0;
-        let chunk_size_kb = (chunk_frames * 2 * std::mem::size_of::<f32>()) as f32 / 1024.0;
-        let total_streamed_mb = (total_samples * std::mem::size_of::<f32>() as u64) as f32 / (1024.0 * 1024.0);
+        let chunk_size_kb = (chunk_frames * 2 * sample_bytes) as f32 / 1024.0;
+        let total_streamed_mb = (total_samples * sample_bytes as u64) as f32 / (1024.0 * 1024.0);
 
         BufferTelemetrySnapshot {
             capacity_samples: cap,
+            capacity_kb,
+            capacity_mb,
             used_samples: used,
             fill_pct,
             latency_ms,
@@ -272,7 +286,10 @@ mod tests {
         }
 
         let snap = sampler.buffer_snapshot(44100);
-        assert_eq!(snap.capacity_samples, 96000);
+        assert_eq!(snap.capacity_samples, SPSC_RING_BUFFER_CAPACITY);
+        assert!((snap.capacity_mb - 6.0).abs() < 1e-3);
+        assert!((snap.capacity_kb - 6144.0).abs() < 1e-3);
+        assert!((snap.chunk_size_kb - 8.0).abs() < 1e-3);
         assert!(snap.fill_pct >= 0.0 && snap.fill_pct <= 100.0);
     }
 }

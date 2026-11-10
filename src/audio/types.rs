@@ -311,16 +311,29 @@ impl Default for AmplitudeInterval {
 }
 
 /// Trait for modular audio DSP effects that can be inserted into the signal graph.
+/// All internal processing and inter-node bus transfers run in native 64-bit double precision (`f64`).
 pub trait Effect: Send + std::fmt::Debug {
-    /// Process a contiguous block of left and right samples (SIMD auto-vectorizable).
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]);
+    /// Process a contiguous block of left and right samples in true 64-bit float (`f64`) precision.
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]);
 
-    /// Single-frame helper for compatibility and fine-grained unit testing.
+    /// Convenience helper for processing `f32` slices by promoting to `f64` and converting back.
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let n = left.len().min(right.len());
+        let mut l_f64: Vec<f64> = left[..n].iter().map(|&s| s as f64).collect();
+        let mut r_f64: Vec<f64> = right[..n].iter().map(|&s| s as f64).collect();
+        self.process_block_f64(&mut l_f64, &mut r_f64);
+        for i in 0..n {
+            left[i] = l_f64[i] as f32;
+            right[i] = r_f64[i] as f32;
+        }
+    }
+
+    /// Single-frame helper in pure 64-bit float (`f64`) without `f32` truncation.
     fn process_frame(&mut self, l: f64, r: f64) -> (f64, f64) {
-        let mut l_buf = [l as f32];
-        let mut r_buf = [r as f32];
-        self.process_block(&mut l_buf, &mut r_buf);
-        (l_buf[0] as f64, r_buf[0] as f64)
+        let mut l_buf = [l];
+        let mut r_buf = [r];
+        self.process_block_f64(&mut l_buf, &mut r_buf);
+        (l_buf[0], r_buf[0])
     }
 
     fn reset(&mut self);
@@ -790,29 +803,41 @@ pub fn tpdf_dither_val(state: &mut u32) -> f32 {
     r1 - r2
 }
 
-/// Lossless precision 32-bit integer PCM encoding.
+/// Lossless precision 32-bit integer PCM encoding from native 64-bit (`f64`) sample.
 /// For 24-bit within 32-bit container (source_bit_depth <= 24), scales exactly by 8388608.0 and shifts << 8.
 /// For 32-bit integer, scales by 2147483648.0.
 #[inline(always)]
-pub fn encode_sample_i32(s: f32, source_bit_depth: u8) -> i32 {
+pub fn encode_sample_i32_f64(s: f64, source_bit_depth: u8) -> i32 {
     if source_bit_depth <= 24 {
-        let scaled = (s as f64 * 8388608.0).round().clamp(-8388608.0, 8388607.0) as i32;
+        let scaled = (s * 8388608.0).round().clamp(-8388608.0, 8388607.0) as i32;
         scaled << 8
     } else {
-        (s as f64 * 2147483648.0).round().clamp(-2147483648.0, 2147483647.0) as i32
+        (s * 2147483648.0).round().clamp(-2147483648.0, 2147483647.0) as i32
     }
 }
 
-/// 16-bit integer PCM encoding with precision rounding and optional TPDF dither.
+/// Lossless precision 32-bit integer PCM encoding (`f32` convenience wrapper).
 #[inline(always)]
-pub fn encode_sample_i16(s: f32, should_dither: bool, dither_state: &mut u32) -> i16 {
+pub fn encode_sample_i32(s: f32, source_bit_depth: u8) -> i32 {
+    encode_sample_i32_f64(s as f64, source_bit_depth)
+}
+
+/// 16-bit integer PCM encoding from native 64-bit (`f64`) sample with precision rounding and optional TPDF dither.
+#[inline(always)]
+pub fn encode_sample_i16_f64(s: f64, should_dither: bool, dither_state: &mut u32) -> i16 {
     if should_dither {
-        let dither = tpdf_dither_val(dither_state);
-        let sample_val = s as f64 * 32768.0 + dither as f64;
+        let dither = tpdf_dither_val(dither_state) as f64;
+        let sample_val = s * 32768.0 + dither;
         sample_val.round().clamp(-32768.0, 32767.0) as i16
     } else {
-        (s as f64 * 32768.0).round().clamp(-32768.0, 32767.0) as i16
+        (s * 32768.0).round().clamp(-32768.0, 32767.0) as i16
     }
+}
+
+/// 16-bit integer PCM encoding (`f32` convenience wrapper).
+#[inline(always)]
+pub fn encode_sample_i16(s: f32, should_dither: bool, dither_state: &mut u32) -> i16 {
+    encode_sample_i16_f64(s as f64, should_dither, dither_state)
 }
 
 /// Pure function to calculate effective volume multiplier.
@@ -836,6 +861,17 @@ pub fn calculate_effective_volume(
     }
 }
 
+/// Hardware output stream status badge state (Pure Hardware Truth — No Gimmick).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HardwareStreamBadge {
+    /// 🟢 `[ 🔒 WASAPI EXCLUSIVE ]`: Hardware physical stream is locked directly by Lunula, Windows Mixer 100% bypassed.
+    WasapiExclusive,
+    /// 🟡 `[ 🔊 WASAPI SHARED ]`: User selected Shared mode; audio flows through Windows OS Mixer.
+    WasapiShared,
+    /// 🔴 `[ ⚠️ EXCLUSIVE REJECTED ]`: User requested Exclusive mode, but hardware/driver rejected the format/rate and fell back to Shared.
+    ExclusiveRejected,
+}
+
 /// Report of the actual signal path configuration determined by the engine.
 /// Sent after every Play and SetChainMode to let the UI display truthful info.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -847,10 +883,39 @@ pub struct SignalPathReport {
     pub format_desc: String,
     pub requested_mode: ChainMode,
     pub actual_mode: ChainMode,
+    pub prefer_exclusive: bool,
     pub is_exclusive: bool,
     pub is_resampling: bool,
     pub is_dsp_active: bool,
     pub is_volume_applied: bool,
+}
+
+impl SignalPathReport {
+    /// True if the user requested WASAPI Exclusive (`prefer_exclusive == true`),
+    /// but the hardware/driver rejected the stream and forced a fallback to WASAPI Shared.
+    #[inline]
+    pub fn is_exclusive_rejected(&self) -> bool {
+        self.prefer_exclusive && !self.is_exclusive
+    }
+
+    /// True if WASAPI Exclusive is active in Modular FX (`DspActive`) mode and the hardware
+    /// locked at its native clock (e.g. 48.0 kHz) while App Resampler adapts the track rate (e.g. 44.1 kHz -> 48.0 kHz).
+    #[inline]
+    pub fn is_hardware_rate_adapted(&self) -> bool {
+        self.is_exclusive && self.is_resampling
+    }
+
+    /// Returns the truthful 3-state hardware badge for the top-left header indicator.
+    #[inline]
+    pub fn hardware_badge(&self) -> HardwareStreamBadge {
+        if self.is_exclusive {
+            HardwareStreamBadge::WasapiExclusive
+        } else if self.prefer_exclusive {
+            HardwareStreamBadge::ExclusiveRejected
+        } else {
+            HardwareStreamBadge::WasapiShared
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -882,4 +947,3 @@ pub enum AudioEvent {
     /// Engine reports the actual signal path after Play or mode change.
     SignalPath(SignalPathReport),
 }
-

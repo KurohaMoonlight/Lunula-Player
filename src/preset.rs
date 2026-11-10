@@ -1869,11 +1869,11 @@ pub fn ensure_default_factory_presets() {
         advance_studio_dither_mode: 0,
     });
 
-    // 9. Hi-Fi Direct Bit-Perfect (Pure Bitstream Passthrough)
+    // 9. Hi-Fi Direct Bit-Perfect (Pure Bitstream Passthrough — Direct Jump 2 -> 5)
     write_factory(SignalChainPreset {
         name: "Hi-Fi Direct Bit-Perfect".to_string(),
         author: "Lunula Sound Lab".to_string(),
-        description: "Alur audio murni 1:1 bitstream langsung ke hardware DAC tanpa interpolasi maupun pemrosesan DSP.".to_string(),
+        description: "Alur audio murni 1:1 bitstream langsung dari RAM Buffer ke Output DAC tanpa melalui unit App Resampler maupun DSP.".to_string(),
         created_at: 1794163900,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         chain_mode: ChainMode::BitPerfect,
@@ -1904,7 +1904,7 @@ pub fn ensure_default_factory_presets() {
                 node_type: NodeType::Driver,
                 title: "APP RESAMPLER".to_string(),
                 sub1: "System Audio Endpoint".to_string(),
-                sub2: "Rubato Sinc SRC • 48.0 kHz".to_string(),
+                sub2: "Bypassed (1:1 Direct Highway)".to_string(),
                 pos: [510.0, 60.0],
                 is_removable: false,
                 param_val: 0.0,
@@ -1922,8 +1922,7 @@ pub fn ensure_default_factory_presets() {
         ],
         connections: vec![
             CableConnection::new(1, 2),
-            CableConnection::new(2, 4),
-            CableConnection::new(4, 5),
+            CableConnection::new(2, 5),
         ],
         active_eq: None,
         advance_studio_dither_mode: 0,

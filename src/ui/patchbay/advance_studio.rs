@@ -2592,13 +2592,26 @@ impl LunulaApp {
         };
         let dac_rate = self.signal_path_report.as_ref().map_or(48000, |r| r.device_rate);
         let dac_str = format!("{:.1} kHz ({})", dac_rate as f32 / 1000.0, if self.signal_path_report.as_ref().map_or(false, |r| r.is_exclusive) { "Exclusive" } else { "Shared" });
-        let is_resamp = self.signal_path_report.as_ref().map_or(true, |r| r.is_resampling);
-        let status_str = if is_resamp { "Rubato Sinc SRC Aktif" } else { "1:1 Bit-Perfect Passthrough" };
+        let is_resamp = self.signal_path_report.as_ref().map_or(self.chain_mode != ChainMode::BitPerfect, |r| r.is_resampling);
+        let is_hw_adapted = self.signal_path_report.as_ref().map_or(false, |r| r.is_hardware_rate_adapted());
+        let status_str = if self.chain_mode == ChainMode::BitPerfect && !is_resamp {
+            "BYPASSED (Direct Highway 2 ──▶ 5)".to_string()
+        } else if is_hw_adapted {
+            if let Some(ref r) = self.signal_path_report {
+                format!("{:.1}k ──▶ {:.1}k (Hardware Adapted)", r.source_rate as f32 / 1000.0, r.device_rate as f32 / 1000.0)
+            } else {
+                "Hardware Adapted (Sinc 64-bit)".to_string()
+            }
+        } else if is_resamp {
+            "Rubato Sinc SRC Aktif".to_string()
+        } else {
+            "1:1 Native Passthrough".to_string()
+        };
 
         let specs = [
             ("Format Asli:", src_str),
             ("Endpoint:", dac_str),
-            ("Status Konversi:", status_str.to_string()),
+            ("Status Konversi:", status_str),
         ];
 
         let mut py = c2_rect.min.y + 26.0;
@@ -2866,7 +2879,7 @@ impl LunulaApp {
             painter.text(
                 pkt_rect.center() + Vec2::new(0.0, 6.0),
                 egui::Align2::CENTER_CENTER,
-                "512f • 4KB",
+                format!("{}f • {:.0}KB f64", snap.chunk_size_frames, snap.chunk_size_kb),
                 egui::FontId::proportional(7.5),
                 Color32::from_rgb(224, 242, 254),
             );
@@ -2885,7 +2898,7 @@ impl LunulaApp {
             ("📦 Chunk:", format!("{}f ({:.1} KB)", snap.chunk_size_frames, snap.chunk_size_kb)),
             ("🔄 Streamed:", format!("{} Chunks ({:.1} MB)", snap.chunk_counter, snap.total_streamed_mb)),
             ("📡 Rate:", format!("{:.1} kbps", (sample_rate as f32 * bit_depth as f32 * 2.0) / 1000.0)),
-            ("🛡️ Ring:", "Lock-Free SPSC".to_string()),
+            ("🛡️ Ring:", "64-bit f64 SPSC".to_string()),
         ];
         let item_spacing = (c1_w - 24.0) / hud_items.len() as f32;
         for (i, (lbl, val)) in hud_items.iter().enumerate() {
@@ -2914,12 +2927,23 @@ impl LunulaApp {
             Color32::from_rgb(100, 116, 139),
         );
 
+        let spsc_alloc_str = if snap.capacity_mb >= 1.0 {
+            format!("{:.2} MB f64 ({:.0} KB)", snap.capacity_mb, snap.capacity_kb)
+        } else {
+            format!("{:.1} KB f64", snap.capacity_kb)
+        };
+        let spsc_note_str = format!(
+            "{} samples ({} frames) 64-bit lock-free SPSC pool",
+            snap.capacity_samples,
+            snap.capacity_samples / 2
+        );
+
         let rows = [
             ("Task Manager Memory (Private):", format!("{:.1} MB", mem.working_set_mb()), "Exact Private Working Set (Task Manager)"),
             ("Private Commit (Heap):", format!("{:.1} MB", mem.private_usage_mb()), "Dedicated committed heap + stack"),
             ("Peak Working Set:", format!("{:.1} MB", mem.peak_working_set_mb()), "Peak RAM usage since startup"),
             ("Process CPU Usage:", format!("{:.1}% CPU", cpu), "Kernel + User cycle delta across threads"),
-            ("SPSC Buffer Pre-Alloc:", "375.0 KB f32".to_string(), "96,000 samples fixed zero-fragmentation pool"),
+            ("SPSC Buffer Pre-Alloc:", spsc_alloc_str, spsc_note_str.as_str()),
             ("Bit Integrity Mode:", if self.chain_mode == crate::audio::types::ChainMode::BitPerfect { "Bit-Perfect (1:1)" } else { "DSP Active 64-bit" }.to_string(), "Zero bit-depth alteration"),
         ];
 
@@ -2979,13 +3003,29 @@ impl LunulaApp {
             "Idle (No Track)".to_string()
         };
 
+        let sample_rate_ref = if self.current_track.sample_rate > 0 { self.current_track.sample_rate } else { 44100 };
+        let snap_ref = self.system_telemetry.buffer_snapshot(sample_rate_ref);
         let ringbuffer_status = if self.is_playing {
-            if is_compact { "64KB SPSC • Realtime DMA".to_string() } else { "64 KB Lock-Free SPSC • Healthy / Realtime DMA".to_string() }
+            if is_compact {
+                format!("{:.1}MB f64 SPSC • Realtime DMA", snap_ref.capacity_mb)
+            } else {
+                format!("{:.2} MB ({:.0} KB) Lock-Free f64 SPSC • Healthy / Realtime DMA", snap_ref.capacity_mb, snap_ref.capacity_kb)
+            }
         } else {
-            if is_compact { "64KB SPSC • Standby".to_string() } else { "64 KB Lock-Free SPSC • Standby / Zero Jitter".to_string() }
+            if is_compact {
+                format!("{:.1}MB f64 SPSC • Standby", snap_ref.capacity_mb)
+            } else {
+                format!("{:.2} MB ({:.0} KB) Lock-Free f64 SPSC • Standby / Zero Jitter", snap_ref.capacity_mb, snap_ref.capacity_kb)
+            }
         };
 
-        let resampler_status = if let Some(ref r) = self.signal_path_report {
+        let resampler_status = if self.chain_mode == ChainMode::BitPerfect && self.signal_path_report.as_ref().map_or(true, |r| !r.is_resampling) {
+            if is_compact {
+                "Bypassed (Direct 2 ➔ 5)".to_string()
+            } else {
+                "Bypassed / Unwired (1:1 Direct Jump Highway: RAM Buffer ➔ Output DAC)".to_string()
+            }
+        } else if let Some(ref r) = self.signal_path_report {
             if r.is_resampling {
                 if is_compact {
                     format!("{} Sinc ➔ {:.1} kHz", self.resampler_settings.quality.short_name(), r.device_rate as f32 / 1000.0)

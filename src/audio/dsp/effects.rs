@@ -65,7 +65,7 @@ impl GraphicEqEffect {
 }
 
 impl Effect for GraphicEqEffect {
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         // Parameter smoothing (A8): slew current_gains towards target_gains to eliminate zipper noise
         let mut need_recompute = false;
         for i in 0..10 {
@@ -84,8 +84,8 @@ impl Effect for GraphicEqEffect {
 
         // Fast zero-cost flat bypass
         if self.is_flat {
-            let pre = self.auto_preamp as f32;
-            if (pre - 1.0).abs() > 0.0001 {
+            let pre = self.auto_preamp;
+            if (pre - 1.0).abs() > 1e-6 {
                 for l in left.iter_mut() { *l *= pre; }
                 for r in right.iter_mut() { *r *= pre; }
             }
@@ -94,14 +94,14 @@ impl Effect for GraphicEqEffect {
 
         let pre = self.auto_preamp;
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            let mut fl = (*l as f64) * pre;
-            let mut fr = (*r as f64) * pre;
+            let mut fl = *l * pre;
+            let mut fr = *r * pre;
             for i in 0..10 {
                 fl = self.eq_state_l[i].process(fl, &self.eq_coeffs[i]);
                 fr = self.eq_state_r[i].process(fr, &self.eq_coeffs[i]);
             }
-            *l = fl as f32;
-            *r = fr as f32;
+            *l = fl;
+            *r = fr;
         }
     }
 
@@ -168,7 +168,7 @@ impl Default for TubeWarmerEffect {
 }
 
 impl Effect for TubeWarmerEffect {
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         // Smooth parameter slewing to eliminate zipper noise during live slider dragging
         let diff = self.drive - self.current_drive;
         if diff.abs() > 0.01 {
@@ -177,12 +177,12 @@ impl Effect for TubeWarmerEffect {
             self.current_drive = self.drive;
         }
 
-        let k = (self.current_drive / 100.0).clamp(0.0, 1.0);
+        let k = ((self.current_drive / 100.0) as f64).clamp(0.0, 1.0);
         if k < 0.001 {
             return; // 0% Warmth is pure transparent bypass
         }
 
-        // Triode saturation formula:
+        // Triode saturation formula in 64-bit float (f64):
         // Asymmetric even harmonics (xd^2) add musical warmth and body,
         // odd harmonics (xd^3) add presence.
         let d = 1.0 + k * 1.5;
@@ -190,7 +190,7 @@ impl Effect for TubeWarmerEffect {
         let c3 = 0.08 * k;
         let norm = 1.0 / (1.0 + 0.40 * k);
 
-        let warm = |x: f32| -> f32 {
+        let warm = |x: f64| -> f64 {
             let xd = x * d;
             let y = xd + c2 * xd * xd - c3 * xd * xd * xd;
             (y * norm).clamp(-1.0, 1.0)
@@ -238,16 +238,16 @@ impl StereoWidenerEffect {
 }
 
 impl Effect for StereoWidenerEffect {
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         // Smooth parameter slewing to eliminate zipper clicks during live slider adjustments
-        let diff = (self.width - self.current_width) as f32;
+        let diff = self.width - self.current_width;
         if diff.abs() > 0.005 {
-            self.current_width += (diff * 0.15) as f64;
+            self.current_width += diff * 0.15;
         } else {
             self.current_width = self.width;
         }
 
-        let w = self.current_width as f32;
+        let w = self.current_width;
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             let mid = (*l + *r) * 0.5;
             let side = (*l - *r) * 0.5;
@@ -313,10 +313,10 @@ impl BassGuardEffect {
 }
 
 impl Effect for BassGuardEffect {
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            *l = self.state_l.process(*l as f64, &self.hpf_coeffs) as f32;
-            *r = self.state_r.process(*r as f64, &self.hpf_coeffs) as f32;
+            *l = self.state_l.process(*l, &self.hpf_coeffs);
+            *r = self.state_r.process(*r, &self.hpf_coeffs);
         }
     }
 
@@ -350,18 +350,18 @@ impl Effect for BassGuardEffect {
 /// Volume Attenuator: Precision passive -6.02 dB pad
 #[derive(Clone, Debug)]
 pub struct VolumeAttenuatorEffect {
-    gain: f32,
+    gain: f64,
 }
 
 impl VolumeAttenuatorEffect {
     pub fn new(gain_db: f64) -> Self {
-        let gain = 10.0_f64.powf(gain_db / 20.0) as f32;
+        let gain = 10.0_f64.powf(gain_db / 20.0);
         Self { gain }
     }
 }
 
 impl Effect for VolumeAttenuatorEffect {
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             *l *= self.gain;
             *r *= self.gain;
@@ -380,7 +380,7 @@ impl Effect for VolumeAttenuatorEffect {
         Box::new(self.clone())
     }
     fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
-        input.scale(self.gain)
+        input.scale(self.gain as f32)
     }
 }
 
@@ -388,14 +388,14 @@ impl Effect for VolumeAttenuatorEffect {
 #[derive(Clone, Debug)]
 pub struct VolumeBoosterEffect {
     boost_db: f32,       // 0.0 to +24.0 dB
-    target_gain: f32,
-    current_gain: f32,   // Slew-smoothed linear multiplier
+    target_gain: f64,
+    current_gain: f64,   // Slew-smoothed linear multiplier in f64
 }
 
 impl VolumeBoosterEffect {
     pub fn new(boost_db: f32) -> Self {
         let b = boost_db.clamp(0.0, 24.0);
-        let g = 10.0_f32.powf(b / 20.0);
+        let g = 10.0_f64.powf(b as f64 / 20.0);
         Self {
             boost_db: b,
             target_gain: g,
@@ -411,7 +411,7 @@ impl Default for VolumeBoosterEffect {
 }
 
 impl Effect for VolumeBoosterEffect {
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         let diff = self.target_gain - self.current_gain;
         if diff.abs() > 0.001 {
             self.current_gain += diff * 0.2;
@@ -423,8 +423,8 @@ impl Effect for VolumeBoosterEffect {
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             let amplified_l = *l * gain;
             let amplified_r = *r * gain;
-            *l = soft_limit(amplified_l as f64) as f32;
-            *r = soft_limit(amplified_r as f64) as f32;
+            *l = soft_limit(amplified_l);
+            *r = soft_limit(amplified_r);
         }
     }
 
@@ -439,14 +439,14 @@ impl Effect for VolumeBoosterEffect {
     fn set_param(&mut self, param_id: u32, val: f32) {
         if param_id == 0 {
             self.boost_db = val.clamp(0.0, 24.0);
-            self.target_gain = 10.0_f32.powf(self.boost_db / 20.0);
+            self.target_gain = 10.0_f64.powf(self.boost_db as f64 / 20.0);
         }
     }
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
     }
     fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
-        input.scale(self.target_gain)
+        input.scale(self.target_gain as f32)
     }
 }
 
@@ -454,14 +454,14 @@ impl Effect for VolumeBoosterEffect {
 #[derive(Clone, Debug)]
 pub struct AnalogPreampEffect {
     trim_db: f32,       // -24.0 to +12.0 dB
-    target_gain: f32,
-    current_gain: f32,
+    target_gain: f64,
+    current_gain: f64,
 }
 
 impl AnalogPreampEffect {
     pub fn new(trim_db: f32) -> Self {
         let t = trim_db.clamp(-24.0, 12.0);
-        let g = 10.0_f32.powf(t / 20.0);
+        let g = 10.0_f64.powf(t as f64 / 20.0);
         Self {
             trim_db: t,
             target_gain: g,
@@ -477,7 +477,7 @@ impl Default for AnalogPreampEffect {
 }
 
 impl Effect for AnalogPreampEffect {
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         let diff = self.target_gain - self.current_gain;
         if diff.abs() > 0.001 {
             self.current_gain += diff * 0.2;
@@ -493,13 +493,13 @@ impl Effect for AnalogPreampEffect {
             let mut sr = *r * gain;
 
             if is_driven {
-                let drive_factor = ((self.trim_db - 3.0) / 9.0).clamp(0.0, 1.0) * 0.04;
+                let drive_factor = (((self.trim_db - 3.0) / 9.0).clamp(0.0, 1.0) * 0.04) as f64;
                 sl = sl - drive_factor * sl * sl * sl;
                 sr = sr - drive_factor * sr * sr * sr;
             }
 
-            *l = soft_limit(sl as f64) as f32;
-            *r = soft_limit(sr as f64) as f32;
+            *l = soft_limit(sl);
+            *r = soft_limit(sr);
         }
     }
 
@@ -514,14 +514,14 @@ impl Effect for AnalogPreampEffect {
     fn set_param(&mut self, param_id: u32, val: f32) {
         if param_id == 0 {
             self.trim_db = val.clamp(-24.0, 12.0);
-            self.target_gain = 10.0_f32.powf(self.trim_db / 20.0);
+            self.target_gain = 10.0_f64.powf(self.trim_db as f64 / 20.0);
         }
     }
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
     }
     fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
-        input.scale(self.target_gain)
+        input.scale(self.target_gain as f32)
     }
 }
 
@@ -576,20 +576,20 @@ impl Default for DynamicLoudnessEffect {
 }
 
 impl Effect for DynamicLoudnessEffect {
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         if self.depth < 0.5 {
             return; // Zero-cost transparent bypass
         }
 
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            let mut sl = self.state_l_low.process(*l as f64, &self.low_shelf_coeffs);
-            let mut sr = self.state_r_low.process(*r as f64, &self.low_shelf_coeffs);
+            let mut sl = self.state_l_low.process(*l, &self.low_shelf_coeffs);
+            let mut sr = self.state_r_low.process(*r, &self.low_shelf_coeffs);
 
             sl = self.state_l_high.process(sl, &self.high_shelf_coeffs);
             sr = self.state_r_high.process(sr, &self.high_shelf_coeffs);
 
-            *l = soft_limit(sl) as f32;
-            *r = soft_limit(sr) as f32;
+            *l = soft_limit(sl);
+            *r = soft_limit(sr);
         }
     }
 
@@ -644,15 +644,15 @@ pub struct SteppedAttenuatorEffect {
     step_db: f32,        // -60.0 to 0.0 dB
     is_dimmed: bool,     // -20dB DIM
     is_muted: bool,      // Mute
-    target_gain: f32,
-    current_gain: f32,
+    target_gain: f64,
+    current_gain: f64,
 }
 
 impl SteppedAttenuatorEffect {
     pub fn new(step_db: f32, is_dimmed: bool) -> Self {
         let s = step_db.clamp(-60.0, 0.0).round(); // Discrete 1dB steps
         let effective_db = if is_dimmed { s - 20.0 } else { s };
-        let g = 10.0_f32.powf(effective_db / 20.0);
+        let g = 10.0_f64.powf(effective_db as f64 / 20.0);
         Self {
             step_db: s,
             is_dimmed,
@@ -667,7 +667,7 @@ impl SteppedAttenuatorEffect {
             self.target_gain = 0.0;
         } else {
             let effective_db = if self.is_dimmed { self.step_db - 20.0 } else { self.step_db };
-            self.target_gain = 10.0_f32.powf(effective_db / 20.0);
+            self.target_gain = 10.0_f64.powf(effective_db as f64 / 20.0);
         }
     }
 }
@@ -679,7 +679,7 @@ impl Default for SteppedAttenuatorEffect {
 }
 
 impl Effect for SteppedAttenuatorEffect {
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         let diff = self.target_gain - self.current_gain;
         if diff.abs() > 0.0005 {
             self.current_gain += diff * 0.25;
@@ -718,7 +718,7 @@ impl Effect for SteppedAttenuatorEffect {
         Box::new(self.clone())
     }
     fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
-        input.scale(self.target_gain)
+        input.scale(self.target_gain as f32)
     }
 }
 
@@ -749,7 +749,7 @@ impl Default for OpticalLevelerEffect {
 }
 
 impl Effect for OpticalLevelerEffect {
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         let drive = (self.target_drive / 100.0).clamp(0.0, 1.0);
         if drive < 0.01 {
             self.gain_reduction_db = 0.0;
@@ -764,7 +764,7 @@ impl Effect for OpticalLevelerEffect {
         let mut max_gr = 0.0f32;
 
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            let peak = l.abs().max(r.abs());
+            let peak = (l.abs().max(r.abs())) as f32;
 
             if peak > self.envelope {
                 self.envelope = peak + attack_coeff * (self.envelope - peak);
@@ -784,7 +784,7 @@ impl Effect for OpticalLevelerEffect {
                 if gr_db > max_gr {
                     max_gr = gr_db;
                 }
-                10.0_f32.powf(-gr_db / 20.0)
+                10.0_f64.powf(-(gr_db as f64) / 20.0)
             } else {
                 1.0
             };
@@ -862,7 +862,7 @@ impl Default for StereoBalanceEffect {
 }
 
 impl Effect for StereoBalanceEffect {
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         let diff = self.balance - self.current_balance;
         if diff.abs() > 0.01 {
             self.current_balance += diff * 0.2;
@@ -874,10 +874,10 @@ impl Effect for StereoBalanceEffect {
             return; // Center detent is zero-cost passthrough (1.0, 1.0)
         }
 
-        let norm = (self.current_balance / 100.0).clamp(-1.0, 1.0);
-        let theta = (norm + 1.0) * 0.25 * std::f32::consts::PI; // 0 to pi/2
-        let gain_l = std::f32::consts::SQRT_2 * theta.cos();
-        let gain_r = std::f32::consts::SQRT_2 * theta.sin();
+        let norm = ((self.current_balance / 100.0) as f64).clamp(-1.0, 1.0);
+        let theta = (norm + 1.0) * 0.25 * std::f64::consts::PI; // 0 to pi/2
+        let gain_l = std::f64::consts::SQRT_2 * theta.cos();
+        let gain_r = std::f64::consts::SQRT_2 * theta.sin();
 
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             *l *= gain_l;
@@ -950,7 +950,7 @@ impl LowPassFilterEffect {
 }
 
 impl Effect for LowPassFilterEffect {
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         let diff = self.cutoff_hz - self.current_cutoff_hz;
         if diff.abs() > 0.5 {
             self.current_cutoff_hz += diff * 0.15;
@@ -967,14 +967,14 @@ impl Effect for LowPassFilterEffect {
         };
 
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            let mut sample_l = *l as f64;
-            let mut sample_r = *r as f64;
+            let mut sample_l = *l;
+            let mut sample_r = *r;
             for st in 0..stages {
                 sample_l = self.state_l[st].process(sample_l, &self.lpf_coeffs);
                 sample_r = self.state_r[st].process(sample_r, &self.lpf_coeffs);
             }
-            *l = sample_l as f32;
-            *r = sample_r as f32;
+            *l = sample_l;
+            *r = sample_r;
         }
     }
 
@@ -1083,7 +1083,7 @@ impl HighPassFilterEffect {
 }
 
 impl Effect for HighPassFilterEffect {
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         let diff = self.cutoff_hz - self.current_cutoff_hz;
         if diff.abs() > 0.5 {
             self.current_cutoff_hz += diff * 0.15;
@@ -1100,14 +1100,14 @@ impl Effect for HighPassFilterEffect {
         };
 
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            let mut sample_l = *l as f64;
-            let mut sample_r = *r as f64;
+            let mut sample_l = *l;
+            let mut sample_r = *r;
             for st in 0..stages {
                 sample_l = self.state_l[st].process(sample_l, &self.hpf_coeffs);
                 sample_r = self.state_r[st].process(sample_r, &self.hpf_coeffs);
             }
-            *l = sample_l as f32;
-            *r = sample_r as f32;
+            *l = sample_l;
+            *r = sample_r;
         }
     }
 
@@ -1212,7 +1212,7 @@ impl BandPassFilterEffect {
 }
 
 impl Effect for BandPassFilterEffect {
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         let diff = self.center_freq_hz - self.current_center_freq_hz;
         if diff.abs() > 0.5 {
             self.current_center_freq_hz += diff * 0.15;
@@ -1225,14 +1225,14 @@ impl Effect for BandPassFilterEffect {
         let stages = if self.slope_db == 24 { 2 } else { 1 };
 
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            let mut sample_l = *l as f64;
-            let mut sample_r = *r as f64;
+            let mut sample_l = *l;
+            let mut sample_r = *r;
             for st in 0..stages {
                 sample_l = self.state_l[st].process(sample_l, &self.bpf_coeffs);
                 sample_r = self.state_r[st].process(sample_r, &self.bpf_coeffs);
             }
-            *l = sample_l as f32;
-            *r = sample_r as f32;
+            *l = sample_l;
+            *r = sample_r;
         }
     }
 
@@ -1322,16 +1322,16 @@ impl CrossoverLowEffect {
 }
 
 impl Effect for CrossoverLowEffect {
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            let mut sample_l = *l as f64;
-            let mut sample_r = *r as f64;
+            let mut sample_l = *l;
+            let mut sample_r = *r;
             for st in 0..2 {
                 sample_l = self.state_l[st].process(sample_l, &self.coeffs);
                 sample_r = self.state_r[st].process(sample_r, &self.coeffs);
             }
-            *l = sample_l as f32;
-            *r = sample_r as f32;
+            *l = sample_l;
+            *r = sample_r;
         }
     }
 
@@ -1404,20 +1404,20 @@ impl CrossoverHighEffect {
 }
 
 impl Effect for CrossoverHighEffect {
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            let mut sample_l = *l as f64;
-            let mut sample_r = *r as f64;
+            let mut sample_l = *l;
+            let mut sample_r = *r;
             for st in 0..2 {
                 sample_l = self.state_l[st].process(sample_l, &self.coeffs);
                 sample_r = self.state_r[st].process(sample_r, &self.coeffs);
             }
             if self.invert_phase {
-                *l = -sample_l as f32;
-                *r = -sample_r as f32;
+                *l = -sample_l;
+                *r = -sample_r;
             } else {
-                *l = sample_l as f32;
-                *r = sample_r as f32;
+                *l = sample_l;
+                *r = sample_r;
             }
         }
     }
@@ -1478,7 +1478,7 @@ impl MixerEffect {
 }
 
 impl Effect for MixerEffect {
-    fn process_block(&mut self, _left: &mut [f32], _right: &mut [f32]) {
+    fn process_block_f64(&mut self, _left: &mut [f64], _right: &mut [f64]) {
         // Mixing/summing is executed in topological bus summing in DspPipeline
     }
 
@@ -1514,7 +1514,7 @@ impl PassthroughEffect {
 }
 
 impl Effect for PassthroughEffect {
-    fn process_block(&mut self, _left: &mut [f32], _right: &mut [f32]) {}
+    fn process_block_f64(&mut self, _left: &mut [f64], _right: &mut [f64]) {}
     fn reset(&mut self) {}
     fn set_sample_rate(&mut self, _sample_rate: f32) {}
     fn name(&self) -> &str {
@@ -1539,7 +1539,7 @@ impl SplitterEffect {
 }
 
 impl Effect for SplitterEffect {
-    fn process_block(&mut self, _left: &mut [f32], _right: &mut [f32]) {
+    fn process_block_f64(&mut self, _left: &mut [f64], _right: &mut [f64]) {
         // Splitting is executed losslessly by routing the node output buffer to multiple downstream nodes
     }
     fn reset(&mut self) {}
@@ -1662,17 +1662,17 @@ impl ParametricEqEffect {
 }
 
 impl Effect for ParametricEqEffect {
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         let pre = self.auto_preamp;
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            let mut fl = (*l as f64) * pre;
-            let mut fr = (*r as f64) * pre;
+            let mut fl = *l * pre;
+            let mut fr = *r * pre;
             for i in 0..self.coeffs.len() {
                 fl = self.state_l[i].process(fl, &self.coeffs[i]);
                 fr = self.state_r[i].process(fr, &self.coeffs[i]);
             }
-            *l = fl as f32;
-            *r = fr as f32;
+            *l = fl;
+            *r = fr;
         }
     }
 
@@ -1742,21 +1742,21 @@ impl Default for CompressorEffect {
 }
 
 impl Effect for CompressorEffect {
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         if self.ratio <= 1.01 && self.makeup_gain_db.abs() < 0.01 {
             self.gain_reduction_db = 0.0;
             return; // Bypass
         }
 
         let thresh_lin = 10.0_f32.powf(self.threshold_db / 20.0);
-        let makeup_lin = 10.0_f32.powf(self.makeup_gain_db / 20.0);
+        let makeup_lin = 10.0_f64.powf(self.makeup_gain_db as f64 / 20.0);
         let att_coeff = (-1.0 / ((self.attack_ms * 0.001) * self.sample_rate)).exp();
         let rel_coeff = (-1.0 / ((self.release_ms * 0.001) * self.sample_rate)).exp();
 
         let mut max_gr = 0.0f32;
 
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            let peak = l.abs().max(r.abs());
+            let peak = (l.abs().max(r.abs())) as f32;
 
             if peak > self.envelope {
                 self.envelope = peak + att_coeff * (self.envelope - peak);
@@ -1772,7 +1772,7 @@ impl Effect for CompressorEffect {
                 if gr_db > max_gr {
                     max_gr = gr_db;
                 }
-                10.0_f32.powf(-gr_db / 20.0) * makeup_lin
+                10.0_f64.powf(-(gr_db as f64) / 20.0) * makeup_lin
             } else {
                 makeup_lin
             };
@@ -1836,8 +1836,8 @@ pub struct TimeAlignmentEffect {
     pub invert_left: bool,
     pub invert_right: bool,
     sample_rate: f32,
-    buffer_l: Vec<f32>,
-    buffer_r: Vec<f32>,
+    buffer_l: Vec<f64>,
+    buffer_r: Vec<f64>,
     write_pos: usize,
     buffer_mask: usize,
 }
@@ -1854,8 +1854,8 @@ impl TimeAlignmentEffect {
             invert_left,
             invert_right,
             sample_rate: sr,
-            buffer_l: vec![0.0f32; ALIGN_BUFFER_SIZE],
-            buffer_r: vec![0.0f32; ALIGN_BUFFER_SIZE],
+            buffer_l: vec![0.0f64; ALIGN_BUFFER_SIZE],
+            buffer_r: vec![0.0f64; ALIGN_BUFFER_SIZE],
             write_pos: 0,
             buffer_mask: ALIGN_BUFFER_SIZE - 1,
         }
@@ -1863,23 +1863,23 @@ impl TimeAlignmentEffect {
 }
 
 impl Effect for TimeAlignmentEffect {
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         let d_samples_l = (self.delay_left_us as f64 * 1e-6 * self.sample_rate as f64).clamp(0.0, (ALIGN_BUFFER_SIZE - 2) as f64);
         let mut d_int_l = d_samples_l.floor() as usize;
-        let mut d_frac_l = (d_samples_l - d_int_l as f64) as f32;
-        if d_frac_l < 1e-5 {
+        let mut d_frac_l = d_samples_l - d_int_l as f64;
+        if d_frac_l < 1e-6 {
             d_frac_l = 0.0;
-        } else if d_frac_l > 0.99999 {
+        } else if d_frac_l > 0.999999 {
             d_int_l += 1;
             d_frac_l = 0.0;
         }
 
         let d_samples_r = (self.delay_right_us as f64 * 1e-6 * self.sample_rate as f64).clamp(0.0, (ALIGN_BUFFER_SIZE - 2) as f64);
         let mut d_int_r = d_samples_r.floor() as usize;
-        let mut d_frac_r = (d_samples_r - d_int_r as f64) as f32;
-        if d_frac_r < 1e-5 {
+        let mut d_frac_r = d_samples_r - d_int_r as f64;
+        if d_frac_r < 1e-6 {
             d_frac_r = 0.0;
-        } else if d_frac_r > 0.99999 {
+        } else if d_frac_r > 0.999999 {
             d_int_r += 1;
             d_frac_r = 0.0;
         }
@@ -1963,10 +1963,10 @@ pub struct StereoMatrixEffect {
     pub mode: u8,
     pub crossfeed_amount: f32,
     sample_rate: f32,
-    lpf_state_l: f32,
-    lpf_state_r: f32,
-    delay_l: [f32; 16],
-    delay_r: [f32; 16],
+    lpf_state_l: f64,
+    lpf_state_r: f64,
+    delay_l: [f64; 16],
+    delay_r: [f64; 16],
     delay_idx: usize,
 }
 
@@ -1986,7 +1986,7 @@ impl StereoMatrixEffect {
 }
 
 impl Effect for StereoMatrixEffect {
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         match self.mode {
             0 => {
                 // Passthrough
@@ -2006,8 +2006,8 @@ impl Effect for StereoMatrixEffect {
                 }
             }
             3 => {
-                // Mid-Side Encode
-                const SQRT_2: f32 = 1.41421356237;
+                // Mid-Side Encode in 64-bit precision (lossless round-trip)
+                const SQRT_2: f64 = std::f64::consts::SQRT_2;
                 for (l, r) in left.iter_mut().zip(right.iter_mut()) {
                     let m = (*l + *r) / SQRT_2;
                     let s = (*l - *r) / SQRT_2;
@@ -2016,8 +2016,8 @@ impl Effect for StereoMatrixEffect {
                 }
             }
             4 => {
-                // Mid-Side Decode
-                const SQRT_2: f32 = 1.41421356237;
+                // Mid-Side Decode in 64-bit precision (lossless round-trip)
+                const SQRT_2: f64 = std::f64::consts::SQRT_2;
                 for (l, r) in left.iter_mut().zip(right.iter_mut()) {
                     let m = *l;
                     let s = *r;
@@ -2044,11 +2044,12 @@ impl Effect for StereoMatrixEffect {
                 }
             }
             7 => {
-                // Bauer Headphone Crossfeed
-                let fc = 700.0f32;
-                let alpha = 1.0 - (-2.0 * std::f32::consts::PI * fc / self.sample_rate).exp();
-                let delay_samples = ((self.sample_rate * 0.00015).round() as usize).clamp(1, 15);
-                let cross_factor = (self.crossfeed_amount * 0.40).clamp(0.0, 0.50);
+                // Bauer Headphone Crossfeed in 64-bit float
+                let fc = 700.0f64;
+                let sr = self.sample_rate as f64;
+                let alpha = 1.0 - (-2.0 * std::f64::consts::PI * fc / sr).exp();
+                let delay_samples = ((sr * 0.00015).round() as usize).clamp(1, 15);
+                let cross_factor = ((self.crossfeed_amount as f64) * 0.40).clamp(0.0, 0.50);
                 let direct_factor = 1.0 - cross_factor * 0.35;
 
                 for (l, r) in left.iter_mut().zip(right.iter_mut()) {
@@ -2125,4 +2126,3 @@ impl Effect for StereoMatrixEffect {
         }
     }
 }
-

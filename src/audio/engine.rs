@@ -210,6 +210,7 @@ fn create_signal_path_report(
     track_rate: u32,
     source_bit_depth: u8,
     chain_mode: ChainMode,
+    prefer_exclusive: bool,
 ) -> SignalPathReport {
     let device_rate = out.sample_rate();
     let device_name = out.device_name().to_string();
@@ -220,12 +221,11 @@ fn create_signal_path_report(
     let actual_mode = match chain_mode {
         ChainMode::BitPerfect => {
             let bit_depth_ok = out.bit_depth() >= source_bit_depth;
-            // True bit-perfect requires:
-            // 1. Hardware exclusive mode (bypasses Windows OS audio mixer)
-            // 2. Exactly matching sample rate (no resampler)
-            // 3. Hardware bit depth >= track bit depth (no bit depth truncation)
-            // 4. Source bit depth between 1 and 24 (lossless; 32-bit integer PCM through f32 loses bits, and lossy formats 0-bit are not bit-perfect)
-            if is_exclusive && track_rate == device_rate && bit_depth_ok && source_bit_depth > 0 && source_bit_depth <= 24 {
+            // Tahap 4.2 & 4.3: Bit-Perfect chain mode is decoupled from OutputMode (Exclusive vs Shared).
+            // As long as sample rate matches 1:1 (no resampling) and bit depth is not truncated,
+            // the signal chain is a 1:1 Bit-Perfect passthrough (whether on Exclusive or Shared stream).
+            // If the hardware rejected the track's sample rate (track_rate != device_rate), it falls back to OsResampled.
+            if track_rate == device_rate && bit_depth_ok && source_bit_depth > 0 && source_bit_depth <= 24 {
                 ChainMode::BitPerfect
             } else {
                 ChainMode::OsResampled
@@ -245,6 +245,7 @@ fn create_signal_path_report(
         format_desc,
         requested_mode: chain_mode,
         actual_mode,
+        prefer_exclusive,
         is_exclusive,
         is_resampling,
         is_dsp_active,
@@ -287,7 +288,7 @@ fn run_audio_worker(
     let mut next_decoder: Option<AudioDecoder> = None;
     let mut next_track_path: Option<PathBuf> = None;
     let mut output: Option<AudioOutput> = None;
-    let mut producer: Option<Producer<f32>> = None;
+    let mut producer: Option<Producer<f64>> = None;
     let mut dsp = DspPipeline::new(44100.0);
     let mut resampler = StereoResampler::new(44100, 44100);
     let mut chain_mode = ChainMode::BitPerfect;
@@ -377,7 +378,7 @@ fn run_audio_worker(
                                         desired_rate,
                                         track_bit_depth,
                                         chain_mode,
-                                        96000,
+                                        crate::system_telemetry::SPSC_RING_BUFFER_CAPACITY,
                                         Arc::clone(&shared_volume),
                                         Arc::clone(&shared_visualizer),
                                         Arc::clone(&shared_bit_perfect),
@@ -430,7 +431,7 @@ fn run_audio_worker(
                                     dsp.set_limiter_enabled(last_limiter);
                                     sync_output_dsp(out, device_rate, last_bypass, last_limiter, &last_graph, &last_eq_bands);
 
-                                    let report = create_signal_path_report(out, track_sample_rate, track_bit_depth, chain_mode);
+                                    let report = create_signal_path_report(out, track_sample_rate, track_bit_depth, chain_mode, prefer_exclusive);
                                     shared_bit_perfect.store(report.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
                                     is_dsp_active.store(report.is_dsp_active, Ordering::Relaxed);
                                     let _ = event_tx.send(AudioEvent::SignalPath(report));
@@ -650,14 +651,14 @@ fn run_audio_worker(
                                 desired_rate,
                                 track_bit_depth,
                                 chain_mode,
-                                96000,
+                                crate::system_telemetry::SPSC_RING_BUFFER_CAPACITY,
                                 Arc::clone(&shared_volume),
                                 Arc::clone(&shared_visualizer),
                                 Arc::clone(&shared_bit_perfect),
                                 Arc::clone(&shared_muted),
                                 Arc::clone(&is_dsp_active),
                                 event_tx.clone(),
-                                true,
+                                prefer_exclusive,
                             ) {
                                 Ok((new_out, new_prod)) => {
                                     if state == PlaybackState::Playing {
@@ -670,7 +671,7 @@ fn run_audio_worker(
                                     dsp.set_limiter_enabled(last_limiter);
                                     sync_output_dsp(&new_out, device_rate, last_bypass, last_limiter, &last_graph, &last_eq_bands);
 
-                                    let report = create_signal_path_report(&new_out, track_sample_rate, track_bit_depth, chain_mode);
+                                    let report = create_signal_path_report(&new_out, track_sample_rate, track_bit_depth, chain_mode, prefer_exclusive);
                                     shared_bit_perfect.store(report.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
                                     is_dsp_active.store(report.is_dsp_active, Ordering::Relaxed);
                                     let _ = event_tx.send(AudioEvent::SignalPath(report));
@@ -715,7 +716,7 @@ fn run_audio_worker(
                                         desired_rate,
                                         track_bit_depth,
                                         chain_mode,
-                                        96000,
+                                        crate::system_telemetry::SPSC_RING_BUFFER_CAPACITY,
                                         Arc::clone(&shared_volume),
                                         Arc::clone(&shared_visualizer),
                                         Arc::clone(&shared_bit_perfect),
@@ -732,7 +733,7 @@ fn run_audio_worker(
                                             resampler.reset(track_sample_rate, device_rate);
                                             sync_output_dsp(&new_out, desired_rate, last_bypass, last_limiter, &last_graph, &last_eq_bands);
 
-                                            let report = create_signal_path_report(&new_out, track_sample_rate, track_bit_depth, chain_mode);
+                                            let report = create_signal_path_report(&new_out, track_sample_rate, track_bit_depth, chain_mode, prefer_exclusive);
                                             let _ = event_tx.send(AudioEvent::SignalPath(report));
 
                                             output = Some(new_out);
@@ -782,7 +783,7 @@ fn run_audio_worker(
                                     desired_rate,
                                     track_bit_depth,
                                     chain_mode,
-                                    96000,
+                                    crate::system_telemetry::SPSC_RING_BUFFER_CAPACITY,
                                     Arc::clone(&shared_volume),
                                     Arc::clone(&shared_visualizer),
                                     Arc::clone(&shared_bit_perfect),
@@ -825,7 +826,7 @@ fn run_audio_worker(
                                 dsp.set_limiter_enabled(last_limiter);
                                 sync_output_dsp(out, device_rate, last_bypass, last_limiter, &last_graph, &last_eq_bands);
 
-                                let report = create_signal_path_report(out, track_sample_rate, track_bit_depth, chain_mode);
+                                let report = create_signal_path_report(out, track_sample_rate, track_bit_depth, chain_mode, prefer_exclusive);
                                 shared_bit_perfect.store(report.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
                                 is_dsp_active.store(report.is_dsp_active, Ordering::Relaxed);
                                 let _ = event_tx.send(AudioEvent::SignalPath(report));
@@ -861,11 +862,11 @@ fn run_audio_worker(
                 if free_slots >= 512 {
                     let frames_to_generate = (free_slots / 2).min(512);
                     let mut generated_frames = 0;
-                    let mut batch_buf = [0.0f32; 1024];
+                    let mut batch_buf = [0.0f64; 1024];
                     let mut batch_samples = 0;
 
                     for _ in 0..frames_to_generate {
-                        let frame = resampler.next_frame(|| {
+                        let mut fetch_raw = || {
                             if raw_pos >= raw_len {
                                 raw_pos = 0;
                                 match dec.read_stereo_samples(&mut raw_chunk) {
@@ -880,8 +881,8 @@ fn run_audio_worker(
                                 }
                             }
                             if raw_pos < raw_len {
-                                let mut l = raw_chunk[raw_pos];
-                                let mut r = raw_chunk[raw_pos + 1];
+                                let mut l = raw_chunk[raw_pos] as f64;
+                                let mut r = raw_chunk[raw_pos + 1] as f64;
                                 raw_pos += 2;
 
                                 if crossfade_secs > 0.0 && chain_mode != ChainMode::BitPerfect {
@@ -890,8 +891,8 @@ fn run_audio_worker(
                                         let cur = dec.current_time();
                                         let rem = (dur - cur).max(0.0);
                                         if rem <= crossfade_secs {
-                                            let frac = (rem / crossfade_secs).clamp(0.0, 1.0);
-                                            let gain = (frac * std::f32::consts::FRAC_PI_2).sin();
+                                            let frac = (rem / crossfade_secs).clamp(0.0, 1.0) as f64;
+                                            let gain = (frac * std::f64::consts::FRAC_PI_2).sin();
                                             l *= gain;
                                             r *= gain;
                                         }
@@ -899,8 +900,8 @@ fn run_audio_worker(
                                 }
 
                                 if fade_in_remaining_samples > 0 && chain_mode != ChainMode::BitPerfect {
-                                    let progress = 1.0 - (fade_in_remaining_samples as f32 / fade_in_total_samples.max(1) as f32);
-                                    let gain = (progress * std::f32::consts::FRAC_PI_2).sin();
+                                    let progress = 1.0 - (fade_in_remaining_samples as f64 / fade_in_total_samples.max(1) as f64);
+                                    let gain = (progress * std::f64::consts::FRAC_PI_2).sin();
                                     l *= gain;
                                     r *= gain;
                                     fade_in_remaining_samples = fade_in_remaining_samples.saturating_sub(2);
@@ -910,7 +911,14 @@ fn run_audio_worker(
                             } else {
                                 None
                             }
-                        });
+                        };
+
+                        // Direct Bit-Perfect Jump Highway: bypass resampler unit completely when in Bit-Perfect mode
+                        let frame = if chain_mode == ChainMode::BitPerfect && resampler.is_passthrough() {
+                            fetch_raw()
+                        } else {
+                            resampler.next_frame_f64(fetch_raw)
+                        };
 
                         match frame {
                             Some((l, r)) => {
@@ -979,7 +987,7 @@ fn run_audio_worker(
                                     shared_buffer_metrics.used_samples.store(0, Ordering::Relaxed);
                                 }
                                 if let Some(out) = &output {
-                                    let report = create_signal_path_report(out, next_sr, next_bd, chain_mode);
+                                    let report = create_signal_path_report(out, next_sr, next_bd, chain_mode, prefer_exclusive);
                                     shared_bit_perfect.store(report.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
                                     is_dsp_active.store(report.is_dsp_active, Ordering::Relaxed);
                                     let _ = event_tx.send(AudioEvent::SignalPath(report));
@@ -1008,7 +1016,7 @@ fn run_audio_worker(
                                         desired_rate,
                                         next_bd,
                                         chain_mode,
-                                        96000,
+                                        crate::system_telemetry::SPSC_RING_BUFFER_CAPACITY,
                                         Arc::clone(&shared_volume),
                                         Arc::clone(&shared_visualizer),
                                         Arc::clone(&shared_bit_perfect),
@@ -1023,7 +1031,7 @@ fn run_audio_worker(
                                             let dev_sr = new_out.sample_rate();
                                             resampler.reset(next_sr, dev_sr);
                                             dsp.set_sample_rate(dev_sr as f32);
-                                            let report = create_signal_path_report(&new_out, next_sr, next_bd, chain_mode);
+                                            let report = create_signal_path_report(&new_out, next_sr, next_bd, chain_mode, prefer_exclusive);
                                             shared_bit_perfect.store(report.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
                                             is_dsp_active.store(report.is_dsp_active, Ordering::Relaxed);
                                             let _ = event_tx.send(AudioEvent::SignalPath(report));

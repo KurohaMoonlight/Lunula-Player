@@ -125,13 +125,14 @@ impl WasapiExclusiveBackend {
         preferred_device_name: Option<&str>,
         preferred_sample_rate: u32,
         preferred_bit_depth: u8,
+        allow_rate_adaptation: bool,
         buffer_capacity: usize,
         shared_volume: Arc<AtomicU32>,
         visualizer: Arc<VisualizerRingBuffer>,
         bit_perfect: Arc<AtomicBool>,
         shared_muted: Arc<AtomicBool>,
         event_tx: Sender<crate::audio::types::AudioEvent>,
-    ) -> Result<(Self, Producer<f32>), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<(Self, Producer<f64>), Box<dyn std::error::Error + Send + Sync>> {
         let _ = initialize_mta();
 
         let enumerator = DeviceEnumerator::new()?;
@@ -169,14 +170,23 @@ impl WasapiExclusiveBackend {
             ]
         };
 
-        let mix_rate = client.get_mixformat().map(|mf| mf.get_samplespersec()).unwrap_or(48000);
+        // Tahap 4.4: Smart DAC Rate Adaptation vs Bit-Perfect Strict 1:1 Clock Integrity
+        // - In Bit-Perfect mode (`allow_rate_adaptation == false`), strictly require 1:1 native sample rate (`preferred_sample_rate`).
+        //   If hardware DAC is locked at 48.0 kHz and rejects 44.1 kHz, fail Exclusive initialization honestly so the UI
+        //   surfaces `[ ⚠️ EXCLUSIVE REJECTED ]` and informs the user that the DAC does not support native 44.1 kHz in Exclusive mode.
+        // - In Modular FX mode (`allow_rate_adaptation == true`), if hardware rejects 44.1 kHz, adapt to hardware's native clock
+        //   (e.g. `mix_rate` 48.0 kHz) so WASAPI Exclusive remains locked (100% OS Mixer bypass) while App Resampler (Sinc 64-bit)
+        //   converts 44.1 kHz -> 48.0 kHz!
         let mut candidate_rates = vec![preferred_sample_rate];
-        if !candidate_rates.contains(&mix_rate) {
-            candidate_rates.push(mix_rate);
-        }
-        for common_rate in [48000, 96000, 192000, 44100, 88200] {
-            if !candidate_rates.contains(&common_rate) {
-                candidate_rates.push(common_rate);
+        if allow_rate_adaptation {
+            let mix_rate = client.get_mixformat().map(|mf| mf.get_samplespersec()).unwrap_or(48000);
+            if !candidate_rates.contains(&mix_rate) {
+                candidate_rates.push(mix_rate);
+            }
+            for common_rate in [48000, 96000, 192000, 44100, 88200] {
+                if !candidate_rates.contains(&common_rate) {
+                    candidate_rates.push(common_rate);
+                }
             }
         }
 
@@ -220,7 +230,7 @@ impl WasapiExclusiveBackend {
         let event_tx_worker = event_tx.clone();
         let dev_name_worker = device_name.clone();
 
-        let (producer, mut consumer) = RingBuffer::<f32>::new(buffer_capacity);
+        let (producer, mut consumer) = RingBuffer::<f64>::new(buffer_capacity);
         let (dsp_tx, dsp_rx) = crossbeam_channel::unbounded::<DspCommand>();
         let (gc_tx, gc_rx) = crossbeam_channel::bounded::<crate::audio::dsp::executor::ExecutionPlan>(32);
 
@@ -241,7 +251,7 @@ impl WasapiExclusiveBackend {
                 let max_frames = client.get_buffer_size().unwrap_or(2048) as usize;
                 let mut raw_bytes: Vec<u8> = Vec::with_capacity(max_frames * bytes_per_frame);
                 let mut dither_state: u32 = 0x12345678;
-                let mut batch_f32 = [0.0f32; 1024];
+                let mut batch_f64 = [0.0f64; 1024];
                 let mut dsp = DspPipeline::new(actual_sample_rate as f32);
                 dsp.set_gc_sender(gc_tx);
 
@@ -407,7 +417,7 @@ impl WasapiExclusiveBackend {
                                 while frames_remaining > 0 {
                                     let chunk_frames = frames_remaining.min(512);
                                     let chunk_samples = chunk_frames * 2;
-                                    let _ = consumer.pop_partial_slice(&mut batch_f32[..chunk_samples]);
+                                    let _ = consumer.pop_partial_slice(&mut batch_f64[..chunk_samples]);
                                     frames_remaining -= chunk_frames;
                                 }
                                 for _ in 0..frames_to_write {
@@ -424,32 +434,33 @@ impl WasapiExclusiveBackend {
 
                             raw_bytes.clear();
 
-                            // High-Performance Batch Pop: drains hardware buffer in 512-frame chunks with 1 atomic operation per chunk
+                            // High-Performance 64-bit Batch Pop: drains hardware buffer in 512-frame chunks with 1 atomic operation per chunk
+                            let vol_f64 = vol as f64;
                             let mut frames_remaining = frames_to_write;
                             if store_bits == 16 {
                                 let should_dither = preferred_bit_depth > 16 && !is_bp;
                                 while frames_remaining > 0 {
                                     let chunk_frames = frames_remaining.min(512);
                                     let chunk_samples = chunk_frames * 2;
-                                    let (popped, _) = consumer.pop_partial_slice(&mut batch_f32[..chunk_samples]);
+                                    let (popped, _) = consumer.pop_partial_slice(&mut batch_f64[..chunk_samples]);
                                     let popped_len = popped.len();
                                     if popped_len < chunk_samples {
-                                        batch_f32[popped_len..chunk_samples].fill(0.0);
+                                        batch_f64[popped_len..chunk_samples].fill(0.0);
                                     }
                                     if !is_bp {
-                                        dsp.process_interleaved(&mut batch_f32[..chunk_samples]);
+                                        dsp.process_interleaved_f64(&mut batch_f64[..chunk_samples]);
                                         vis_worker.set_gain_reduction(dsp.get_max_gain_reduction());
                                     } else {
                                         vis_worker.set_gain_reduction(0.0);
                                     }
 
-                                    for pair in batch_f32[..chunk_samples].chunks_exact(2) {
-                                        let l = pair[0] * vol;
-                                        let r = pair[1] * vol;
-                                        vis_worker.push_stereo(l, r);
+                                    for pair in batch_f64[..chunk_samples].chunks_exact(2) {
+                                        let l = pair[0] * vol_f64;
+                                        let r = pair[1] * vol_f64;
+                                        vis_worker.push_stereo(l as f32, r as f32);
 
-                                        let i_l = crate::audio::types::encode_sample_i16(l, should_dither, &mut dither_state);
-                                        let i_r = crate::audio::types::encode_sample_i16(r, should_dither, &mut dither_state);
+                                        let i_l = crate::audio::types::encode_sample_i16_f64(l, should_dither, &mut dither_state);
+                                        let i_r = crate::audio::types::encode_sample_i16_f64(r, should_dither, &mut dither_state);
                                         raw_bytes.extend_from_slice(&i_l.to_le_bytes());
                                         raw_bytes.extend_from_slice(&i_r.to_le_bytes());
                                     }
@@ -463,25 +474,25 @@ impl WasapiExclusiveBackend {
                                 while frames_remaining > 0 {
                                     let chunk_frames = frames_remaining.min(512);
                                     let chunk_samples = chunk_frames * 2;
-                                    let (popped, _) = consumer.pop_partial_slice(&mut batch_f32[..chunk_samples]);
+                                    let (popped, _) = consumer.pop_partial_slice(&mut batch_f64[..chunk_samples]);
                                     let popped_len = popped.len();
                                     if popped_len < chunk_samples {
-                                        batch_f32[popped_len..chunk_samples].fill(0.0);
+                                        batch_f64[popped_len..chunk_samples].fill(0.0);
                                     }
                                     if !is_bp {
-                                        dsp.process_interleaved(&mut batch_f32[..chunk_samples]);
+                                        dsp.process_interleaved_f64(&mut batch_f64[..chunk_samples]);
                                         vis_worker.set_gain_reduction(dsp.get_max_gain_reduction());
                                     } else {
                                         vis_worker.set_gain_reduction(0.0);
                                     }
 
-                                    for pair in batch_f32[..chunk_samples].chunks_exact(2) {
-                                        let l = pair[0] * vol;
-                                        let r = pair[1] * vol;
-                                        vis_worker.push_stereo(l, r);
+                                    for pair in batch_f64[..chunk_samples].chunks_exact(2) {
+                                        let l = pair[0] * vol_f64;
+                                        let r = pair[1] * vol_f64;
+                                        vis_worker.push_stereo(l as f32, r as f32);
 
-                                        let scaled_l = crate::audio::types::encode_sample_i32(l, valid_bits as u8);
-                                        let scaled_r = crate::audio::types::encode_sample_i32(r, valid_bits as u8);
+                                        let scaled_l = crate::audio::types::encode_sample_i32_f64(l, valid_bits as u8);
+                                        let scaled_r = crate::audio::types::encode_sample_i32_f64(r, valid_bits as u8);
                                         raw_bytes.extend_from_slice(&scaled_l.to_le_bytes());
                                         raw_bytes.extend_from_slice(&scaled_r.to_le_bytes());
                                     }
@@ -496,21 +507,21 @@ impl WasapiExclusiveBackend {
                                 while frames_remaining > 0 {
                                     let chunk_frames = frames_remaining.min(512);
                                     let chunk_samples = chunk_frames * 2;
-                                    let (popped, _) = consumer.pop_partial_slice(&mut batch_f32[..chunk_samples]);
+                                    let (popped, _) = consumer.pop_partial_slice(&mut batch_f64[..chunk_samples]);
                                     let popped_len = popped.len();
                                     if popped_len < chunk_samples {
-                                        batch_f32[popped_len..chunk_samples].fill(0.0);
+                                        batch_f64[popped_len..chunk_samples].fill(0.0);
                                     }
                                     if !is_bp {
-                                        dsp.process_interleaved(&mut batch_f32[..chunk_samples]);
+                                        dsp.process_interleaved_f64(&mut batch_f64[..chunk_samples]);
                                         vis_worker.set_gain_reduction(dsp.get_max_gain_reduction());
                                     } else {
                                         vis_worker.set_gain_reduction(0.0);
                                     }
 
-                                    for pair in batch_f32[..chunk_samples].chunks_exact(2) {
-                                        let l = pair[0] * vol;
-                                        let r = pair[1] * vol;
+                                    for pair in batch_f64[..chunk_samples].chunks_exact(2) {
+                                        let l = (pair[0] * vol_f64) as f32;
+                                        let r = (pair[1] * vol_f64) as f32;
                                         vis_worker.push_stereo(l, r);
 
                                         raw_bytes.extend_from_slice(&l.to_le_bytes());

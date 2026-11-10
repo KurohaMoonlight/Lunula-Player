@@ -27,10 +27,10 @@ impl LunulaApp {
                 }
             }
             OnboardingQuestStep::ConnectFirstCable => {
-                // Check if any cable connects from Buffer (id 2) or to DSP/DAC (id 3 or 4)
+                // Check if any cable connects from Buffer (id 2) or to DSP/Resampler/DAC (id 3, 4, or 5)
                 let has_connected = self.connections.iter().any(|c| {
-                    (c.from_node == 2 && (c.to_node == 3 || c.to_node == 4))
-                        || (c.from_node == 3 && c.to_node == 4)
+                    (c.from_node == 2 && (c.to_node == 3 || c.to_node == 4 || c.to_node == 5))
+                        || (c.from_node == 3 && (c.to_node == 4 || c.to_node == 5))
                 });
                 if has_connected {
                     self.onboarding_quest_step = OnboardingQuestStep::TestAutoMute;
@@ -39,7 +39,7 @@ impl LunulaApp {
             OnboardingQuestStep::TestAutoMute => {
                 // Detected when the previous connection is severed
                 let has_no_direct_connection = !self.connections.iter().any(|c| {
-                    c.from_node == 2 && c.to_node == 4
+                    c.from_node == 2 && (c.to_node == 4 || c.to_node == 5)
                 });
                 if has_no_direct_connection && self.connections.len() < 3 {
                     self.onboarding_quest_step = OnboardingQuestStep::InsertTubeWarmer;
@@ -409,7 +409,7 @@ impl LunulaApp {
                                 }
                                 OnboardingQuestStep::TestAutoMute => {
                                     if ui.button(egui::RichText::new("✂️ Putuskan Kabel Sekarang").size(12.0).color(Color32::from_rgb(239, 68, 68))).clicked() {
-                                        self.connections.retain(|c| !(c.from_node == 2 && c.to_node == 4));
+                                        self.connections.retain(|c| !(c.from_node == 2 && (c.to_node == 4 || c.to_node == 5)));
                                         self.invalidate_chain_cache();
                                         self.sync_signal_chain_to_engine();
                                         self.onboarding_quest_step = OnboardingQuestStep::InsertTubeWarmer;

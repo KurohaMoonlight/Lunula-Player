@@ -185,10 +185,10 @@ pub struct GraphExecutor {
     sample_rate: f32,
     pub plan: ExecutionPlan,
     pub graph: SignalChainGraph,
-    buffers_l: Vec<Vec<f32>>,
-    buffers_r: Vec<Vec<f32>>,
-    scratch_l: Vec<f32>,
-    scratch_r: Vec<f32>,
+    buffers_l: Vec<Vec<f64>>,
+    buffers_r: Vec<Vec<f64>>,
+    scratch_l: Vec<f64>,
+    scratch_r: Vec<f64>,
     eq_bypass: bool,
     limiter_enabled: bool,
     fallback_eq: GraphicEqEffect,
@@ -221,17 +221,17 @@ impl GraphExecutor {
         self.gc_tx = Some(gc_tx);
     }
 
-    /// Pre-allocates channel and scratch buffers up to `required_slots`.
+    /// Pre-allocates 64-bit (`f64`) channel and scratch buffers up to `required_slots`.
     /// Called before stream processing to ensure zero heap allocation inside callback.
     pub fn ensure_buffer_capacity(&mut self, required_slots: usize) {
         if self.scratch_l.is_empty() {
-            self.scratch_l = vec![0.0f32; MAX_BLOCK_SIZE];
-            self.scratch_r = vec![0.0f32; MAX_BLOCK_SIZE];
+            self.scratch_l = vec![0.0f64; MAX_BLOCK_SIZE];
+            self.scratch_r = vec![0.0f64; MAX_BLOCK_SIZE];
         }
         let target_slots = required_slots.max(INITIAL_SLOT_CAPACITY);
         while self.buffers_l.len() < target_slots {
-            self.buffers_l.push(vec![0.0f32; MAX_BLOCK_SIZE]);
-            self.buffers_r.push(vec![0.0f32; MAX_BLOCK_SIZE]);
+            self.buffers_l.push(vec![0.0f64; MAX_BLOCK_SIZE]);
+            self.buffers_r.push(vec![0.0f64; MAX_BLOCK_SIZE]);
         }
     }
 
@@ -357,7 +357,9 @@ impl GraphExecutor {
         }
     }
 
-    /// Top-level block processing with dynamic capacity bounds and block slicing protection.
+    /// Top-level block processing in True 64-bit (`f64`) precision with dynamic capacity bounds and block slicing protection.
+    /// Accepts `f32` slices from the ring buffer, promotes to `f64` inside the pre-allocated 64-bit Master DSP Bus,
+    /// executes the entire DAG and master limiter in `f64`, and converts back to `f32` at the output boundary.
     pub fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
         let n = left.len().min(right.len());
         if n == 0 {
@@ -376,12 +378,27 @@ impl GraphExecutor {
             return;
         }
 
+        if self.scratch_l.is_empty() {
+            self.ensure_buffer_capacity(self.plan.steps.len());
+        }
+
         // 3. Fallback to standalone EQ if no custom graph provided
         if !self.plan.has_custom_graph {
-            if !self.fallback_eq.is_flat {
-                self.fallback_eq.process_block(&mut left[..n], &mut right[..n]);
+            for chunk_start in (0..n).step_by(MAX_BLOCK_SIZE) {
+                let chunk_len = (n - chunk_start).min(MAX_BLOCK_SIZE);
+                for i in 0..chunk_len {
+                    self.scratch_l[i] = left[chunk_start + i] as f64;
+                    self.scratch_r[i] = right[chunk_start + i] as f64;
+                }
+                if !self.fallback_eq.is_flat {
+                    self.fallback_eq.process_block_f64(&mut self.scratch_l[..chunk_len], &mut self.scratch_r[..chunk_len]);
+                }
+                Self::apply_limiter_or_clamp_f64(self.limiter_enabled, &mut self.scratch_l[..chunk_len], &mut self.scratch_r[..chunk_len]);
+                for i in 0..chunk_len {
+                    left[chunk_start + i] = self.scratch_l[i] as f32;
+                    right[chunk_start + i] = self.scratch_r[i] as f32;
+                }
             }
-            self.apply_limiter_or_clamp(&mut left[..n], &mut right[..n]);
             return;
         }
 
@@ -390,31 +407,81 @@ impl GraphExecutor {
             return;
         }
 
-        // 5. Legacy sequential effects (if provided without DAG nodes)
+        // 5. Legacy sequential effects (if provided without DAG nodes) — executed in 64-bit f64
         if self.plan.steps.is_empty() && !self.plan.graph.effects.is_empty() {
-            for effect in &mut self.plan.graph.effects {
-                effect.process_block(&mut left[..n], &mut right[..n]);
+            for chunk_start in (0..n).step_by(MAX_BLOCK_SIZE) {
+                let chunk_len = (n - chunk_start).min(MAX_BLOCK_SIZE);
+                for i in 0..chunk_len {
+                    self.scratch_l[i] = left[chunk_start + i] as f64;
+                    self.scratch_r[i] = right[chunk_start + i] as f64;
+                }
+                for effect in &mut self.plan.graph.effects {
+                    effect.process_block_f64(&mut self.scratch_l[..chunk_len], &mut self.scratch_r[..chunk_len]);
+                }
+                for i in 0..chunk_len {
+                    left[chunk_start + i] = self.scratch_l[i] as f32;
+                    right[chunk_start + i] = self.scratch_r[i] as f32;
+                }
             }
             return;
         }
 
-        // 6. Zero-allocation execution of pre-compiled DAG steps in bounded MAX_BLOCK_SIZE chunks
+        // 6. Zero-allocation execution of pre-compiled DAG steps in bounded MAX_BLOCK_SIZE 64-bit (f64) chunks
         if n <= MAX_BLOCK_SIZE {
-            self.process_sub_block(&mut left[..n], &mut right[..n]);
+            self.process_sub_block_f32_io(&mut left[..n], &mut right[..n]);
         } else {
             for chunk_start in (0..n).step_by(MAX_BLOCK_SIZE) {
                 let chunk_len = (n - chunk_start).min(MAX_BLOCK_SIZE);
                 let l_chunk = &mut left[chunk_start..chunk_start + chunk_len];
                 let r_chunk = &mut right[chunk_start..chunk_start + chunk_len];
-                self.process_sub_block(l_chunk, r_chunk);
+                self.process_sub_block_f32_io(l_chunk, r_chunk);
             }
         }
+    }
 
-        self.apply_limiter_or_clamp(&mut left[..n], &mut right[..n]);
+    /// Direct native 64-bit (`f64`) block processing without `f32` I/O conversion.
+    /// Useful for ultra-deep 64-bit mastering verification and direct `f64` pipelines.
+    pub fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
+        let n = left.len().min(right.len());
+        if n == 0 {
+            return;
+        }
+        if !self.plan.is_complete {
+            left[..n].fill(0.0);
+            right[..n].fill(0.0);
+            return;
+        }
+        if self.eq_bypass {
+            return;
+        }
+        if self.scratch_l.is_empty() {
+            self.ensure_buffer_capacity(self.plan.steps.len());
+        }
+        if !self.plan.has_custom_graph {
+            if !self.fallback_eq.is_flat {
+                self.fallback_eq.process_block_f64(&mut left[..n], &mut right[..n]);
+            }
+            Self::apply_limiter_or_clamp_f64(self.limiter_enabled, &mut left[..n], &mut right[..n]);
+            return;
+        }
+        if !self.plan.has_active_effects {
+            return;
+        }
+        if self.plan.steps.is_empty() && !self.plan.graph.effects.is_empty() {
+            for effect in &mut self.plan.graph.effects {
+                effect.process_block_f64(&mut left[..n], &mut right[..n]);
+            }
+            return;
+        }
+        for chunk_start in (0..n).step_by(MAX_BLOCK_SIZE) {
+            let chunk_len = (n - chunk_start).min(MAX_BLOCK_SIZE);
+            self.process_sub_block_f64(&mut left[chunk_start..chunk_start + chunk_len], &mut right[chunk_start..chunk_start + chunk_len]);
+        }
+        Self::apply_limiter_or_clamp_f64(self.limiter_enabled, &mut left[..n], &mut right[..n]);
     }
 
     #[inline(always)]
-    fn process_sub_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn process_sub_block_f32_io(&mut self, left: &mut [f32], right: &mut [f32]) {
         let n = left.len();
         if self.plan.steps.is_empty() {
             return;
@@ -428,8 +495,10 @@ impl GraphExecutor {
 
             match step.input {
                 StepInput::Source => {
-                    self.buffers_l[slot][..n].copy_from_slice(&left[..n]);
-                    self.buffers_r[slot][..n].copy_from_slice(&right[..n]);
+                    for i in 0..n {
+                        self.buffers_l[slot][i] = left[i] as f64;
+                        self.buffers_r[slot][i] = right[i] as f64;
+                    }
                 }
                 StepInput::Single(src) => {
                     if src < self.buffers_l.len() {
@@ -440,8 +509,8 @@ impl GraphExecutor {
                     }
                 }
                 StepInput::Mixer { slot_a, slot_b, mix_ratio } => {
-                    let gain_a = 1.0 - mix_ratio;
-                    let gain_b = mix_ratio;
+                    let gain_a = (1.0 - mix_ratio) as f64;
+                    let gain_b = mix_ratio as f64;
                     match (slot_a, slot_b) {
                         (Some(sa), Some(sb)) if sa < self.buffers_l.len() && sb < self.buffers_l.len() => {
                             for i in 0..n {
@@ -468,10 +537,10 @@ impl GraphExecutor {
                     }
                 }
                 StepInput::Multi(ref parents) => {
-                    let scale = 1.0f32 / (parents.len() as f32).sqrt();
+                    let scale = 1.0f64 / (parents.len() as f64).sqrt();
                     for i in 0..n {
-                        let mut sum_l = 0.0f32;
-                        let mut sum_r = 0.0f32;
+                        let mut sum_l = 0.0f64;
+                        let mut sum_r = 0.0f64;
                         for &p in parents {
                             if p < self.buffers_l.len() {
                                 sum_l += self.buffers_l[p][i];
@@ -485,10 +554,120 @@ impl GraphExecutor {
             }
 
             let (buf_l, buf_r) = (&mut self.buffers_l[slot][..n], &mut self.buffers_r[slot][..n]);
-            step.effect.process_block(buf_l, buf_r);
+            step.effect.process_block_f64(buf_l, buf_r);
         }
 
-        // Copy final output from terminal nodes
+        // Apply 64-bit output limiter/clamp and write back from terminal nodes
+        if self.plan.terminal_slots.len() == 1 {
+            let term = self.plan.terminal_slots[0];
+            if term < self.buffers_l.len() {
+                Self::apply_limiter_or_clamp_f64(
+                    self.limiter_enabled,
+                    &mut self.buffers_l[term][..n],
+                    &mut self.buffers_r[term][..n],
+                );
+                for i in 0..n {
+                    left[i] = self.buffers_l[term][i] as f32;
+                    right[i] = self.buffers_r[term][i] as f32;
+                }
+            }
+        } else if !self.plan.terminal_slots.is_empty() {
+            let scale = 1.0f64 / (self.plan.terminal_slots.len() as f64).sqrt();
+            for i in 0..n {
+                let mut sum_l = 0.0f64;
+                let mut sum_r = 0.0f64;
+                for &t in &self.plan.terminal_slots {
+                    if t < self.buffers_l.len() {
+                        sum_l += self.buffers_l[t][i];
+                        sum_r += self.buffers_r[t][i];
+                    }
+                }
+                self.scratch_l[i] = sum_l * scale;
+                self.scratch_r[i] = sum_r * scale;
+            }
+            Self::apply_limiter_or_clamp_f64(self.limiter_enabled, &mut self.scratch_l[..n], &mut self.scratch_r[..n]);
+            for i in 0..n {
+                left[i] = self.scratch_l[i] as f32;
+                right[i] = self.scratch_r[i] as f32;
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn process_sub_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
+        let n = left.len();
+        if self.plan.steps.is_empty() {
+            return;
+        }
+
+        for step in &mut self.plan.steps {
+            let slot = step.slot;
+            if slot >= self.buffers_l.len() {
+                continue;
+            }
+
+            match step.input {
+                StepInput::Source => {
+                    self.buffers_l[slot][..n].copy_from_slice(&left[..n]);
+                    self.buffers_r[slot][..n].copy_from_slice(&right[..n]);
+                }
+                StepInput::Single(src) => {
+                    if src < self.buffers_l.len() {
+                        self.scratch_l[..n].copy_from_slice(&self.buffers_l[src][..n]);
+                        self.scratch_r[..n].copy_from_slice(&self.buffers_r[src][..n]);
+                        self.buffers_l[slot][..n].copy_from_slice(&self.scratch_l[..n]);
+                        self.buffers_r[slot][..n].copy_from_slice(&self.scratch_r[..n]);
+                    }
+                }
+                StepInput::Mixer { slot_a, slot_b, mix_ratio } => {
+                    let gain_a = (1.0 - mix_ratio) as f64;
+                    let gain_b = mix_ratio as f64;
+                    match (slot_a, slot_b) {
+                        (Some(sa), Some(sb)) if sa < self.buffers_l.len() && sb < self.buffers_l.len() => {
+                            for i in 0..n {
+                                self.buffers_l[slot][i] = self.buffers_l[sa][i] * gain_a + self.buffers_l[sb][i] * gain_b;
+                                self.buffers_r[slot][i] = self.buffers_r[sa][i] * gain_a + self.buffers_r[sb][i] * gain_b;
+                            }
+                        }
+                        (Some(sa), _) if sa < self.buffers_l.len() => {
+                            for i in 0..n {
+                                self.buffers_l[slot][i] = self.buffers_l[sa][i] * gain_a;
+                                self.buffers_r[slot][i] = self.buffers_r[sa][i] * gain_a;
+                            }
+                        }
+                        (_, Some(sb)) if sb < self.buffers_l.len() => {
+                            for i in 0..n {
+                                self.buffers_l[slot][i] = self.buffers_l[sb][i] * gain_b;
+                                self.buffers_r[slot][i] = self.buffers_r[sb][i] * gain_b;
+                            }
+                        }
+                        _ => {
+                            self.buffers_l[slot][..n].fill(0.0);
+                            self.buffers_r[slot][..n].fill(0.0);
+                        }
+                    }
+                }
+                StepInput::Multi(ref parents) => {
+                    let scale = 1.0f64 / (parents.len() as f64).sqrt();
+                    for i in 0..n {
+                        let mut sum_l = 0.0f64;
+                        let mut sum_r = 0.0f64;
+                        for &p in parents {
+                            if p < self.buffers_l.len() {
+                                sum_l += self.buffers_l[p][i];
+                                sum_r += self.buffers_r[p][i];
+                            }
+                        }
+                        self.buffers_l[slot][i] = sum_l * scale;
+                        self.buffers_r[slot][i] = sum_r * scale;
+                    }
+                }
+            }
+
+            let (buf_l, buf_r) = (&mut self.buffers_l[slot][..n], &mut self.buffers_r[slot][..n]);
+            step.effect.process_block_f64(buf_l, buf_r);
+        }
+
         if self.plan.terminal_slots.len() == 1 {
             let term = self.plan.terminal_slots[0];
             if term < self.buffers_l.len() {
@@ -496,10 +675,10 @@ impl GraphExecutor {
                 right.copy_from_slice(&self.buffers_r[term][..n]);
             }
         } else if !self.plan.terminal_slots.is_empty() {
-            let scale = 1.0f32 / (self.plan.terminal_slots.len() as f32).sqrt();
+            let scale = 1.0f64 / (self.plan.terminal_slots.len() as f64).sqrt();
             for i in 0..n {
-                let mut sum_l = 0.0f32;
-                let mut sum_r = 0.0f32;
+                let mut sum_l = 0.0f64;
+                let mut sum_r = 0.0f64;
                 for &t in &self.plan.terminal_slots {
                     if t < self.buffers_l.len() {
                         sum_l += self.buffers_l[t][i];
@@ -513,17 +692,17 @@ impl GraphExecutor {
     }
 
     #[inline(always)]
-    fn apply_limiter_or_clamp(&self, left: &mut [f32], right: &mut [f32]) {
-        if self.limiter_enabled {
+    fn apply_limiter_or_clamp_f64(limiter_enabled: bool, left: &mut [f64], right: &mut [f64]) {
+        if limiter_enabled {
             for s in left.iter_mut() {
                 if s.abs() > 0.90 {
-                    *s = soft_limit(*s as f64) as f32;
+                    *s = soft_limit(*s);
                 }
                 *s = s.clamp(-1.0, 1.0);
             }
             for s in right.iter_mut() {
                 if s.abs() > 0.90 {
-                    *s = soft_limit(*s as f64) as f32;
+                    *s = soft_limit(*s);
                 }
                 *s = s.clamp(-1.0, 1.0);
             }

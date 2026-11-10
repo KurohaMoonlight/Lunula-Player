@@ -33,7 +33,7 @@ flowchart LR
     end
 ```
 
-### 1. Direct Bit-Perfect Jump Highway (RAM Buffer ──▶ Output DAC)
+### 1. Direct Bit-Perfect Jump Highway (RAM Buffer ──▶ Output DAC) — ✅ SELESAI
 * **Permasalahan Sebelumnya:** Pada mode Bit-Perfect, kabel sinyal visual di patchbay masih melalui Node 4 (`APP RESAMPLER`), meskipun fungsi resampler di-bypass secara logika internal.
 * **Target Rekayasa:**
   * Di mode **Bit-Perfect**, rantai sinyal resmi **melompat langsung (jump bypass)** dari **Node 2 (RAM BUFFER)** ke **Node 5 (OUTPUT DAC)**:
@@ -43,7 +43,7 @@ flowchart LR
 
 ---
 
-### 2. Pemisahan Total (*Decoupling*) Mode Pemrosesan vs Mode Output Hardware
+### 2. Pemisahan Total (*Decoupling*) Mode Pemrosesan vs Mode Output Hardware — ✅ SELESAI
 * **Permasalahan Sebelumnya:** Tombol Exclusive di toolbar digabungkan secara keliru dengan mode Bit-Perfect. Saat memilih Exclusive, mode dipaksa menjadi Bit-Perfect sehingga Modular FX tidak bisa berjalan di mode Exclusive.
 * **Target Rekayasa:**
   * **ChainMode (Modular FX vs Bit-Perfect)** dan **OutputMode (WASAPI Exclusive vs WASAPI Shared)** dibuat **100% independen**.
@@ -55,7 +55,7 @@ flowchart LR
 
 ---
 
-### 3. Kejujuran Tingkat Tinggi Status Hardware (No Gimmick)
+### 3. Kejujuran Tingkat Tinggi Status Hardware (No Gimmick) — ✅ SELESAI
 * **Badge Kiri Atas (Pure Hardware Truth):**
   * **🟢 `[ 🔒 WASAPI EXCLUSIVE ]` (Emerald):** Hanya menyala jika stream fisik hardware **benar-benar terkunci langsung oleh Lunula** dan Windows Audio Mixer di-bypass penuh.
   * **🟡 `[ 🔊 WASAPI SHARED ]` (Amber):** Menampilkan jujur ketika audio mengalir melalui OS Mixer.
@@ -64,7 +64,7 @@ flowchart LR
 
 ---
 
-### 4. Adaptasi Cerdas Hardware DAC Terkunci (Misal Realtek 48 kHz Onboard)
+### 4. Adaptasi Cerdas Hardware DAC Terkunci (Misal Realtek 48 kHz Onboard) — ✅ SELESAI
 * **Dilema Hardware:** Banyak chip audio onboard (seperti Realtek pada laptop/motherboard) memiliki osilator hardware yang terkunci di **48.0 kHz** dan menolak format 44.1 kHz pada mode Exclusive (`AUDCLNT_E_UNSUPPORTED_FORMAT`).
 * **Solusi Arsitektural:**
   * **Pada Mode Modular FX:**

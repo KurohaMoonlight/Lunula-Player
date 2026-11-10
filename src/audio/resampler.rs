@@ -5,17 +5,17 @@ use rubato::{
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use crate::audio::types::ResamplerSettings;
 
-// Audiophile-grade stereo sinc resampler using Rubato
-// Replaces naive linear interpolation with bandlimited windowed sinc convolution,
+// Audiophile-grade 64-bit (`f64`) stereo sinc resampler using Rubato.
+// Replaces naive linear interpolation with bandlimited windowed sinc convolution in true double precision,
 // eliminating aliasing upon downsampling and imaging artifacts upon upsampling.
 pub struct StereoResampler {
     source_rate: u32,
     target_rate: u32,
     settings: ResamplerSettings,
-    sinc_resampler: Option<Async<f32>>,
-    in_buffer: Vec<f32>,
-    out_buffer: Vec<f32>,
-    out_queue: Vec<(f32, f32)>,
+    sinc_resampler: Option<Async<f64>>,
+    in_buffer: Vec<f64>,
+    out_buffer: Vec<f64>,
+    out_queue: Vec<(f64, f64)>,
     out_queue_idx: usize,
     flushed_eof: bool,
 }
@@ -78,7 +78,7 @@ impl StereoResampler {
         };
 
         let in_chunk = 256;
-        if let Ok(resampler) = Async::<f32>::new_sinc(
+        if let Ok(resampler) = Async::<f64>::new_sinc(
             ratio,
             1.01,
             &params,
@@ -88,8 +88,8 @@ impl StereoResampler {
         ) {
             let in_req = resampler.input_frames_next();
             let out_req = resampler.output_frames_next();
-            self.in_buffer = vec![0.0f32; (in_req + 64) * 2];
-            self.out_buffer = vec![0.0f32; (out_req + 64) * 2];
+            self.in_buffer = vec![0.0f64; (in_req + 64) * 2];
+            self.out_buffer = vec![0.0f64; (out_req + 64) * 2];
             self.out_queue = Vec::with_capacity(out_req + 64);
             self.out_queue_idx = 0;
             self.sinc_resampler = Some(resampler);
@@ -98,11 +98,11 @@ impl StereoResampler {
         }
     }
 
-    // Fetches the next resampled stereo frame (L, R).
-    // Calls `fetch` to obtain incoming native frames in chunks as needed.
-    pub fn next_frame<F>(&mut self, mut fetch: F) -> Option<(f32, f32)>
+    /// Fetches the next resampled stereo frame (L, R) in true 64-bit (`f64`) precision.
+    /// Calls `fetch` to obtain incoming native frames in chunks as needed.
+    pub fn next_frame_f64<F>(&mut self, mut fetch: F) -> Option<(f64, f64)>
     where
-        F: FnMut() -> Option<(f32, f32)>,
+        F: FnMut() -> Option<(f64, f64)>,
     {
         // 100% Bit-perfect direct passthrough when sample rates match
         if self.is_passthrough() || self.sinc_resampler.is_none() {
@@ -116,7 +116,7 @@ impl StereoResampler {
             return Some(frame);
         }
 
-        // Output queue empty: fetch input chunk and process via Sinc resampler
+        // Output queue empty: fetch input chunk and process via 64-bit Sinc resampler
         self.out_queue.clear();
         self.out_queue_idx = 0;
 
@@ -204,6 +204,15 @@ impl StereoResampler {
         } else {
             None
         }
+    }
+
+    // Convenience helper for `f32` frame fetching
+    pub fn next_frame<F>(&mut self, mut fetch: F) -> Option<(f32, f32)>
+    where
+        F: FnMut() -> Option<(f32, f32)>,
+    {
+        self.next_frame_f64(|| fetch().map(|(l, r)| (l as f64, r as f64)))
+            .map(|(l, r)| (l as f32, r as f32))
     }
 
     pub fn reset(&mut self, source_rate: u32, target_rate: u32) {
@@ -331,7 +340,7 @@ mod tests {
             let mut fed = 0;
             let total_in = 20_000;
             let mut total_out = 0;
-            while let Some((l, r)) = resampler.next_frame(|| {
+            while let Some((l, r)) = resampler.next_frame_f64(|| {
                 if fed < total_in {
                     fed += 1;
                     Some((0.42, -0.42))
