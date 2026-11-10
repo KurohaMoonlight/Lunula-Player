@@ -1912,19 +1912,34 @@ impl LunulaApp {
 
     /// Automatically remedies headroom deficit or clipping hazard on a specific node.
     /// Adjusts gain, drive, or stereo width to safe levels, or engages output soft limiter.
-    pub fn apply_auto_fix_for_node(&mut self, node_id: usize) -> bool {
+    /// Automatically remedies headroom deficit or clipping hazard on a specific node.
+    /// Supports parameter slew (Booster, Preamp, Widener, DynamicLoudness, Compressor, Filter Q)
+    /// and topological Graph Rewriting (injecting passive attenuator pad for unparameterized culprits).
+        pub fn apply_auto_fix_for_node(&mut self, node_id: usize) -> bool {
         let report = self.get_static_analysis();
         let r = match report.get_node_report(node_id as u32) {
             Some(report) => report.clone(),
             None => return false,
         };
 
-        let node_type = match self.nodes.iter().find(|n| n.id == node_id) {
-            Some(n) => n.node_type.clone(),
+        let (node_type, node_pos, node_sub2) = match self.nodes.iter().find(|n| n.id == node_id) {
+            Some(n) => (n.node_type.clone(), n.pos, n.sub2.clone()),
             None => return false,
         };
         let current_param = self.nodes.iter().find(|n| n.id == node_id).map(|n| n.param_val).unwrap_or(0.0);
         let deficit = r.headroom_deficit_db;
+
+        if deficit <= 0.001 {
+            return false;
+        }
+
+        // Never inject attenuators downstream of attenuators themselves!
+        if matches!(node_type, NodeType::SteppedAttenuator | NodeType::VolumeAttenuator) {
+            let safe_val = (current_param - deficit).clamp(-60.0, 0.0);
+            self.update_node_parameter(node_id, safe_val);
+            self.save_library_state();
+            return true;
+        }
 
         match node_type {
             NodeType::VolumeBooster => {
@@ -1948,32 +1963,119 @@ impl LunulaApp {
                 self.save_library_state();
                 true
             }
-            _ => {
-                if !self.eq_limiter_enabled {
-                    self.eq_limiter_enabled = true;
-                    self.save_library_state();
-                    true
-                } else {
-                    false
+            NodeType::DynamicLoudness => {
+                let attenuation_factor = 10.0f32.powf(-deficit / 20.0);
+                let safe_val = (current_param * attenuation_factor).clamp(0.0, 100.0);
+                self.update_node_parameter(node_id, safe_val);
+                self.save_library_state();
+                true
+            }
+            NodeType::LowPassFilter | NodeType::HighPassFilter | NodeType::BandPassFilter => {
+                if let Some(n) = self.nodes.iter_mut().find(|n| n.id == node_id) {
+                    let slope_str = if node_sub2.contains("48dB") { "Slope 48dB" } else if node_sub2.contains("24dB") { "Slope 24dB" } else { "Slope 12dB" };
+                    n.sub2 = format!("{} • Q 0.71", slope_str);
                 }
+                self.invalidate_chain_cache();
+                self.save_library_state();
+                true
+            }
+            NodeType::Mixer => {
+                self.update_node_parameter(node_id, 0.5);
+                self.save_library_state();
+                true
+            }
+            _ => {
+                // Topology Graph Rewriting: only inject if downstream node is NOT already an attenuator!
+                self.inject_attenuator_downstream(node_id, deficit, node_pos)
             }
         }
     }
 
-    /// Automatically applies remedies to all culprit nodes across the signal chain.
+    /// Topological Graph Rewriting: Injects a passive attenuator pad node into outgoing edges
+    /// to restore mathematical 0 dBFS headroom equilibrium without manual cable rewiring.
+    /// Idempotent: modifies existing downstream pad if already present!
+    pub fn inject_attenuator_downstream(&mut self, culprit_node_id: usize, deficit_db: f32, culprit_pos: Pos2) -> bool {
+        // If an attenuator already sits directly downstream of this culprit, simply adjust its attenuation!
+        let downstream_pad_opt = self.connections.iter()
+            .filter(|c| c.from_node == culprit_node_id)
+            .find_map(|c| {
+                self.nodes.iter().find(|n| n.id == c.to_node && matches!(n.node_type, NodeType::SteppedAttenuator | NodeType::VolumeAttenuator)).map(|n| n.id)
+            });
+
+        if let Some(pad_id) = downstream_pad_opt {
+            let current_att = self.nodes.iter().find(|n| n.id == pad_id).map(|n| n.param_val).unwrap_or(0.0);
+            let needed_att = (current_att - deficit_db).clamp(-60.0, 0.0);
+            self.update_node_parameter(pad_id, needed_att);
+            self.save_library_state();
+            return true;
+        }
+
+        let outgoing_connections: Vec<crate::models::CableConnection> = self.connections
+            .iter()
+            .filter(|c| c.from_node == culprit_node_id)
+            .cloned()
+            .collect();
+
+        if outgoing_connections.is_empty() {
+            if !self.eq_limiter_enabled {
+                self.eq_limiter_enabled = true;
+                if let Some(ref engine) = self.audio_engine {
+                    engine.set_limiter_enabled(true);
+                }
+                self.save_library_state();
+                return true;
+            }
+            return false;
+        }
+
+        let att_id = self.next_node_id;
+        self.next_node_id += 1;
+
+        let pad_db = -deficit_db.ceil().clamp(1.0, 30.0);
+        let new_att_node = crate::models::ModularNode {
+            id: att_id,
+            node_type: NodeType::SteppedAttenuator,
+            title: "🪜 AUTO-FIX PAD".to_string(),
+            sub1: format!("{:.0} dB", pad_db),
+            sub2: "Headroom Guard".to_string(),
+            pos: Pos2::new(culprit_pos.x + 130.0, culprit_pos.y + 35.0),
+            is_removable: true,
+            param_val: pad_db,
+        };
+        self.nodes.push(new_att_node);
+
+        // Rewire: (culprit -> target) becomes (culprit -> pad -> target)
+        self.connections.retain(|c| c.from_node != culprit_node_id);
+        self.connections.push(crate::models::CableConnection::with_ports(culprit_node_id, 0, att_id, 0));
+
+        for old_conn in outgoing_connections {
+            self.connections.push(crate::models::CableConnection::with_ports(att_id, 0, old_conn.to_node, old_conn.to_port));
+        }
+
+        self.invalidate_chain_cache();
+        self.sync_signal_chain_to_engine();
+        self.save_library_state();
+        true
+    }
+
+    /// Automatically applies remedies to all culprit nodes across the signal chain in a single pass.
     /// Returns the number of modules adjusted.
     pub fn apply_all_headroom_auto_fixes(&mut self) -> usize {
         let culprits = self.get_static_analysis().culprit_nodes.clone();
         let mut fixed_count = 0;
+
         for c_id in culprits {
             if self.apply_auto_fix_for_node(c_id as usize) {
                 fixed_count += 1;
             }
         }
+
         if fixed_count > 0 {
             self.invalidate_chain_cache();
+            self.sync_signal_chain_to_engine();
             self.save_library_state();
         }
+
         fixed_count
     }
 
@@ -4026,6 +4128,7 @@ mod tests {
         let telemetry_tabs = [
             crate::ui::patchbay::TelemetryTab::AutoInspect,
             crate::ui::patchbay::TelemetryTab::CumulativeNet,
+            crate::ui::patchbay::TelemetryTab::StaticVerification,
             crate::ui::patchbay::TelemetryTab::StereoVectorscope,
             crate::ui::patchbay::TelemetryTab::MasterMetering,
             crate::ui::patchbay::TelemetryTab::WaveformHeatmap,

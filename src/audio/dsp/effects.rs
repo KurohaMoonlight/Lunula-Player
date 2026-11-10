@@ -139,6 +139,17 @@ impl Effect for GraphicEqEffect {
         }
     }
 
+    fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        if self.is_flat {
+            let pre = self.auto_preamp as f32;
+            return input.scale(pre);
+        }
+        let max_boost_db = self.target_gains.iter().fold(0.0f64, |acc, &g| acc.max(g)) as f32;
+        let lin_gain = 10.0f32.powf(max_boost_db / 20.0);
+        let eff_gain = lin_gain * (self.auto_preamp as f32);
+        input.scale(eff_gain.max(1.0))
+    }
+
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
     }
@@ -215,6 +226,12 @@ impl Effect for TubeWarmerEffect {
             self.drive = val.clamp(0.0, 100.0);
         }
     }
+    fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        // Tube saturation compresses/soft-limits waveform at [-1.0, 1.0] ceiling.
+        // It warms harmonics without expanding amplitude headroom beyond input scale!
+        input
+    }
+
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
     }
@@ -1031,8 +1048,9 @@ impl Effect for LowPassFilterEffect {
     }
 
     fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        let stages = match self.slope_db { 48 => 4, 24 => 2, _ => 1 };
         let q_peak = (self.fringe_q as f32).max(1.0);
-        input.scale(q_peak)
+        input.scale(q_peak.powi(stages))
     }
 }
 
@@ -1164,8 +1182,9 @@ impl Effect for HighPassFilterEffect {
     }
 
     fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        let stages = match self.slope_db { 48 => 4, 24 => 2, _ => 1 };
         let q_peak = (self.fringe_q as f32).max(1.0);
-        input.scale(q_peak)
+        input.scale(q_peak.powi(stages))
     }
 }
 
@@ -1285,8 +1304,9 @@ impl Effect for BandPassFilterEffect {
     }
 
     fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        let stages = if self.slope_db == 24 { 2 } else { 1 };
         let q_peak = (self.fringe_q as f32).max(1.0);
-        input.scale(q_peak)
+        input.scale(q_peak.powi(stages))
     }
 }
 
@@ -1696,6 +1716,15 @@ impl Effect for ParametricEqEffect {
 
     fn effect_type(&self) -> EffectType {
         EffectType::ParametricEq
+    }
+
+    fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        let max_boost_db = self.bands.iter()
+            .map(|b| b.gain_db)
+            .fold(0.0f64, f64::max) as f32;
+        let lin_gain = 10.0f32.powf(max_boost_db / 20.0);
+        let eff_gain = lin_gain * (self.auto_preamp as f32);
+        input.scale(eff_gain.max(1.0))
     }
 
     fn clone_box(&self) -> Box<dyn Effect> {

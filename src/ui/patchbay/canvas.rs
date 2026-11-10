@@ -1196,11 +1196,12 @@ impl LunulaApp {
                 painter.rect_stroke(node_rect.expand(1.5), 10.0, Stroke::new(1.5, Color32::from_rgb(129, 140, 248)), egui::StrokeKind::Outside);
             }
 
-            // Context menu on node
+            // Dedicated interaction responses: separated IDs so context menu and hover tooltip never collide layers in egui
             let node_resp = ui.interact(node_rect, ui.scope_id().with(("patch_node_ctx", node.id)), egui::Sense::click());
+            let tooltip_resp = ui.interact(node_rect, ui.scope_id().with(("patch_node_tip", node.id)), egui::Sense::hover());
 
-            // Static analysis diagnostic tooltip on hover (strictly suppressed if canvas is blocked or not hovered)
-            if !is_canvas_blocked && is_hovered {
+            // Static analysis diagnostic tooltip on hover (strictly suppressed if canvas is blocked, dragging, or context menu is open)
+            if !is_canvas_blocked && is_hovered && !node_resp.is_pointer_button_down_on() {
                 if is_culprit_node {
                     if let Some(r) = node_rep {
                         let recs = if !r.recommendations.is_empty() {
@@ -1208,14 +1209,14 @@ impl LunulaApp {
                         } else {
                             String::new()
                         };
-                        node_resp.show_tooltip_text(format!(
+                        tooltip_resp.show_tooltip_text(format!(
                             "💥 ASAL-USUL CLIPPING (CULPRIT)\n{}\nPeak Amplitudo: {:.2} dBFS (Defisit Headroom: +{:.2} dB){}",
                             r.reason, r.peak_dbfs, r.headroom_deficit_db, recs
                         ));
                     }
                 } else if is_overdriven_victim {
                     if let Some(r) = node_rep {
-                        node_resp.show_tooltip_text(format!(
+                        tooltip_resp.show_tooltip_text(format!(
                             "⚠️ OVERDRIVEN DOWNSTREAM (KORBAN CLIPPING)\n{}\nPeak Amplitudo Masuk: {:.2} dBFS\nModul ini menerima sinyal terdistorsi dari modul upstream.",
                             r.reason, r.peak_dbfs
                         ));
@@ -1236,7 +1237,7 @@ impl LunulaApp {
                         } else {
                             "Headroom Guard: Aktif [Standar 0.0 dBFS]".to_string()
                         };
-                        node_resp.show_tooltip_text(format!(
+                        tooltip_resp.show_tooltip_text(format!(
                             "🎛️ FILE SOURCE (KONTEKS AUDIO)\nLagu Aktif: {}\nAmplitudo Puncak: {:.3} ({:.2} dBFS)\nHeadroom Aman Tersisa: +{:.2} dB ke 0 dBFS\n{}\n\nStatus: Analisis statis mengukur headroom berdasarkan konteks lagu ini.",
                             track_name, peak_mag, peak_db, headroom_db, guard_status_text
                         ));
