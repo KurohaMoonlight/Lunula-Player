@@ -223,3 +223,30 @@ fn test_interactive_theater_renders_all_5_slides_and_all_turns() {
         out.textures_delta.clear();
     }
 }
+
+#[test]
+fn test_frequency_response_guide_modal_renders_all_6_steps() {
+    let ctx = egui::Context::default();
+    let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0)));
+    let mut app = LunulaApp::default();
+    app.current_tab = AppTab::SignalChain;
+    app.studio_mode = lunulaplayer::models::StudioMode::Advance;
+    app.advance_studio_state.telemetry_tab = lunulaplayer::ui::patchbay::TelemetryTab::CumulativeNet;
+    app.advance_studio_state.show_freq_resp_guide = true;
+
+    for step in 0..6 {
+        app.advance_studio_state.freq_resp_guide_step = step;
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: screen,
+                time: Some(1.23 + step as f64),
+                ..Default::default()
+            },
+            |ui| {
+                app.render_telemetry_inspection_desk(ui, 300.0);
+            },
+        );
+        assert!(!out.shapes.is_empty(), "Guide modal step {} should render shapes", step);
+        out.textures_delta.clear();
+    }
+}

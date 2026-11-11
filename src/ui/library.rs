@@ -1653,16 +1653,19 @@ impl LunulaApp {
                 None => 0,
             };
             self.play_queue.insert(insert_pos, track);
+            self.sync_gapless_next_track();
             had_mutations = true;
         }
 
         if let Some(track) = track_add_to_queue {
             self.play_queue.push(track);
+            self.sync_gapless_next_track();
             had_mutations = true;
         }
 
         if let Some(tracks) = tracks_to_queue_bulk {
             self.play_queue.extend(tracks);
+            self.sync_gapless_next_track();
             had_mutations = true;
         }
 

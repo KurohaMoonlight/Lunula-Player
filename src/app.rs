@@ -694,6 +694,9 @@ impl LunulaApp {
             if let Some(cp) = state.replay_gain_clip_prevention {
                 app.replay_gain_clip_prevention = cp;
             }
+            if let Some(gapless) = state.is_gapless_enabled {
+                app.is_gapless_enabled = gapless;
+            }
             if let Some(cf) = state.crossfade_secs {
                 app.crossfade_secs = cf;
             }
@@ -717,13 +720,16 @@ impl LunulaApp {
         // Initial artwork loaded on-demand via async thumbnail loader (prevents redundant memory allocations)
         app.current_cover_bytes = None;
 
+        app.update_effective_replay_gain();
+
         if let Some(ref engine) = app.audio_engine {
             if let Some(ref dev) = app.selected_output_device {
                 engine.set_output_device(Some(dev.clone()));
             }
-            engine.set_volume(if app.is_muted { 0.0 } else { app.volume });
+            engine.set_volume(app.current_effective_volume());
             engine.set_chain_mode(app.chain_mode);
             engine.set_eq_bypass(app.eq_bypass);
+            engine.set_limiter_enabled(app.eq_limiter_enabled);
             for (idx, &gain) in app.eq_bands.iter().enumerate() {
                 engine.set_eq_band(idx, gain);
             }
@@ -823,6 +829,46 @@ impl LunulaApp {
         (effective_gain_db, linear)
     }
 
+    #[inline]
+    pub fn current_effective_volume(&self) -> f32 {
+        if self.is_muted {
+            0.0
+        } else if self.chain_mode == ChainMode::BitPerfect {
+            self.volume
+        } else {
+            (self.volume * self.effective_replay_gain_linear).clamp(0.0, 4.0)
+        }
+    }
+
+    pub fn sync_gapless_next_track(&self) {
+        if let Some(ref engine) = self.audio_engine {
+            if self.is_gapless_enabled {
+                if let Some(next) = self.peek_next_track() {
+                    if let Some(ref next_p) = next.file_path {
+                        engine.queue_next(std::path::PathBuf::from(next_p));
+                        return;
+                    }
+                }
+            }
+            engine.clear_next();
+        }
+    }
+
+    fn deterministic_shuffle_pick(&self, pool_len: usize) -> usize {
+        if pool_len <= 1 {
+            return 0;
+        }
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.current_track.title.hash(&mut hasher);
+        self.current_track.artist.hash(&mut hasher);
+        self.current_track.duration.to_bits().hash(&mut hasher);
+        self.queue_cursor.hash(&mut hasher);
+        self.play_queue.len().hash(&mut hasher);
+        self.playlist.len().hash(&mut hasher);
+        (hasher.finish() as usize) % pool_len
+    }
+
     pub fn update_effective_replay_gain(&mut self) {
         let (db, lin) = self.calculate_effective_replay_gain(&self.current_track);
         self.effective_replay_gain_db = db;
@@ -830,6 +876,11 @@ impl LunulaApp {
 
         if self.replay_gain_clip_prevention == crate::models::ReplayGainClipPrevention::Limiter && db > 0.0 {
             self.eq_limiter_enabled = true;
+        }
+        let eff_vol = self.current_effective_volume();
+        if let Some(ref engine) = self.audio_engine {
+            engine.set_limiter_enabled(self.eq_limiter_enabled);
+            engine.set_volume(eff_vol);
         }
         self.invalidate_chain_cache();
     }
@@ -882,7 +933,11 @@ impl LunulaApp {
                 } else {
                     vec![0]
                 };
-                if pool.is_empty() { 0 } else { pool[0] }
+                if pool.is_empty() {
+                    0
+                } else {
+                    pool[self.deterministic_shuffle_pick(pool.len())]
+                }
             } else {
                 match self.queue_cursor {
                     Some(cur) => cur + 1,
@@ -935,7 +990,8 @@ impl LunulaApp {
             if pool.is_empty() {
                 None
             } else {
-                Some(self.playlist[pool[0]].clone())
+                let pick = self.deterministic_shuffle_pick(pool.len());
+                Some(self.playlist[pool[pick]].clone())
             }
         } else {
             let cur_pos = candidate_indices.iter().position(|&idx| {
@@ -1069,26 +1125,14 @@ impl LunulaApp {
                         engine.seek(cue_offset);
                     }
                 }
-                let eff_vol = if self.is_muted {
-                    0.0
-                } else if self.chain_mode == ChainMode::BitPerfect {
-                    self.volume
-                } else {
-                    (self.volume * self.effective_replay_gain_linear).clamp(0.0, 2.0)
-                };
+                let eff_vol = self.current_effective_volume();
                 engine.set_volume(eff_vol);
+                engine.set_limiter_enabled(self.eq_limiter_enabled);
                 for (idx, &gain) in self.eq_bands.iter().enumerate() {
                     engine.set_eq_band(idx, gain);
                 }
-
-                if self.is_gapless_enabled {
-                    if let Some(next) = self.peek_next_track() {
-                        if let Some(ref next_p) = next.file_path {
-                            engine.queue_next(std::path::PathBuf::from(next_p));
-                        }
-                    }
-                }
             }
+            self.sync_gapless_next_track();
             self.sync_signal_chain_to_engine();
         }
         self.save_library_state();
@@ -1102,21 +1146,18 @@ impl LunulaApp {
             }
         } else {
             self.is_playing = true;
+            let eff_vol = self.current_effective_volume();
             if let Some(ref engine) = self.audio_engine {
                 if engine.playback_state() == crate::audio::PlaybackState::Paused {
                     engine.resume();
+                    engine.set_volume(eff_vol);
                 } else if let Some(ref path_str) = self.current_track.file_path {
                     engine.play(std::path::PathBuf::from(path_str));
-                    let eff_vol = if self.is_muted {
-                        0.0
-                    } else if self.chain_mode == ChainMode::BitPerfect {
-                        self.volume
-                    } else {
-                        (self.volume * self.effective_replay_gain_linear).clamp(0.0, 2.0)
-                    };
                     engine.set_volume(eff_vol);
+                    engine.set_limiter_enabled(self.eq_limiter_enabled);
                 }
             }
+            self.sync_gapless_next_track();
         }
         self.sync_smtc_state();
     }
@@ -1345,6 +1386,7 @@ impl LunulaApp {
 
     pub fn toggle_shuffle(&mut self) {
         self.is_shuffled = !self.is_shuffled;
+        self.sync_gapless_next_track();
         self.save_library_state();
     }
 
@@ -1355,11 +1397,15 @@ impl LunulaApp {
             RepeatMode::One => RepeatMode::Album,
             RepeatMode::Album => RepeatMode::Off,
         };
+        self.update_effective_replay_gain();
+        self.sync_gapless_next_track();
         self.save_library_state();
     }
 
     pub fn set_repeat_mode(&mut self, mode: RepeatMode) {
         self.repeat_mode = mode;
+        self.update_effective_replay_gain();
+        self.sync_gapless_next_track();
         self.save_library_state();
     }
 
@@ -1373,6 +1419,7 @@ impl LunulaApp {
             self.play_queue.swap(i, j);
         }
         self.selected_queue_idx = None;
+        self.sync_gapless_next_track();
         self.save_library_state();
     }
 
@@ -1399,18 +1446,20 @@ impl LunulaApp {
     pub fn set_app_volume(&mut self, vol: f32) {
         self.volume = vol.clamp(0.0, 1.2);
         self.is_muted = false;
+        let eff_vol = self.current_effective_volume();
         if let Some(ref engine) = self.audio_engine {
             engine.set_muted(false);
-            engine.set_volume(self.volume);
+            engine.set_volume(eff_vol);
         }
         self.save_library_state();
     }
 
     pub fn toggle_mute(&mut self) {
         self.is_muted = !self.is_muted;
+        let eff_vol = self.current_effective_volume();
         if let Some(ref engine) = self.audio_engine {
             engine.set_muted(self.is_muted);
-            engine.set_volume(if self.is_muted { 0.0 } else { self.volume });
+            engine.set_volume(eff_vol);
         }
     }
 
@@ -2812,10 +2861,8 @@ impl eframe::App for LunulaApp {
             engine.set_muted(should_mute);
             let eff_vol = if should_mute {
                 0.0
-            } else if self.chain_mode == ChainMode::BitPerfect {
-                self.volume
             } else {
-                (self.volume * self.effective_replay_gain_linear).clamp(0.0, 2.0)
+                self.current_effective_volume()
             };
             engine.set_volume(eff_vol);
         }
@@ -2912,14 +2959,35 @@ impl eframe::App for LunulaApp {
                 };
                 self.live_phase_correlation = self.live_phase_correlation * 0.88 + inst_corr * 0.12;
 
-                // 4. EBU R128 Loudness (LUFS)
-                let mean_power = (sum_sq_l + sum_sq_r) / 1024.0;
+                // 4. EBU R128 Loudness (LUFS) with ITU-R BS.1770-4 K-Weighting Filter
+                // Stage 1: Acoustic head-model High-Shelf (+4.0 dB @ 1681.97 Hz, Q = 0.7071)
+                // Stage 2: RLB Low-Frequency High-Pass (38.135 Hz, Q = 0.5003)
+                let dev_sr = self.signal_path_report.as_ref().map_or(48000.0, |r| r.device_rate as f64);
+                let kw_hs = crate::audio::dsp::BiquadCoeffs::high_shelf(1681.97, 4.0, dev_sr, 0.70710678);
+                let kw_hp = crate::audio::dsp::BiquadCoeffs::high_pass(38.135, dev_sr, 0.50032704);
+                let mut kw_sl1 = crate::audio::dsp::BiquadState::default();
+                let mut kw_sr1 = crate::audio::dsp::BiquadState::default();
+                let mut kw_sl2 = crate::audio::dsp::BiquadState::default();
+                let mut kw_sr2 = crate::audio::dsp::BiquadState::default();
+                let mut k_sum_sq_l = 0.0f64;
+                let mut k_sum_sq_r = 0.0f64;
+                for i in 0..1024 {
+                    let kl = kw_sl2.process(kw_sl1.process(self.live_stereo_l[i] as f64, &kw_hs), &kw_hp);
+                    let kr = kw_sr2.process(kw_sr1.process(self.live_stereo_r[i] as f64, &kw_hs), &kw_hp);
+                    k_sum_sq_l += kl * kl;
+                    k_sum_sq_r += kr * kr;
+                }
+                let mean_power = ((k_sum_sq_l + k_sum_sq_r) / 1024.0) as f32;
                 let inst_lufs = if mean_power > 1e-12 {
                     (-0.691 + 10.0 * mean_power.log10()).clamp(-70.0, 0.0)
                 } else {
                     -70.0
                 };
-                self.live_integrated_lufs = self.live_integrated_lufs * 0.94 + inst_lufs * 0.06;
+                if self.live_integrated_lufs <= -68.0 && inst_lufs > -68.0 {
+                    self.live_integrated_lufs = inst_lufs;
+                } else {
+                    self.live_integrated_lufs = self.live_integrated_lufs * 0.90 + inst_lufs * 0.10;
+                }
 
                 // 5. True-Peak Level (dBTP) with 4x Inter-Sample Peak (ISP) Oversampling (ITU-R BS.1770)
                 let mut true_peak_max = overall_peak;
@@ -3080,6 +3148,7 @@ impl eframe::App for LunulaApp {
                                 if sel > 0 {
                                     self.play_queue.swap(sel, sel - 1);
                                     self.selected_queue_idx = Some(sel - 1);
+                                    self.sync_gapless_next_track();
                                     self.save_library_state();
                                 }
                             }
@@ -3101,6 +3170,7 @@ impl eframe::App for LunulaApp {
                                 if sel + 1 < self.play_queue.len() {
                                     self.play_queue.swap(sel, sel + 1);
                                     self.selected_queue_idx = Some(sel + 1);
+                                    self.sync_gapless_next_track();
                                     self.save_library_state();
                                 }
                             }
@@ -3135,6 +3205,7 @@ impl eframe::App for LunulaApp {
                                 } else {
                                     self.selected_queue_idx = Some(sel.min(self.play_queue.len() - 1));
                                 }
+                                self.sync_gapless_next_track();
                                 self.save_library_state();
                             }
                         }
@@ -3271,7 +3342,6 @@ impl eframe::App for LunulaApp {
                             self.theater_turn = 0;
                             self.theater_turn_timer = 0.0;
                         }
-                        ui.selectable_value(&mut self.current_tab, AppTab::Equalizer, egui::RichText::new("🎛️ Equalizer 🚧 Coming Soon").strong());
                         ui.selectable_value(&mut self.current_tab, AppTab::Library, egui::RichText::new("📁 Library").strong());
                         ui.selectable_value(&mut self.current_tab, AppTab::SignalChain, egui::RichText::new("⚡ Signal Chain Studio").strong());
                         ui.selectable_value(&mut self.current_tab, AppTab::NowPlaying, egui::RichText::new("🎵 Now Playing").strong());

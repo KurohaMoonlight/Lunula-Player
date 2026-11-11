@@ -379,26 +379,7 @@ impl LunulaApp {
             .show(ui, |ui| {
                 render_card_frame(ui, |ui| {
                     ui.vertical(|ui| {
-                        // 🚧 COMING SOON BANNER
-                        egui::Frame::new()
-                            .fill(Color32::from_rgba_premultiplied(254, 243, 199, 230))
-                            .stroke(Stroke::new(1.0, Color32::from_rgb(251, 191, 36)))
-                            .corner_radius(8.0)
-                            .inner_margin(egui::Margin::symmetric(14, 8))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new("🚧 TAB EQUALIZER • COMING SOON").strong().size(12.5).color(Color32::from_rgb(180, 83, 9)));
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.label(egui::RichText::new("Tahap Pengembangan & Eksperimental").size(10.5).color(Color32::from_rgb(146, 64, 14)));
-                                    });
-                                });
-                                ui.add_space(2.0);
-                                ui.label(egui::RichText::new(
-                                    "Fitur Parametric & Graphic Equalizer sedang dalam tahap penyempurnaan modularitas signal chain. Tampilan kurva dan pengaturan di bawah ini saat ini berstatus preview eksperimental."
-                                ).size(10.5).color(Color32::from_rgb(120, 53, 15)));
-                            });
 
-                        ui.add_space(8.0);
 
                         // 1. HEADER & PRESET MANAGEMENT BAR
                         self.render_eq_header_bar(ui, preset, is_dirty);
@@ -1405,6 +1386,10 @@ impl LunulaApp {
 
                         if ui.checkbox(&mut lim, text).changed() {
                             self.eq_limiter_enabled = lim;
+                            if let Some(ref engine) = self.audio_engine {
+                                engine.set_limiter_enabled(lim);
+                            }
+                            self.save_library_state();
                             *is_dirty = true;
                         }
 

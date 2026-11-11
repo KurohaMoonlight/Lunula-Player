@@ -918,6 +918,15 @@ impl Effect for StereoBalanceEffect {
     fn clone_box(&self) -> Box<dyn Effect> {
         Box::new(self.clone())
     }
+    fn static_transfer(&self, input: AmplitudeInterval) -> AmplitudeInterval {
+        if self.balance.abs() < 0.5 {
+            return input;
+        }
+        let norm = ((self.balance / 100.0) as f64).clamp(-1.0, 1.0);
+        let theta = (norm + 1.0) * 0.25 * std::f64::consts::PI;
+        let max_gain = (std::f64::consts::SQRT_2 * theta.cos().max(theta.sin())) as f32;
+        input.scale(max_gain)
+    }
 }
 
 /// Low-Pass Filter: Variable slope (12/24/48 dB/oct) and resonance fringe Q (0.5 to 4.0)
@@ -1473,7 +1482,7 @@ impl Effect for CrossoverHighEffect {
                     self.recompute();
                 }
             }
-            1 => {
+            1 | 2 => {
                 self.invert_phase = val > 0.5;
             }
             _ => {}

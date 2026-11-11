@@ -189,6 +189,37 @@ impl BiquadCoeffs {
             a2: a2 / a0,
         }
     }
+
+    /// Exact Z-domain complex transfer function evaluation H(e^{jw}) = (Re, Im) at `freq` Hz.
+    #[inline]
+    pub fn complex_response(&self, freq: f64, sample_rate: f64) -> (f64, f64) {
+        if sample_rate <= 0.0 || freq <= 0.0 {
+            return (1.0, 0.0);
+        }
+        let w = 2.0 * std::f64::consts::PI * (freq / sample_rate.max(8000.0));
+        let cos1 = w.cos();
+        let sin1 = w.sin();
+        let cos2 = (2.0 * w).cos();
+        let sin2 = (2.0 * w).sin();
+
+        let num_re = self.b0 + self.b1 * cos1 + self.b2 * cos2;
+        let num_im = -(self.b1 * sin1 + self.b2 * sin2);
+        let den_re = 1.0 + self.a1 * cos1 + self.a2 * cos2;
+        let den_im = -(self.a1 * sin1 + self.a2 * sin2);
+
+        let denom = (den_re * den_re + den_im * den_im).max(1e-18);
+        let re = (num_re * den_re + num_im * den_im) / denom;
+        let im = (num_im * den_re - num_re * den_im) / denom;
+        (re, im)
+    }
+
+    /// Exact Z-domain magnitude response in decibels (dB) at `freq` Hz.
+    #[inline]
+    pub fn magnitude_db(&self, freq: f64, sample_rate: f64) -> f64 {
+        let (re, im) = self.complex_response(freq, sample_rate);
+        let mag_sq = (re * re + im * im).max(1e-18);
+        (10.0 * mag_sq.log10()).clamp(-96.0, 48.0)
+    }
 }
 
 /// Direct Form II Transposed (DF2T) Biquad Filter State
@@ -224,4 +255,3 @@ pub fn soft_limit(x: f64) -> f64 {
         x
     }
 }
-

@@ -7,6 +7,7 @@ use crossbeam_channel::{Receiver, Sender};
 
 use super::OutputBackend;
 use crate::audio::dsp::DspPipeline;
+use crate::audio::dsp::biquad::soft_limit;
 use crate::audio::types::DspCommand;
 use crate::audio::visualizer::VisualizerRingBuffer;
 
@@ -75,7 +76,7 @@ impl OutputBackend for CpalBackend {
     }
 
     fn set_volume(&self, vol: f32) {
-        self.shared_volume.store(vol.clamp(0.0, 1.5).to_bits(), Ordering::Relaxed);
+        self.shared_volume.store(vol.clamp(0.0, 4.0).to_bits(), Ordering::Relaxed);
     }
 
     fn flush(&self) -> bool {
@@ -278,13 +279,12 @@ impl CpalBackend {
         let err_tx = event_tx.clone();
         let err_fn = move |err: cpal::StreamError| {
             if stop_signal_cb.load(Ordering::Relaxed) {
-                return; // Stream sedang dimatikan secara normal, jangan kirim error palsu
+                return;
             }
             eprintln!("Audio stream error: {}", err);
             if let Some(ref tx) = err_tx {
                 let err_str = err.to_string();
                 let err_lower = err_str.to_lowercase();
-                // Periksa apakah ini format rejection atau disconnect keyword
                 let is_format_or_invalidated = err_lower.contains("invalidat")
                     || err_lower.contains("device in use")
                     || err_str.contains("88890004")
@@ -294,7 +294,6 @@ impl CpalBackend {
                     || err_lower.contains("removed");
 
                 if is_format_or_invalidated || is_disconnect_keyword {
-                    // Verifikasi fisik via CPAL host: apakah masih ada output device?
                     let host = cpal::default_host();
                     let device_still_present = host
                         .output_devices()
@@ -302,13 +301,11 @@ impl CpalBackend {
                         .map(|mut devs| devs.any(|d| d.name().map_or(false, |n| n == dev_name)))
                         .unwrap_or(false);
                     if device_still_present {
-                        // Device masih ada → stream error / format problem, bukan hot-unplug fisik
                         let _ = tx.send(crate::audio::types::AudioEvent::StreamFallback {
                             device_name: dev_name.clone(),
                             reason: format!("CPAL stream error: {}", err_str),
                         });
                     } else {
-                        // Device benar-benar hilang → hot-unplug fisik
                         let _ = tx.send(crate::audio::types::AudioEvent::DeviceDisconnected {
                             device_name: dev_name.clone(),
                             error: err_str,
@@ -468,9 +465,9 @@ impl CpalBackend {
         let vol_raw = f32::from_bits(volume.load(Ordering::Relaxed));
         let vol = crate::audio::types::calculate_effective_volume(is_bp, is_muted, vol_raw);
         let vol_f64 = vol as f64;
+        let lim_active = !is_bp && dsp.is_limiter_enabled();
 
         if channels == 2 {
-            // High-Performance 64-bit Batch Pop: drains SPSC RingBuffer<f64> and runs 64-bit DSP directly
             let mut temp_buf = [0.0f64; 1024];
             for frame_chunk in data.chunks_mut(1024) {
                 let needed = frame_chunk.len();
@@ -486,15 +483,24 @@ impl CpalBackend {
                     }
                     continue;
                 }
+                let mut max_gr = 0.0f32;
                 if !is_bp {
                     dsp.process_interleaved_f64(&mut temp_buf[..needed]);
-                    visualizer.set_gain_reduction(dsp.get_max_gain_reduction());
-                } else {
-                    visualizer.set_gain_reduction(0.0);
+                    max_gr = dsp.get_max_gain_reduction();
                 }
                 for (dst, &src) in frame_chunk.iter_mut().zip(&temp_buf[..needed]) {
-                    *dst = (src * vol_f64) as f32;
+                    let mut val = src * vol_f64;
+                    if lim_active {
+                        let a = val.abs();
+                        if a > 0.90 {
+                            val = soft_limit(val).clamp(-1.0, 1.0);
+                            let gr = (20.0 * (a / val.abs().max(1e-9)).log10()) as f32;
+                            if gr > max_gr { max_gr = gr; }
+                        }
+                    }
+                    *dst = val as f32;
                 }
+                visualizer.set_gain_reduction(max_gr);
                 for frame in frame_chunk.chunks_exact(2) {
                     visualizer.push_stereo(frame[0], frame[1]);
                 }
@@ -507,9 +513,13 @@ impl CpalBackend {
                     *out = 0.0;
                     visualizer.push_sample(0.0);
                 } else {
-                    let s = (((l + r) * 0.5) * vol_f64) as f32;
-                    *out = s;
-                    visualizer.push_stereo(s, s);
+                    let mut s = ((l + r) * 0.5) * vol_f64;
+                    if lim_active && s.abs() > 0.90 {
+                        s = soft_limit(s).clamp(-1.0, 1.0);
+                    }
+                    let sf = s as f32;
+                    *out = sf;
+                    visualizer.push_stereo(sf, sf);
                 }
             }
         } else {
@@ -520,8 +530,14 @@ impl CpalBackend {
                     frame.fill(0.0);
                     visualizer.push_sample(0.0);
                 } else {
-                    let l_out = (l * vol_f64) as f32;
-                    let r_out = (r * vol_f64) as f32;
+                    let mut l_v = l * vol_f64;
+                    let mut r_v = r * vol_f64;
+                    if lim_active {
+                        if l_v.abs() > 0.90 { l_v = soft_limit(l_v).clamp(-1.0, 1.0); }
+                        if r_v.abs() > 0.90 { r_v = soft_limit(r_v).clamp(-1.0, 1.0); }
+                    }
+                    let l_out = l_v as f32;
+                    let r_out = r_v as f32;
                     frame[0] = l_out;
                     if frame.len() > 1 {
                         frame[1] = r_out;
@@ -576,6 +592,7 @@ impl CpalBackend {
         let vol_raw = f32::from_bits(volume.load(Ordering::Relaxed));
         let vol = crate::audio::types::calculate_effective_volume(is_bp, is_muted, vol_raw);
         let vol_f64 = vol as f64;
+        let lim_active = !is_bp && dsp.is_limiter_enabled();
 
         let to_i32 = |s: f64| -> i32 {
             crate::audio::types::encode_sample_i32_f64(s, source_bit_depth)
@@ -597,17 +614,27 @@ impl CpalBackend {
                     }
                     continue;
                 }
+                let mut max_gr = 0.0f32;
                 if !is_bp {
                     dsp.process_interleaved_f64(&mut temp_buf[..needed]);
-                    visualizer.set_gain_reduction(dsp.get_max_gain_reduction());
-                } else {
-                    visualizer.set_gain_reduction(0.0);
+                    max_gr = dsp.get_max_gain_reduction();
                 }
-                for (dst, &src) in frame_chunk.iter_mut().zip(&temp_buf[..needed]) {
-                    *dst = to_i32(src * vol_f64);
+                for (dst, src) in frame_chunk.iter_mut().zip(temp_buf[..needed].iter_mut()) {
+                    let mut val = *src * vol_f64;
+                    if lim_active {
+                        let a = val.abs();
+                        if a > 0.90 {
+                            val = soft_limit(val).clamp(-1.0, 1.0);
+                            let gr = (20.0 * (a / val.abs().max(1e-9)).log10()) as f32;
+                            if gr > max_gr { max_gr = gr; }
+                        }
+                    }
+                    *src = val;
+                    *dst = to_i32(val);
                 }
+                visualizer.set_gain_reduction(max_gr);
                 for pair in temp_buf[..needed].chunks_exact(2) {
-                    visualizer.push_stereo((pair[0] * vol_f64) as f32, (pair[1] * vol_f64) as f32);
+                    visualizer.push_stereo(pair[0] as f32, pair[1] as f32);
                 }
             }
         } else if channels == 1 {
@@ -618,7 +645,10 @@ impl CpalBackend {
                     *out = 0;
                     visualizer.push_sample(0.0);
                 } else {
-                    let s = ((l + r) * 0.5) * vol_f64;
+                    let mut s = ((l + r) * 0.5) * vol_f64;
+                    if lim_active && s.abs() > 0.90 {
+                        s = soft_limit(s).clamp(-1.0, 1.0);
+                    }
                     *out = to_i32(s);
                     visualizer.push_stereo(s as f32, s as f32);
                 }
@@ -631,14 +661,20 @@ impl CpalBackend {
                     frame.fill(0);
                     visualizer.push_sample(0.0);
                 } else {
-                    frame[0] = to_i32(l * vol_f64);
+                    let mut l_v = l * vol_f64;
+                    let mut r_v = r * vol_f64;
+                    if lim_active {
+                        if l_v.abs() > 0.90 { l_v = soft_limit(l_v).clamp(-1.0, 1.0); }
+                        if r_v.abs() > 0.90 { r_v = soft_limit(r_v).clamp(-1.0, 1.0); }
+                    }
+                    frame[0] = to_i32(l_v);
                     if frame.len() > 1 {
-                        frame[1] = to_i32(r * vol_f64);
+                        frame[1] = to_i32(r_v);
                     }
                     for ch in 2..frame.len() {
                         frame[ch] = 0;
                     }
-                    visualizer.push_stereo((l * vol_f64) as f32, (r * vol_f64) as f32);
+                    visualizer.push_stereo(l_v as f32, r_v as f32);
                 }
             }
         }
@@ -685,9 +721,8 @@ impl CpalBackend {
         let vol_raw = f32::from_bits(volume.load(Ordering::Relaxed));
         let vol = crate::audio::types::calculate_effective_volume(is_bp, is_muted, vol_raw);
         let vol_f64 = vol as f64;
+        let lim_active = !is_bp && dsp.is_limiter_enabled();
 
-        // Apply TPDF dither ONLY when converting higher bit depth (e.g. 24-bit) down to 16-bit
-        // AND NEVER in Bit-Perfect mode (Bit-Perfect keeps pure unmodified bits)
         let should_dither = source_bit_depth > 16 && !is_bp;
 
         let to_i16 = |s: f64, state: &mut u32| -> i16 {
@@ -710,17 +745,27 @@ impl CpalBackend {
                     }
                     continue;
                 }
+                let mut max_gr = 0.0f32;
                 if !is_bp {
                     dsp.process_interleaved_f64(&mut temp_buf[..needed]);
-                    visualizer.set_gain_reduction(dsp.get_max_gain_reduction());
-                } else {
-                    visualizer.set_gain_reduction(0.0);
+                    max_gr = dsp.get_max_gain_reduction();
                 }
-                for (dst, &src) in frame_chunk.iter_mut().zip(&temp_buf[..needed]) {
-                    *dst = to_i16(src * vol_f64, dither_state);
+                for (dst, src) in frame_chunk.iter_mut().zip(temp_buf[..needed].iter_mut()) {
+                    let mut val = *src * vol_f64;
+                    if lim_active {
+                        let a = val.abs();
+                        if a > 0.90 {
+                            val = soft_limit(val).clamp(-1.0, 1.0);
+                            let gr = (20.0 * (a / val.abs().max(1e-9)).log10()) as f32;
+                            if gr > max_gr { max_gr = gr; }
+                        }
+                    }
+                    *src = val;
+                    *dst = to_i16(val, dither_state);
                 }
+                visualizer.set_gain_reduction(max_gr);
                 for pair in temp_buf[..needed].chunks_exact(2) {
-                    visualizer.push_stereo((pair[0] * vol_f64) as f32, (pair[1] * vol_f64) as f32);
+                    visualizer.push_stereo(pair[0] as f32, pair[1] as f32);
                 }
             }
         } else if channels == 1 {
@@ -731,7 +776,10 @@ impl CpalBackend {
                     *out = 0;
                     visualizer.push_sample(0.0);
                 } else {
-                    let s = ((l + r) * 0.5) * vol_f64;
+                    let mut s = ((l + r) * 0.5) * vol_f64;
+                    if lim_active && s.abs() > 0.90 {
+                        s = soft_limit(s).clamp(-1.0, 1.0);
+                    }
                     *out = to_i16(s, dither_state);
                     visualizer.push_stereo(s as f32, s as f32);
                 }
@@ -744,14 +792,20 @@ impl CpalBackend {
                     frame.fill(0);
                     visualizer.push_sample(0.0);
                 } else {
-                    frame[0] = to_i16(l * vol_f64, dither_state);
+                    let mut l_v = l * vol_f64;
+                    let mut r_v = r * vol_f64;
+                    if lim_active {
+                        if l_v.abs() > 0.90 { l_v = soft_limit(l_v).clamp(-1.0, 1.0); }
+                        if r_v.abs() > 0.90 { r_v = soft_limit(r_v).clamp(-1.0, 1.0); }
+                    }
+                    frame[0] = to_i16(l_v, dither_state);
                     if frame.len() > 1 {
-                        frame[1] = to_i16(r * vol_f64, dither_state);
+                        frame[1] = to_i16(r_v, dither_state);
                     }
                     for ch in 2..frame.len() {
                         frame[ch] = 0;
                     }
-                    visualizer.push_stereo((l * vol_f64) as f32, (r * vol_f64) as f32);
+                    visualizer.push_stereo(l_v as f32, r_v as f32);
                 }
             }
         }

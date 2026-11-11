@@ -191,6 +191,7 @@ pub struct GraphExecutor {
     scratch_r: Vec<f64>,
     eq_bypass: bool,
     limiter_enabled: bool,
+    limiter_gain_reduction_db: f32,
     fallback_eq: GraphicEqEffect,
     gc_tx: Option<Sender<ExecutionPlan>>,
 }
@@ -209,6 +210,7 @@ impl GraphExecutor {
             scratch_r: Vec::new(),
             eq_bypass: false,
             limiter_enabled: false,
+            limiter_gain_reduction_db: 0.0,
             fallback_eq,
             gc_tx: None,
         }
@@ -272,6 +274,14 @@ impl GraphExecutor {
 
     pub fn set_limiter_enabled(&mut self, enabled: bool) {
         self.limiter_enabled = enabled;
+        if !enabled {
+            self.limiter_gain_reduction_db = 0.0;
+        }
+    }
+
+    #[inline(always)]
+    pub fn is_limiter_enabled(&self) -> bool {
+        self.limiter_enabled
     }
 
     pub fn set_eq_band(&mut self, index: usize, gain_db: f32) {
@@ -312,7 +322,7 @@ impl GraphExecutor {
     }
 
     pub fn get_max_gain_reduction(&self) -> f32 {
-        let mut max_gr = 0.0f32;
+        let mut max_gr = self.limiter_gain_reduction_db;
         for step in &self.plan.steps {
             let gr = step.effect.gain_reduction_db();
             if gr > max_gr {
@@ -330,6 +340,7 @@ impl GraphExecutor {
 
     pub fn reset_states(&mut self) {
         self.fallback_eq.reset();
+        self.limiter_gain_reduction_db = 0.0;
         for step in &mut self.plan.steps {
             step.effect.reset();
         }
@@ -370,11 +381,36 @@ impl GraphExecutor {
         if !self.plan.is_complete {
             left[..n].fill(0.0);
             right[..n].fill(0.0);
+            self.limiter_gain_reduction_db = 0.0;
             return;
         }
 
-        // 2. Bypass passthrough
+        // 2. Bypass passthrough (still honor master soft limiter if explicitly armed, e.g. by ReplayGain Limiter)
         if self.eq_bypass {
+            if self.limiter_enabled {
+                if self.scratch_l.is_empty() {
+                    self.ensure_buffer_capacity(1);
+                }
+                let mut max_lim_gr = 0.0f32;
+                for chunk_start in (0..n).step_by(MAX_BLOCK_SIZE) {
+                    let chunk_len = (n - chunk_start).min(MAX_BLOCK_SIZE);
+                    for i in 0..chunk_len {
+                        self.scratch_l[i] = left[chunk_start + i] as f64;
+                        self.scratch_r[i] = right[chunk_start + i] as f64;
+                    }
+                    let gr = Self::apply_limiter_or_clamp_f64(true, &mut self.scratch_l[..chunk_len], &mut self.scratch_r[..chunk_len]);
+                    if gr > max_lim_gr {
+                        max_lim_gr = gr;
+                    }
+                    for i in 0..chunk_len {
+                        left[chunk_start + i] = self.scratch_l[i] as f32;
+                        right[chunk_start + i] = self.scratch_r[i] as f32;
+                    }
+                }
+                self.limiter_gain_reduction_db = max_lim_gr;
+            } else {
+                self.limiter_gain_reduction_db = 0.0;
+            }
             return;
         }
 
@@ -384,6 +420,7 @@ impl GraphExecutor {
 
         // 3. Fallback to standalone EQ if no custom graph provided
         if !self.plan.has_custom_graph {
+            let mut max_lim_gr = 0.0f32;
             for chunk_start in (0..n).step_by(MAX_BLOCK_SIZE) {
                 let chunk_len = (n - chunk_start).min(MAX_BLOCK_SIZE);
                 for i in 0..chunk_len {
@@ -393,22 +430,48 @@ impl GraphExecutor {
                 if !self.fallback_eq.is_flat {
                     self.fallback_eq.process_block_f64(&mut self.scratch_l[..chunk_len], &mut self.scratch_r[..chunk_len]);
                 }
-                Self::apply_limiter_or_clamp_f64(self.limiter_enabled, &mut self.scratch_l[..chunk_len], &mut self.scratch_r[..chunk_len]);
+                let gr = Self::apply_limiter_or_clamp_f64(self.limiter_enabled, &mut self.scratch_l[..chunk_len], &mut self.scratch_r[..chunk_len]);
+                if gr > max_lim_gr {
+                    max_lim_gr = gr;
+                }
                 for i in 0..chunk_len {
                     left[chunk_start + i] = self.scratch_l[i] as f32;
                     right[chunk_start + i] = self.scratch_r[i] as f32;
                 }
             }
+            self.limiter_gain_reduction_db = max_lim_gr;
             return;
         }
 
         // 4. Zero-cost transparent passthrough when no active effects are connected
         if !self.plan.has_active_effects {
+            if self.limiter_enabled {
+                let mut max_lim_gr = 0.0f32;
+                for chunk_start in (0..n).step_by(MAX_BLOCK_SIZE) {
+                    let chunk_len = (n - chunk_start).min(MAX_BLOCK_SIZE);
+                    for i in 0..chunk_len {
+                        self.scratch_l[i] = left[chunk_start + i] as f64;
+                        self.scratch_r[i] = right[chunk_start + i] as f64;
+                    }
+                    let gr = Self::apply_limiter_or_clamp_f64(true, &mut self.scratch_l[..chunk_len], &mut self.scratch_r[..chunk_len]);
+                    if gr > max_lim_gr {
+                        max_lim_gr = gr;
+                    }
+                    for i in 0..chunk_len {
+                        left[chunk_start + i] = self.scratch_l[i] as f32;
+                        right[chunk_start + i] = self.scratch_r[i] as f32;
+                    }
+                }
+                self.limiter_gain_reduction_db = max_lim_gr;
+            } else {
+                self.limiter_gain_reduction_db = 0.0;
+            }
             return;
         }
 
         // 5. Legacy sequential effects (if provided without DAG nodes) — executed in 64-bit f64
         if self.plan.steps.is_empty() && !self.plan.graph.effects.is_empty() {
+            let mut max_lim_gr = 0.0f32;
             for chunk_start in (0..n).step_by(MAX_BLOCK_SIZE) {
                 let chunk_len = (n - chunk_start).min(MAX_BLOCK_SIZE);
                 for i in 0..chunk_len {
@@ -418,15 +481,21 @@ impl GraphExecutor {
                 for effect in &mut self.plan.graph.effects {
                     effect.process_block_f64(&mut self.scratch_l[..chunk_len], &mut self.scratch_r[..chunk_len]);
                 }
+                let gr = Self::apply_limiter_or_clamp_f64(self.limiter_enabled, &mut self.scratch_l[..chunk_len], &mut self.scratch_r[..chunk_len]);
+                if gr > max_lim_gr {
+                    max_lim_gr = gr;
+                }
                 for i in 0..chunk_len {
                     left[chunk_start + i] = self.scratch_l[i] as f32;
                     right[chunk_start + i] = self.scratch_r[i] as f32;
                 }
             }
+            self.limiter_gain_reduction_db = max_lim_gr;
             return;
         }
 
         // 6. Zero-allocation execution of pre-compiled DAG steps in bounded MAX_BLOCK_SIZE 64-bit (f64) chunks
+        self.limiter_gain_reduction_db = 0.0;
         if n <= MAX_BLOCK_SIZE {
             self.process_sub_block_f32_io(&mut left[..n], &mut right[..n]);
         } else {
@@ -449,9 +518,15 @@ impl GraphExecutor {
         if !self.plan.is_complete {
             left[..n].fill(0.0);
             right[..n].fill(0.0);
+            self.limiter_gain_reduction_db = 0.0;
             return;
         }
         if self.eq_bypass {
+            if self.limiter_enabled {
+                self.limiter_gain_reduction_db = Self::apply_limiter_or_clamp_f64(true, &mut left[..n], &mut right[..n]);
+            } else {
+                self.limiter_gain_reduction_db = 0.0;
+            }
             return;
         }
         if self.scratch_l.is_empty() {
@@ -461,23 +536,29 @@ impl GraphExecutor {
             if !self.fallback_eq.is_flat {
                 self.fallback_eq.process_block_f64(&mut left[..n], &mut right[..n]);
             }
-            Self::apply_limiter_or_clamp_f64(self.limiter_enabled, &mut left[..n], &mut right[..n]);
+            self.limiter_gain_reduction_db = Self::apply_limiter_or_clamp_f64(self.limiter_enabled, &mut left[..n], &mut right[..n]);
             return;
         }
         if !self.plan.has_active_effects {
+            if self.limiter_enabled {
+                self.limiter_gain_reduction_db = Self::apply_limiter_or_clamp_f64(true, &mut left[..n], &mut right[..n]);
+            } else {
+                self.limiter_gain_reduction_db = 0.0;
+            }
             return;
         }
         if self.plan.steps.is_empty() && !self.plan.graph.effects.is_empty() {
             for effect in &mut self.plan.graph.effects {
                 effect.process_block_f64(&mut left[..n], &mut right[..n]);
             }
+            self.limiter_gain_reduction_db = Self::apply_limiter_or_clamp_f64(self.limiter_enabled, &mut left[..n], &mut right[..n]);
             return;
         }
         for chunk_start in (0..n).step_by(MAX_BLOCK_SIZE) {
             let chunk_len = (n - chunk_start).min(MAX_BLOCK_SIZE);
             self.process_sub_block_f64(&mut left[chunk_start..chunk_start + chunk_len], &mut right[chunk_start..chunk_start + chunk_len]);
         }
-        Self::apply_limiter_or_clamp_f64(self.limiter_enabled, &mut left[..n], &mut right[..n]);
+        self.limiter_gain_reduction_db = Self::apply_limiter_or_clamp_f64(self.limiter_enabled, &mut left[..n], &mut right[..n]);
     }
 
     #[inline(always)]
@@ -561,11 +642,14 @@ impl GraphExecutor {
         if self.plan.terminal_slots.len() == 1 {
             let term = self.plan.terminal_slots[0];
             if term < self.buffers_l.len() {
-                Self::apply_limiter_or_clamp_f64(
+                let gr = Self::apply_limiter_or_clamp_f64(
                     self.limiter_enabled,
                     &mut self.buffers_l[term][..n],
                     &mut self.buffers_r[term][..n],
                 );
+                if gr > self.limiter_gain_reduction_db {
+                    self.limiter_gain_reduction_db = gr;
+                }
                 for i in 0..n {
                     left[i] = self.buffers_l[term][i] as f32;
                     right[i] = self.buffers_r[term][i] as f32;
@@ -585,7 +669,10 @@ impl GraphExecutor {
                 self.scratch_l[i] = sum_l * scale;
                 self.scratch_r[i] = sum_r * scale;
             }
-            Self::apply_limiter_or_clamp_f64(self.limiter_enabled, &mut self.scratch_l[..n], &mut self.scratch_r[..n]);
+            let gr = Self::apply_limiter_or_clamp_f64(self.limiter_enabled, &mut self.scratch_l[..n], &mut self.scratch_r[..n]);
+            if gr > self.limiter_gain_reduction_db {
+                self.limiter_gain_reduction_db = gr;
+            }
             for i in 0..n {
                 left[i] = self.scratch_l[i] as f32;
                 right[i] = self.scratch_r[i] as f32;
@@ -692,19 +779,40 @@ impl GraphExecutor {
     }
 
     #[inline(always)]
-    fn apply_limiter_or_clamp_f64(limiter_enabled: bool, left: &mut [f64], right: &mut [f64]) {
+    fn apply_limiter_or_clamp_f64(limiter_enabled: bool, left: &mut [f64], right: &mut [f64]) -> f32 {
+        let mut max_gr_db = 0.0f32;
         if limiter_enabled {
             for s in left.iter_mut() {
-                if s.abs() > 0.90 {
-                    *s = soft_limit(*s);
+                let abs_in = s.abs();
+                if abs_in > 0.90 {
+                    let out = soft_limit(*s).clamp(-1.0, 1.0);
+                    let abs_out = out.abs().max(1e-9);
+                    if abs_in > abs_out {
+                        let gr = (20.0 * (abs_in / abs_out).log10()) as f32;
+                        if gr > max_gr_db {
+                            max_gr_db = gr;
+                        }
+                    }
+                    *s = out;
+                } else {
+                    *s = s.clamp(-1.0, 1.0);
                 }
-                *s = s.clamp(-1.0, 1.0);
             }
             for s in right.iter_mut() {
-                if s.abs() > 0.90 {
-                    *s = soft_limit(*s);
+                let abs_in = s.abs();
+                if abs_in > 0.90 {
+                    let out = soft_limit(*s).clamp(-1.0, 1.0);
+                    let abs_out = out.abs().max(1e-9);
+                    if abs_in > abs_out {
+                        let gr = (20.0 * (abs_in / abs_out).log10()) as f32;
+                        if gr > max_gr_db {
+                            max_gr_db = gr;
+                        }
+                    }
+                    *s = out;
+                } else {
+                    *s = s.clamp(-1.0, 1.0);
                 }
-                *s = s.clamp(-1.0, 1.0);
             }
         } else {
             for s in left.iter_mut() {
@@ -714,5 +822,6 @@ impl GraphExecutor {
                 *s = s.clamp(-1.0, 1.0);
             }
         }
+        max_gr_db
     }
 }

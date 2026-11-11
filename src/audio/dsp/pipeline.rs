@@ -54,6 +54,11 @@ impl DspPipeline {
         self.executor.set_limiter_enabled(enabled);
     }
 
+    #[inline(always)]
+    pub fn is_limiter_enabled(&self) -> bool {
+        self.executor.is_limiter_enabled()
+    }
+
     pub fn reset_states(&mut self) {
         self.executor.reset_states();
     }

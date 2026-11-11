@@ -14,7 +14,7 @@ pub use decoder::{AudioDecoder, scan_audio_peak_fast, scan_audio_peak_and_wavefo
 pub use dsp::{
     analyze_signal_chain, analyze_signal_chain_with_context, analyze_signal_chain_advanced, ActionableRemedy, AnalogPreampEffect, BandPassFilterEffect, BassGuardEffect, CompressorEffect, CrossoverHighEffect, CrossoverLowEffect, DiagnosticSeverity, DspPipeline, DynamicLoudnessEffect, EdgeAnalysisReport, GraphicEqEffect, GraphAnalysisReport, HighPassFilterEffect, LowPassFilterEffect, MixerEffect, NodeAnalysisReport, NodeSafetyStatus, OpticalLevelerEffect,
     ParametricBandConfig, ParametricEqEffect, PassthroughEffect, PresetEqEffect, RemedyAction, SplitterEffect, SteppedAttenuatorEffect, StereoBalanceEffect, StereoMatrixEffect, StereoWidenerEffect, TimeAlignmentEffect, TubeWarmerEffect,
-    VolumeAttenuatorEffect, VolumeBoosterEffect, EQ_FREQUENCIES,
+    BiquadCoeffs, BiquadState, soft_limit, VolumeAttenuatorEffect, VolumeBoosterEffect, EQ_FREQUENCIES,
 };
 pub use engine::AudioEngineController;
 pub use output::AudioOutput;

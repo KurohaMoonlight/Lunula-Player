@@ -6,19 +6,38 @@ use crate::models::{ReplayGainData, ScanMsg, Track};
 use crate::app::LunulaApp;
 
 fn parse_db_str(s: &str) -> Option<f32> {
-    let clean = s.trim().trim_end_matches("dB").trim_end_matches("db").trim();
-    clean.parse::<f32>().ok()
+    let mut clean = s.trim();
+    for suffix in ["dB", "db", "DB", "LUFS", "lufs", "LU", "lu"] {
+        if let Some(stripped) = clean.strip_suffix(suffix) {
+            clean = stripped.trim();
+        }
+    }
+    let clean = clean.trim_start_matches('+').trim();
+    clean.parse::<f32>().ok().filter(|v| v.is_finite())
 }
 
 fn parse_peak_str(s: &str) -> Option<f32> {
-    s.trim().parse::<f32>().ok()
+    s.trim().parse::<f32>().ok().filter(|v| v.is_finite() && *v >= 0.0)
+}
+
+fn parse_r128_q78_or_db(s: &str) -> Option<f32> {
+    let trimmed = s.trim();
+    if trimmed.contains('.') || trimmed.to_ascii_lowercase().contains("db") || trimmed.to_ascii_lowercase().contains("lufs") {
+        return parse_db_str(trimmed);
+    }
+    // RFC 7845 Opus R128_TRACK_GAIN / R128_ALBUM_GAIN is stored as Q7.8 fixed-point integer (1/256 dB)
+    // referenced to -23 LUFS (EBU R128). Adding +5.0 dB aligns it to the -18 LUFS ReplayGain 2.0 reference.
+    if let Ok(q78) = trimmed.parse::<i32>() {
+        return Some((q78 as f32 / 256.0) + 5.0);
+    }
+    None
 }
 
 pub fn extract_replay_gain(tag: Option<&lofty::tag::Tag>) -> ReplayGainData {
     let mut data = ReplayGainData::default();
     let Some(tag) = tag else { return data; };
 
-    // Standard Lofty ItemKey mapping (handles FLAC, Vorbis, ID3, MP4, Opus ReplayGain)
+    // 1. Standard Lofty ItemKey mapping (handles FLAC, Vorbis, ID3v2 TXXX, MP4, APE)
     if let Some(val) = tag.get_string(ItemKey::ReplayGainTrackGain).and_then(parse_db_str) {
         data.track_gain_db = Some(val);
     }
@@ -30,6 +49,41 @@ pub fn extract_replay_gain(tag: Option<&lofty::tag::Tag>) -> ReplayGainData {
     }
     if let Some(val) = tag.get_string(ItemKey::ReplayGainAlbumPeak).and_then(parse_peak_str) {
         data.album_peak = Some(val);
+    }
+
+    // 2. Fallback inspection across all tag items for custom/unknown keys & Opus R128 tags
+    for item in tag.items() {
+        let Some(text) = item.value().text() else { continue; };
+        match item.key() {
+            ItemKey::ReplayGainTrackGain if data.track_gain_db.is_none() => {
+                data.track_gain_db = parse_db_str(text);
+            }
+            ItemKey::ReplayGainTrackPeak if data.track_peak.is_none() => {
+                data.track_peak = parse_peak_str(text);
+            }
+            ItemKey::ReplayGainAlbumGain if data.album_gain_db.is_none() => {
+                data.album_gain_db = parse_db_str(text);
+            }
+            ItemKey::ReplayGainAlbumPeak if data.album_peak.is_none() => {
+                data.album_peak = parse_peak_str(text);
+            }
+            other_key => {
+                let k = format!("{:?}", other_key).to_ascii_uppercase();
+                if data.track_gain_db.is_none() && (k.contains("REPLAYGAIN_TRACK_GAIN") || k.contains("RG_RADIO")) {
+                    data.track_gain_db = parse_db_str(text);
+                } else if data.track_peak.is_none() && (k.contains("REPLAYGAIN_TRACK_PEAK") || k.contains("RG_PEAK")) {
+                    data.track_peak = parse_peak_str(text);
+                } else if data.album_gain_db.is_none() && (k.contains("REPLAYGAIN_ALBUM_GAIN") || k.contains("RG_AUDIOPHILE")) {
+                    data.album_gain_db = parse_db_str(text);
+                } else if data.album_peak.is_none() && k.contains("REPLAYGAIN_ALBUM_PEAK") {
+                    data.album_peak = parse_peak_str(text);
+                } else if data.track_gain_db.is_none() && k.contains("R128_TRACK_GAIN") {
+                    data.track_gain_db = parse_r128_q78_or_db(text);
+                } else if data.album_gain_db.is_none() && k.contains("R128_ALBUM_GAIN") {
+                    data.album_gain_db = parse_r128_q78_or_db(text);
+                }
+            }
+        }
     }
 
     data
@@ -123,7 +177,16 @@ pub fn parse_single_audio_file(path: &Path) -> Option<Track> {
             let sample_rate = props.sample_rate().unwrap_or(44100);
             let bit_depth = props.bit_depth().unwrap_or(0);
             let bitrate = props.audio_bitrate().or_else(|| props.overall_bitrate());
-            let rg = extract_replay_gain(tag);
+            let mut rg = extract_replay_gain(tag);
+            if rg.track_gain_db.is_none() && rg.album_gain_db.is_none() {
+                for other_tag in tagged_file.tags() {
+                    let other_rg = extract_replay_gain(Some(other_tag));
+                    if rg.track_gain_db.is_none() { rg.track_gain_db = other_rg.track_gain_db; }
+                    if rg.track_peak.is_none() { rg.track_peak = other_rg.track_peak; }
+                    if rg.album_gain_db.is_none() { rg.album_gain_db = other_rg.album_gain_db; }
+                    if rg.album_peak.is_none() { rg.album_peak = other_rg.album_peak; }
+                }
+            }
 
             (title, artist, album, genre, duration, sample_rate, bit_depth, bitrate, rg)
         }
@@ -307,6 +370,3 @@ pub fn save_track_tags(
 
     Ok(())
 }
-
-
-

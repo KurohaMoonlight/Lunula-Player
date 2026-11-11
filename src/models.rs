@@ -548,6 +548,8 @@ pub struct SavedAppState {
     #[serde(default)]
     pub replay_gain_clip_prevention: Option<ReplayGainClipPrevention>,
     #[serde(default)]
+    pub is_gapless_enabled: Option<bool>,
+    #[serde(default)]
     pub crossfade_secs: Option<f32>,
     #[serde(default)]
     pub clipping_detection_enabled: Option<bool>,

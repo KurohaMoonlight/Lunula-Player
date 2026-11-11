@@ -161,6 +161,13 @@ impl GraphAnalysisReport {
         })
     }
 
+    /// Returns the static analysis report for a specific patch cable (graph edge), if present.
+    pub fn get_edge_report(&self, from_node: u32, from_port: u8, to_node: u32, to_port: u8) -> Option<&EdgeAnalysisReport> {
+        self.edge_reports.iter().find(|e| {
+            e.from_node == from_node && e.from_port == from_port && e.to_node == to_node && e.to_port == to_port
+        })
+    }
+
     /// Returns the diagnostic report for a specific node ID, if present.
     pub fn get_node_report(&self, node_id: u32) -> Option<&NodeAnalysisReport> {
         self.node_reports.get(&node_id)

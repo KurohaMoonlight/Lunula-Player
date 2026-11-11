@@ -103,7 +103,7 @@ impl AudioEngineController {
     }
 
     pub fn set_volume(&self, volume: f32) {
-        self.shared_volume.store(volume.clamp(0.0, 1.5).to_bits(), Ordering::Relaxed);
+        self.shared_volume.store(volume.clamp(0.0, 4.0).to_bits(), Ordering::Relaxed);
         let _ = self.cmd_tx.send(AudioCommand::SetVolume(volume));
     }
 
@@ -284,6 +284,14 @@ fn run_audio_worker(
     shared_visualizer: Arc<VisualizerRingBuffer>,
     shared_buffer_metrics: Arc<crate::system_telemetry::BufferMetricsAtomic>,
 ) {
+    struct PendingTransition {
+        path: Option<PathBuf>,
+        duration: f32,
+        sample_rate: u32,
+        signal_report: Option<SignalPathReport>,
+        old_track_end_pos: f32,
+    }
+
     let mut decoder: Option<AudioDecoder> = None;
     let mut next_decoder: Option<AudioDecoder> = None;
     let mut next_track_path: Option<PathBuf> = None;
@@ -291,6 +299,14 @@ fn run_audio_worker(
     let mut producer: Option<Producer<f64>> = None;
     let mut dsp = DspPipeline::new(44100.0);
     let mut resampler = StereoResampler::new(44100, 44100);
+    let mut next_resampler = StereoResampler::new(44100, 44100);
+    let mut next_raw_chunk = [0.0f32; 2048];
+    let mut next_raw_pos: usize = 0;
+    let mut next_raw_len: usize = 0;
+    let mut next_resampler_synced = false;
+    let mut crossfade_active_for_next = false;
+    let mut pending_transition: Option<PendingTransition> = None;
+    let mut next_track_pushed_samples: usize = 0;
     let mut chain_mode = ChainMode::BitPerfect;
     let mut current_stream_mode: Option<ChainMode> = None;
     let mut prefer_exclusive = true;
@@ -343,6 +359,12 @@ fn run_audio_worker(
                     AudioCommand::Play(path) => {
                         next_decoder = None;
                         next_track_path = None;
+                        next_raw_pos = 0;
+                        next_raw_len = 0;
+                        next_resampler_synced = false;
+                        crossfade_active_for_next = false;
+                        pending_transition = None;
+                        next_track_pushed_samples = 0;
                         fade_in_remaining_samples = 0;
                         fade_in_total_samples = 0;
                         match AudioDecoder::open(&path) {
@@ -473,20 +495,33 @@ fn run_audio_worker(
                             Ok(dec) => {
                                 next_decoder = Some(dec);
                                 next_track_path = Some(path);
+                                next_raw_pos = 0;
+                                next_raw_len = 0;
+                                next_resampler_synced = false;
+                                crossfade_active_for_next = false;
                             }
                             Err(e) => {
                                 eprintln!("[Gapless Prebuffer] Gagal membuka next track: {}", e);
                                 next_decoder = None;
                                 next_track_path = None;
+                                next_raw_pos = 0;
+                                next_raw_len = 0;
+                                next_resampler_synced = false;
+                                crossfade_active_for_next = false;
                             }
                         }
                     }
                     AudioCommand::ClearNext => {
                         next_decoder = None;
                         next_track_path = None;
+                        next_raw_pos = 0;
+                        next_raw_len = 0;
+                        next_resampler_synced = false;
+                        crossfade_active_for_next = false;
                     }
                     AudioCommand::SetResamplerSettings(settings) => {
                         resampler.set_settings(settings);
+                        next_resampler.set_settings(settings);
                     }
                     AudioCommand::SetCrossfadeSecs(secs) => {
                         crossfade_secs = secs.max(0.0);
@@ -555,6 +590,12 @@ fn run_audio_worker(
                         decoder = None;
                         next_decoder = None;
                         next_track_path = None;
+                        next_raw_pos = 0;
+                        next_raw_len = 0;
+                        next_resampler_synced = false;
+                        crossfade_active_for_next = false;
+                        pending_transition = None;
+                        next_track_pushed_samples = 0;
                         raw_pos = 0;
                         raw_len = 0;
                         fade_in_remaining_samples = 0;
@@ -567,6 +608,19 @@ fn run_audio_worker(
                         let _ = event_tx.send(AudioEvent::StateChanged(PlaybackState::Stopped));
                     }
                     AudioCommand::Seek(seconds) => {
+                        if let Some(pt) = pending_transition.take() {
+                            if let Some(rep) = pt.signal_report {
+                                shared_bit_perfect.store(rep.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
+                                is_dsp_active.store(rep.is_dsp_active, Ordering::Relaxed);
+                                let _ = event_tx.send(AudioEvent::SignalPath(rep));
+                            }
+                            let _ = event_tx.send(AudioEvent::TrackTransitioned {
+                                path: pt.path,
+                                duration: pt.duration,
+                                sample_rate: pt.sample_rate,
+                            });
+                        }
+                        next_track_pushed_samples = 0;
                         if let Some(dec) = &mut decoder {
                             match dec.seek(seconds) {
                                 Ok(actual_pos) => {
@@ -858,6 +912,8 @@ fn run_audio_worker(
         if state == PlaybackState::Playing {
             if let (Some(dec), Some(prod)) = (&mut decoder, &mut producer) {
                 let free_slots = prod.slots();
+                let device_rate = output.as_ref().map(|o| o.sample_rate()).unwrap_or(44100);
+                let has_next_track = next_decoder.is_some();
 
                 if free_slots >= 512 {
                     let frames_to_generate = (free_slots / 2).min(512);
@@ -885,20 +941,6 @@ fn run_audio_worker(
                                 let mut r = raw_chunk[raw_pos + 1] as f64;
                                 raw_pos += 2;
 
-                                if crossfade_secs > 0.0 && chain_mode != ChainMode::BitPerfect {
-                                    let dur = dec.duration();
-                                    if dur > crossfade_secs {
-                                        let cur = dec.current_time();
-                                        let rem = (dur - cur).max(0.0);
-                                        if rem <= crossfade_secs {
-                                            let frac = (rem / crossfade_secs).clamp(0.0, 1.0) as f64;
-                                            let gain = (frac * std::f64::consts::FRAC_PI_2).sin();
-                                            l *= gain;
-                                            r *= gain;
-                                        }
-                                    }
-                                }
-
                                 if fade_in_remaining_samples > 0 && chain_mode != ChainMode::BitPerfect {
                                     let progress = 1.0 - (fade_in_remaining_samples as f64 / fade_in_total_samples.max(1) as f64);
                                     let gain = (progress * std::f64::consts::FRAC_PI_2).sin();
@@ -921,7 +963,56 @@ fn run_audio_worker(
                         };
 
                         match frame {
-                            Some((l, r)) => {
+                            Some((mut l, mut r)) => {
+                                // True Overlapping Equal-Power Crossfade (when crossfade_secs > 0, non-BitPerfect, and next track is ready)
+                                if crossfade_secs > 0.0 && chain_mode != ChainMode::BitPerfect && has_next_track {
+                                    let dur = dec.duration();
+                                    if dur > crossfade_secs {
+                                        let track_sr = dec.sample_rate().max(1) as f32;
+                                        let unread_raw_secs = ((raw_len.saturating_sub(raw_pos)) as f32 / 2.0) / track_sr;
+                                        let cur = (dec.current_time() - unread_raw_secs).max(0.0);
+                                        let rem = (dur - cur).max(0.0);
+                                        if rem <= crossfade_secs {
+                                            let frac = (rem / crossfade_secs).clamp(0.0, 1.0) as f64;
+                                            let gain_a = (frac * std::f64::consts::FRAC_PI_2).sin();
+                                            let gain_b = ((1.0 - frac) * std::f64::consts::FRAC_PI_2).sin();
+                                            l *= gain_a;
+                                            r *= gain_a;
+
+                                            if let Some(ndec) = &mut next_decoder {
+                                                if !next_resampler_synced {
+                                                    next_resampler.reset(ndec.sample_rate(), device_rate);
+                                                    next_resampler_synced = true;
+                                                }
+                                                crossfade_active_for_next = true;
+                                                let mut fetch_next = || {
+                                                    if next_raw_pos >= next_raw_len {
+                                                        next_raw_pos = 0;
+                                                        next_raw_len = ndec.read_stereo_samples(&mut next_raw_chunk).unwrap_or(0);
+                                                    }
+                                                    if next_raw_pos < next_raw_len {
+                                                        let nl = next_raw_chunk[next_raw_pos] as f64;
+                                                        let nr = next_raw_chunk[next_raw_pos + 1] as f64;
+                                                        next_raw_pos += 2;
+                                                        Some((nl, nr))
+                                                    } else {
+                                                        None
+                                                    }
+                                                };
+                                                let next_frame = if next_resampler.is_passthrough() {
+                                                    fetch_next()
+                                                } else {
+                                                    next_resampler.next_frame_f64(fetch_next)
+                                                };
+                                                if let Some((nl, nr)) = next_frame {
+                                                    l += nl * gain_b;
+                                                    r += nr * gain_b;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
                                 // Push raw PCM directly into RingBuffer: zero lag for downstream DSP callback!
                                 batch_buf[batch_samples] = l;
                                 batch_buf[batch_samples + 1] = r;
@@ -936,6 +1027,9 @@ fn run_audio_worker(
 
                     if batch_samples > 0 {
                         let _ = prod.push_partial_slice(&batch_buf[..batch_samples]);
+                        if pending_transition.is_some() {
+                            next_track_pushed_samples = next_track_pushed_samples.saturating_add(batch_samples);
+                        }
                         let cap = prod.buffer().capacity() as u32;
                         let used = (cap as usize).saturating_sub(prod.slots()) as u32;
                         shared_buffer_metrics.capacity_samples.store(cap, Ordering::Relaxed);
@@ -945,14 +1039,47 @@ fn run_audio_worker(
                         shared_buffer_metrics.last_chunk_frames.store((batch_samples / 2) as u32, Ordering::Relaxed);
                     }
 
-                    let cur_pos = dec.current_time();
+                    // Sample-accurate FIFO position & deferred transition firing
+                    let cap_samples = prod.buffer().capacity();
+                    let total_ring_samples = cap_samples.saturating_sub(prod.slots());
+                    shared_buffer_metrics.capacity_samples.store(cap_samples as u32, Ordering::Relaxed);
+                    shared_buffer_metrics.used_samples.store(total_ring_samples as u32, Ordering::Relaxed);
+
+                    let dev_sr = device_rate.max(1) as f32;
                     let track_sr = dec.sample_rate().max(1) as f32;
-                    let dev_sr = output.as_ref().map(|o| o.sample_rate()).unwrap_or(44100).max(1) as f32;
-                    let buffered_ring = (prod.buffer().capacity() - prod.slots()) as f32;
-                    let ring_lat = (buffered_ring / 2.0) / dev_sr;
-                    let raw_lat = ((raw_len.saturating_sub(raw_pos)) as f32 / 2.0) / track_sr;
-                    let played_pos = (cur_pos - ring_lat - raw_lat).max(0.0);
-                    shared_position_ms.store((played_pos * 1000.0) as u32, Ordering::Relaxed);
+
+                    if let Some(ref pt) = pending_transition {
+                        let old_ring_samples = total_ring_samples.saturating_sub(next_track_pushed_samples);
+                        if old_ring_samples == 0 {
+                            let pt_owned = pending_transition.take().unwrap();
+                            next_track_pushed_samples = 0;
+                            if let Some(rep) = pt_owned.signal_report {
+                                shared_bit_perfect.store(rep.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
+                                is_dsp_active.store(rep.is_dsp_active, Ordering::Relaxed);
+                                let _ = event_tx.send(AudioEvent::SignalPath(rep));
+                            }
+                            let _ = event_tx.send(AudioEvent::TrackTransitioned {
+                                path: pt_owned.path,
+                                duration: pt_owned.duration,
+                                sample_rate: pt_owned.sample_rate,
+                            });
+                            let cur_pos = dec.current_time();
+                            let ring_lat = (total_ring_samples as f32 / 2.0) / dev_sr;
+                            let raw_lat = ((raw_len.saturating_sub(raw_pos)) as f32 / 2.0) / track_sr;
+                            let played_pos = (cur_pos - ring_lat - raw_lat).max(0.0);
+                            shared_position_ms.store((played_pos * 1000.0) as u32, Ordering::Relaxed);
+                        } else {
+                            let old_lat = (old_ring_samples as f32 / 2.0) / dev_sr;
+                            let played_pos = (pt.old_track_end_pos - old_lat).max(0.0);
+                            shared_position_ms.store((played_pos * 1000.0) as u32, Ordering::Relaxed);
+                        }
+                    } else {
+                        let cur_pos = dec.current_time();
+                        let ring_lat = (total_ring_samples as f32 / 2.0) / dev_sr;
+                        let raw_lat = ((raw_len.saturating_sub(raw_pos)) as f32 / 2.0) / track_sr;
+                        let played_pos = (cur_pos - ring_lat - raw_lat).max(0.0);
+                        shared_position_ms.store((played_pos * 1000.0) as u32, Ordering::Relaxed);
+                    }
 
                     if generated_frames == 0 && raw_pos >= raw_len {
                         if let Some(next_dec) = next_decoder.take() {
@@ -962,8 +1089,8 @@ fn run_audio_worker(
                             let next_dur = next_dec.duration();
                             let cur_sr = dec.sample_rate();
                             let cur_bd = dec.bits_per_sample();
+                            let old_end_pos = dec.duration().max(dec.current_time());
 
-                            let device_rate = output.as_ref().map(|o| o.sample_rate()).unwrap_or(44100);
                             let needs_recreate = if chain_mode == ChainMode::BitPerfect && output.as_ref().map_or(false, |o| o.is_exclusive()) {
                                 next_sr != cur_sr || next_bd != cur_bd
                             } else {
@@ -971,32 +1098,76 @@ fn run_audio_worker(
                             };
 
                             if !needs_recreate {
-                                // Zero-flush gapless audio handoff: ring buffer continues smoothly
-                                if next_sr != cur_sr {
-                                    resampler.reset(next_sr, device_rate);
+                                // Flush any prior pending transition if a very short track (< ring buffer duration) finished
+                                if let Some(prev_pt) = pending_transition.take() {
+                                    if let Some(rep) = prev_pt.signal_report {
+                                        shared_bit_perfect.store(rep.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
+                                        is_dsp_active.store(rep.is_dsp_active, Ordering::Relaxed);
+                                        let _ = event_tx.send(AudioEvent::SignalPath(rep));
+                                    }
+                                    let _ = event_tx.send(AudioEvent::TrackTransitioned {
+                                        path: prev_pt.path,
+                                        duration: prev_pt.duration,
+                                        sample_rate: prev_pt.sample_rate,
+                                    });
                                 }
-                                decoder = Some(next_dec);
-                                raw_pos = 0;
-                                raw_len = 0;
-                                if crossfade_secs > 0.0 && chain_mode != ChainMode::BitPerfect {
-                                    fade_in_total_samples = (crossfade_secs * next_sr as f32) as usize * 2;
-                                    fade_in_remaining_samples = fade_in_total_samples;
-                                } else {
+
+                                // Zero-flush gapless / crossfade audio handoff: ring buffer continues smoothly!
+                                if crossfade_active_for_next && next_resampler_synced {
+                                    std::mem::swap(&mut resampler, &mut next_resampler);
+                                    std::mem::swap(&mut raw_chunk, &mut next_raw_chunk);
+                                    raw_pos = next_raw_pos;
+                                    raw_len = next_raw_len;
                                     fade_in_remaining_samples = 0;
                                     fade_in_total_samples = 0;
-                                    shared_buffer_metrics.used_samples.store(0, Ordering::Relaxed);
+                                } else {
+                                    if next_sr != cur_sr {
+                                        resampler.reset(next_sr, device_rate);
+                                    }
+                                    raw_pos = 0;
+                                    raw_len = 0;
+                                    if crossfade_secs > 0.0 && chain_mode != ChainMode::BitPerfect {
+                                        fade_in_total_samples = (crossfade_secs * next_sr as f32) as usize * 2;
+                                        fade_in_remaining_samples = fade_in_total_samples;
+                                    } else {
+                                        fade_in_remaining_samples = 0;
+                                        fade_in_total_samples = 0;
+                                    }
                                 }
-                                if let Some(out) = &output {
-                                    let report = create_signal_path_report(out, next_sr, next_bd, chain_mode, prefer_exclusive);
-                                    shared_bit_perfect.store(report.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
-                                    is_dsp_active.store(report.is_dsp_active, Ordering::Relaxed);
-                                    let _ = event_tx.send(AudioEvent::SignalPath(report));
-                                }
-                                let _ = event_tx.send(AudioEvent::TrackTransitioned {
-                                    path: next_path,
-                                    duration: next_dur,
-                                    sample_rate: next_sr,
+
+                                next_raw_pos = 0;
+                                next_raw_len = 0;
+                                next_resampler_synced = false;
+                                crossfade_active_for_next = false;
+                                decoder = Some(next_dec);
+
+                                let sig_rep = output.as_ref().map(|out| {
+                                    create_signal_path_report(out, next_sr, next_bd, chain_mode, prefer_exclusive)
                                 });
+
+                                let current_ring_samples = prod.buffer().capacity().saturating_sub(prod.slots());
+                                if current_ring_samples == 0 {
+                                    if let Some(rep) = sig_rep {
+                                        shared_bit_perfect.store(rep.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
+                                        is_dsp_active.store(rep.is_dsp_active, Ordering::Relaxed);
+                                        let _ = event_tx.send(AudioEvent::SignalPath(rep));
+                                    }
+                                    let _ = event_tx.send(AudioEvent::TrackTransitioned {
+                                        path: next_path,
+                                        duration: next_dur,
+                                        sample_rate: next_sr,
+                                    });
+                                    next_track_pushed_samples = 0;
+                                } else {
+                                    next_track_pushed_samples = 0;
+                                    pending_transition = Some(PendingTransition {
+                                        path: next_path,
+                                        duration: next_dur,
+                                        sample_rate: next_sr,
+                                        signal_report: sig_rep,
+                                        old_track_end_pos: old_end_pos,
+                                    });
+                                }
                                 continue;
                             } else {
                                 // Bit-perfect rate change: wait until ring buffer drains completely before recreating stream
@@ -1004,6 +1175,12 @@ fn run_audio_worker(
                                     decoder = Some(next_dec);
                                     raw_pos = 0;
                                     raw_len = 0;
+                                    next_raw_pos = 0;
+                                    next_raw_len = 0;
+                                    next_resampler_synced = false;
+                                    crossfade_active_for_next = false;
+                                    pending_transition = None;
+                                    next_track_pushed_samples = 0;
                                     let desired_rate = desired_device_rate(chain_mode, next_sr);
                                     if let Some(old_out) = output.take() {
                                         old_out.pause();
@@ -1064,8 +1241,22 @@ fn run_audio_worker(
 
                         // EOF reached and waiting for the entire ring buffer to be drained by the hardware
                         if prod.slots() == prod.buffer().capacity() {
+                            if let Some(pt_owned) = pending_transition.take() {
+                                next_track_pushed_samples = 0;
+                                if let Some(rep) = pt_owned.signal_report {
+                                    shared_bit_perfect.store(rep.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
+                                    is_dsp_active.store(rep.is_dsp_active, Ordering::Relaxed);
+                                    let _ = event_tx.send(AudioEvent::SignalPath(rep));
+                                }
+                                let _ = event_tx.send(AudioEvent::TrackTransitioned {
+                                    path: pt_owned.path,
+                                    duration: pt_owned.duration,
+                                    sample_rate: pt_owned.sample_rate,
+                                });
+                            }
                             state = PlaybackState::Stopped;
                             shared_state.store(0, Ordering::Relaxed);
+                            shared_buffer_metrics.used_samples.store(0, Ordering::Relaxed);
                             let _ = event_tx.send(AudioEvent::TrackEnded);
                             let _ = event_tx.send(AudioEvent::StateChanged(PlaybackState::Stopped));
                         } else {
@@ -1073,15 +1264,47 @@ fn run_audio_worker(
                         }
                     }
                 } else {
-                    // Buffer is well supplied, update real-time position from decreasing ring buffer
-                    let cur_pos = dec.current_time();
+                    // Buffer is well supplied: update live buffer telemetry and sample-accurate FIFO position
+                    let cap_samples = prod.buffer().capacity();
+                    let total_ring_samples = cap_samples.saturating_sub(prod.slots());
+                    shared_buffer_metrics.capacity_samples.store(cap_samples as u32, Ordering::Relaxed);
+                    shared_buffer_metrics.used_samples.store(total_ring_samples as u32, Ordering::Relaxed);
+
+                    let dev_sr = device_rate.max(1) as f32;
                     let track_sr = dec.sample_rate().max(1) as f32;
-                    let dev_sr = output.as_ref().map(|o| o.sample_rate()).unwrap_or(44100).max(1) as f32;
-                    let buffered_ring = (prod.buffer().capacity() - prod.slots()) as f32;
-                    let ring_lat = (buffered_ring / 2.0) / dev_sr;
-                    let raw_lat = ((raw_len.saturating_sub(raw_pos)) as f32 / 2.0) / track_sr;
-                    let played_pos = (cur_pos - ring_lat - raw_lat).max(0.0);
-                    shared_position_ms.store((played_pos * 1000.0) as u32, Ordering::Relaxed);
+
+                    if let Some(ref pt) = pending_transition {
+                        let old_ring_samples = total_ring_samples.saturating_sub(next_track_pushed_samples);
+                        if old_ring_samples == 0 {
+                            let pt_owned = pending_transition.take().unwrap();
+                            next_track_pushed_samples = 0;
+                            if let Some(rep) = pt_owned.signal_report {
+                                shared_bit_perfect.store(rep.actual_mode == ChainMode::BitPerfect, Ordering::Relaxed);
+                                is_dsp_active.store(rep.is_dsp_active, Ordering::Relaxed);
+                                let _ = event_tx.send(AudioEvent::SignalPath(rep));
+                            }
+                            let _ = event_tx.send(AudioEvent::TrackTransitioned {
+                                path: pt_owned.path,
+                                duration: pt_owned.duration,
+                                sample_rate: pt_owned.sample_rate,
+                            });
+                            let cur_pos = dec.current_time();
+                            let ring_lat = (total_ring_samples as f32 / 2.0) / dev_sr;
+                            let raw_lat = ((raw_len.saturating_sub(raw_pos)) as f32 / 2.0) / track_sr;
+                            let played_pos = (cur_pos - ring_lat - raw_lat).max(0.0);
+                            shared_position_ms.store((played_pos * 1000.0) as u32, Ordering::Relaxed);
+                        } else {
+                            let old_lat = (old_ring_samples as f32 / 2.0) / dev_sr;
+                            let played_pos = (pt.old_track_end_pos - old_lat).max(0.0);
+                            shared_position_ms.store((played_pos * 1000.0) as u32, Ordering::Relaxed);
+                        }
+                    } else {
+                        let cur_pos = dec.current_time();
+                        let ring_lat = (total_ring_samples as f32 / 2.0) / dev_sr;
+                        let raw_lat = ((raw_len.saturating_sub(raw_pos)) as f32 / 2.0) / track_sr;
+                        let played_pos = (cur_pos - ring_lat - raw_lat).max(0.0);
+                        shared_position_ms.store((played_pos * 1000.0) as u32, Ordering::Relaxed);
+                    }
                     thread::sleep(Duration::from_millis(5));
                 }
             } else {

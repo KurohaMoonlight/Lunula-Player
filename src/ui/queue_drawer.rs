@@ -138,17 +138,8 @@ impl LunulaApp {
                             };
                             if ui.add(gapless_btn).on_hover_text("Pemutaran lagu bersambung tanpa jeda (zero-flush sample-accurate handoff)").clicked() {
                                 self.is_gapless_enabled = !self.is_gapless_enabled;
-                                if self.is_gapless_enabled {
-                                    if let Some(next) = self.peek_next_track() {
-                                        if let Some(ref p) = next.file_path {
-                                            if let Some(ref engine) = self.audio_engine {
-                                                engine.queue_next(std::path::PathBuf::from(p));
-                                            }
-                                        }
-                                    }
-                                } else if let Some(ref engine) = self.audio_engine {
-                                    engine.clear_next();
-                                }
+                                self.sync_gapless_next_track();
+                                self.save_library_state();
                             }
 
                             ui.label(egui::RichText::new("🔀 Fade:").strong().size(10.0).color(Color32::from_rgb(71, 85, 105)));
@@ -173,7 +164,7 @@ impl LunulaApp {
 
                         ui.add_space(3.0);
 
-                        // Row 4: ReplayGain Mode Selection
+                        // Row 4: ReplayGain Mode Selection & Honest Live Status
                         ui.horizontal_wrapped(|ui| {
                             ui.label(egui::RichText::new("🔊 ReplayGain:").strong().size(10.0).color(Color32::from_rgb(71, 85, 105)));
                             let rg_modes = [
@@ -199,6 +190,22 @@ impl LunulaApp {
                                     self.update_effective_replay_gain();
                                     self.save_library_state();
                                 }
+                            }
+                            if self.chain_mode == crate::models::ChainMode::BitPerfect {
+                                if self.replay_gain_mode != crate::models::ReplayGainMode::Disabled || self.crossfade_secs > 0.0 {
+                                    ui.label(
+                                        egui::RichText::new("⚪ Bypass @ Bit-Perfect")
+                                            .size(9.0)
+                                            .color(Color32::from_rgb(217, 119, 6)),
+                                    ).on_hover_text("Mode Bit-Perfect menjaga aliran sampel 1:1 murni (0.0 dB), sehingga scaling volume ReplayGain dan Crossfade otomatis dilewati.");
+                                }
+                            } else if self.replay_gain_mode != crate::models::ReplayGainMode::Disabled {
+                                ui.label(
+                                    egui::RichText::new(format!("{:+.1} dB", self.effective_replay_gain_db))
+                                        .size(9.5)
+                                        .strong()
+                                        .color(Color32::from_rgb(79, 70, 229)),
+                                );
                             }
                         });
 
@@ -537,6 +544,7 @@ impl LunulaApp {
             self.play_queue.clear();
             self.selected_queue_idx = None;
             self.queue_cursor = None;
+            self.sync_gapless_next_track();
             self.save_library_state();
         }
         if shuffle_queue_now {
@@ -551,6 +559,7 @@ impl LunulaApp {
                 } else if self.queue_cursor == Some(idx - 1) {
                     self.queue_cursor = Some(idx);
                 }
+                self.sync_gapless_next_track();
                 self.save_library_state();
             }
         }
@@ -563,6 +572,7 @@ impl LunulaApp {
                 } else if self.queue_cursor == Some(idx + 1) {
                     self.queue_cursor = Some(idx);
                 }
+                self.sync_gapless_next_track();
                 self.save_library_state();
             }
         }
@@ -586,6 +596,7 @@ impl LunulaApp {
                         }
                     }
                 }
+                self.sync_gapless_next_track();
                 self.save_library_state();
             }
         }
@@ -595,6 +606,7 @@ impl LunulaApp {
         if let Some(idx) = set_queue_cursor {
             self.queue_cursor = Some(idx);
             self.selected_queue_idx = Some(idx);
+            self.sync_gapless_next_track();
             self.save_library_state();
         }
         if let Some(track) = track_to_play {
