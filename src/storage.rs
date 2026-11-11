@@ -48,7 +48,6 @@ impl LunulaApp {
                 eq_current_preset_name: Some(self.active_eq.name.clone()),
                 eq_limiter_enabled: Some(self.eq_limiter_enabled),
                 eq_dither_mode: Some(self.eq_dither_mode),
-                has_completed_onboarding: Some(self.has_completed_onboarding),
                 resampler_quality: Some(self.resampler_settings.quality),
                 resampler_profile: Some(self.resampler_settings.profile),
                 replay_gain_mode: Some(self.replay_gain_mode),

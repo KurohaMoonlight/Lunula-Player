@@ -72,55 +72,6 @@ fn test_filter_tutorial_renders_all_14_nodes_and_4_slides() {
 }
 
 #[test]
-fn test_game_like_onboarding_quest_renders_all_stages() {
-    let ctx = egui::Context::default();
-    let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0)));
-    let mut app = LunulaApp::default();
-    app.is_onboarding_quest_active = true;
-
-    let quest_stages = [
-        lunulaplayer::models::OnboardingQuestStep::Welcome,
-        lunulaplayer::models::OnboardingQuestStep::NavigateToStudio,
-        lunulaplayer::models::OnboardingQuestStep::UnderstandModes,
-        lunulaplayer::models::OnboardingQuestStep::ConnectFirstCable,
-        lunulaplayer::models::OnboardingQuestStep::TestAutoMute,
-        lunulaplayer::models::OnboardingQuestStep::InsertTubeWarmer,
-        lunulaplayer::models::OnboardingQuestStep::Completed,
-    ];
-
-    for stage in quest_stages {
-        app.onboarding_quest_step = stage;
-        let mut out = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: screen,
-                time: Some(1.5),
-                ..Default::default()
-            },
-            |ui| {
-                app.render_onboarding_quest_overlay(ui);
-            },
-        );
-        out.textures_delta.clear();
-    }
-}
-
-#[test]
-fn test_first_launch_triggers_onboarding_by_default() {
-    let mut app = LunulaApp::new_standalone();
-    if !app.has_completed_onboarding {
-        assert!(app.is_onboarding_quest_active);
-        assert_eq!(app.chain_mode, lunulaplayer::models::ChainMode::BitPerfect);
-    } else {
-        // If local developer storage had saved state, resetting onboarding enforces Bit-Perfect
-        app.has_completed_onboarding = false;
-        app.is_onboarding_quest_active = true;
-        app.set_chain_mode(lunulaplayer::models::ChainMode::BitPerfect);
-        assert!(!app.has_completed_onboarding);
-        assert_eq!(app.chain_mode, lunulaplayer::models::ChainMode::BitPerfect);
-    }
-}
-
-#[test]
 fn test_default_nodes_are_spacious_and_do_not_overlap() {
     let mut app = LunulaApp::new_standalone();
     app.reset_patchbay_layout(1200.0, 700.0);

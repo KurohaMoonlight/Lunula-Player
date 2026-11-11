@@ -238,18 +238,6 @@ pub enum AppTab {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
-pub enum OnboardingQuestStep {
-    #[default]
-    Welcome,           // Misi 1: Sambutan & Kenalkan Studio
-    NavigateToStudio,  // Misi 2: Buka Tab Signal Chain Studio
-    UnderstandModes,   // Misi 3: Filosofi Bit-Perfect vs DSP Active
-    ConnectFirstCable, // Misi 4: Sambungkan kabel Buffer -> DAC
-    TestAutoMute,      // Misi 5: Putuskan kabel untuk merasakan Auto-Mute
-    InsertTubeWarmer,  // Misi 6: Pasang efek Tube Warmer dari sidebar
-    Completed,         // Misi 7: Selesai! Quest Complete Certificate
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub enum StudioMode {
     #[default]
     Simple,
@@ -549,8 +537,6 @@ pub struct SavedAppState {
     pub eq_limiter_enabled: Option<bool>,
     #[serde(default)]
     pub eq_dither_mode: Option<DitherMode>,
-    #[serde(default)]
-    pub has_completed_onboarding: Option<bool>,
     #[serde(default)]
     pub resampler_quality: Option<SincQuality>,
     #[serde(default)]

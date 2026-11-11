@@ -784,9 +784,6 @@ impl LunulaApp {
 
                 // Check if user clicked or right-clicked on cable to disconnect
                 let mid = points[12];
-                if conn.from_node == 2 && (conn.to_node == 4 || conn.to_node == 5) {
-                    self.quest_rect_cable_mute_target = Some(Rect::from_center_size(mid, Vec2::new(90.0, 50.0)));
-                }
                 let is_hover_cut = mouse_pos.map_or(false, |p| p.distance(mid) <= 10.0);
                 let is_hover_cable = mouse_pos.map_or(false, |p| points.iter().any(|pt| pt.distance(p) <= 6.0) || p.distance(mid) <= 14.0);
 

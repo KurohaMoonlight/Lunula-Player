@@ -586,10 +586,6 @@ impl LunulaApp {
                                 clipped_painter.text(Pos2::new(text_left, text_top + 17.0), egui::Align2::LEFT_TOP, sub_text, egui::FontId::proportional(10.0), sub_color);
                             }
 
-                            if def.node_type == NodeType::TubeWarmer {
-                                self.quest_rect_tube_warmer_btn = Some(row_rect);
-                            }
-
                             // Interaksi Tambah
                             if !def.is_coming_soon && (row_resp.clicked() || btn_clicked) {
                                 if def.is_eq_preset {

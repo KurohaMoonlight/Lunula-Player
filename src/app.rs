@@ -1,5 +1,5 @@
 use eframe::egui;
-use egui::{Color32, Pos2, Rect, Stroke, Vec2};
+use egui::{Color32, Pos2, Stroke, Vec2};
 use std::time::Instant;
 use crate::models::{
     AppTab, CableConnection, ChainMode, CustomPlaylist, DitherMode,
@@ -72,15 +72,6 @@ pub struct LunulaApp {
     pub clipping_detection_enabled: bool,
     pub clipping_threshold_db: f32,
     pub show_clipping_settings_popup: bool,
-
-    // Game-Like Onboarding Quest
-    pub has_completed_onboarding: bool,
-    pub is_onboarding_quest_active: bool,
-    pub onboarding_quest_step: crate::models::OnboardingQuestStep,
-    pub quest_rect_signal_chain_tab: Option<Rect>,
-    pub quest_rect_dsp_mode_btn: Option<Rect>,
-    pub quest_rect_tube_warmer_btn: Option<Rect>,
-    pub quest_rect_cable_mute_target: Option<Rect>,
 
     // Roadmap 2: 90% Screen Interactive Theater & Flying Mascot Guide
     pub show_interactive_theater: bool,
@@ -435,14 +426,6 @@ impl LunulaApp {
             clipping_threshold_db: 0.0,
             show_clipping_settings_popup: false,
 
-            has_completed_onboarding: false,
-            is_onboarding_quest_active: false,
-            onboarding_quest_step: crate::models::OnboardingQuestStep::Welcome,
-            quest_rect_signal_chain_tab: None,
-            quest_rect_dsp_mode_btn: None,
-            quest_rect_tube_warmer_btn: None,
-            quest_rect_cable_mute_target: None,
-
             show_interactive_theater: false,
             theater_slide: 0,
             theater_turn: 0,
@@ -720,17 +703,9 @@ impl LunulaApp {
             if let Some(ctd) = state.clipping_threshold_db {
                 app.clipping_threshold_db = ctd;
             }
-            app.has_completed_onboarding = state.has_completed_onboarding.unwrap_or(false);
-            if !app.has_completed_onboarding {
-                app.is_onboarding_quest_active = true;
-                app.set_chain_mode(ChainMode::BitPerfect);
-            } else {
-                app.set_chain_mode(state.chain_mode);
-            }
+            app.set_chain_mode(state.chain_mode);
         } else {
             // First time application is ever launched!
-            app.has_completed_onboarding = false;
-            app.is_onboarding_quest_active = true;
             app.show_interactive_theater = true;
             app.set_chain_mode(ChainMode::BitPerfect);
             app.eq_bands[0] = 3.0;
@@ -3298,8 +3273,7 @@ impl eframe::App for LunulaApp {
                         }
                         ui.selectable_value(&mut self.current_tab, AppTab::Equalizer, egui::RichText::new("🎛️ Equalizer 🚧 Coming Soon").strong());
                         ui.selectable_value(&mut self.current_tab, AppTab::Library, egui::RichText::new("📁 Library").strong());
-                        let sig_tab_resp = ui.selectable_value(&mut self.current_tab, AppTab::SignalChain, egui::RichText::new("⚡ Signal Chain Studio").strong());
-                        self.quest_rect_signal_chain_tab = Some(sig_tab_resp.rect);
+                        ui.selectable_value(&mut self.current_tab, AppTab::SignalChain, egui::RichText::new("⚡ Signal Chain Studio").strong());
                         ui.selectable_value(&mut self.current_tab, AppTab::NowPlaying, egui::RichText::new("🎵 Now Playing").strong());
                     });
                 });
@@ -3623,7 +3597,6 @@ impl eframe::App for LunulaApp {
                                 if bp_btn.clicked() {
                                     self.set_chain_mode(ChainMode::BitPerfect);
                                 }
-                                self.quest_rect_dsp_mode_btn = Some(dsp_btn.rect.expand(3.0));
                                 ui.label(egui::RichText::new("Mode:").size(12.0).color(Color32::from_rgb(100, 116, 139)));
                             });
                         });
