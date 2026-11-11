@@ -388,3 +388,90 @@ fn test_equalizer_tab_switching_multi_frame_resilience() {
         out.textures_delta.clear();
     }
 }
+
+#[test]
+fn test_saved_eq_floating_popup_master_banner_and_animations() {
+    let ctx = egui::Context::default();
+    let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 900.0)));
+
+    let mut app = LunulaApp::default();
+    app.current_tab = AppTab::SignalChain;
+    app.show_saved_eq_palette_popup = true;
+    app.saved_eq_popup_anchor = Some(egui::pos2(1100.0, 300.0));
+
+    // Frame 1: Initial opening with animation
+    let mut out1 = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: screen,
+            time: Some(0.0),
+            ..Default::default()
+        },
+        |ui| {
+            app.render_saved_eq_floating_popup(ui);
+        },
+    );
+    out1.textures_delta.clear();
+
+    // Helper to find text position in shapes
+    fn find_text_pos(shape: &egui::epaint::Shape, needle: &str) -> Option<egui::Pos2> {
+        match shape {
+            egui::epaint::Shape::Text(t) => {
+                if t.galley.job.text.contains(needle) {
+                    Some(t.pos)
+                } else {
+                    None
+                }
+            }
+            egui::epaint::Shape::Vec(v) => {
+                for s in v {
+                    if let Some(p) = find_text_pos(s, needle) {
+                        return Some(p);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    let mut banner_pos = egui::Pos2::ZERO;
+    for shape in &out1.shapes {
+        if let Some(pos) = find_text_pos(&shape.shape, "Buka Studio Equalizer Penuh") {
+            banner_pos = pos;
+            break;
+        }
+    }
+    assert_ne!(banner_pos, egui::Pos2::ZERO, "Master equalizer banner text must be rendered in popup!");
+
+    // Frame 2: Click the master equalizer banner
+    let mut out2 = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: screen,
+            time: Some(0.05),
+            events: vec![
+                egui::Event::PointerMoved(banner_pos),
+                egui::Event::PointerButton {
+                    pos: banner_pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos: banner_pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            ..Default::default()
+        },
+        |ui| {
+            app.render_saved_eq_floating_popup(ui);
+        },
+    );
+    out2.textures_delta.clear();
+
+    // Verify it switched to Equalizer tab and closed the popup
+    assert_eq!(app.current_tab, AppTab::Equalizer, "Clicking master banner must switch to Equalizer tab");
+    assert!(!app.show_saved_eq_palette_popup, "Popup must close upon launching the full Equalizer tab");
+}

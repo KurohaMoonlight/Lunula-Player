@@ -1,7 +1,10 @@
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 use crate::app::LunulaApp;
-use crate::models::{ChainMode, DitherMode, FilterSlope, FilterType, NodeType, ParametricBand, ParametricEqPreset, PreampMode, SignalNodeStatus};
+use crate::models::{
+    AppTab, CableConnection, ChainMode, DitherMode, FilterSlope, FilterType, NodeType,
+    ParametricBand, ParametricEqPreset, PreampMode, SignalNodeStatus,
+};
 use crate::ui::components::render_card_frame;
 
 // Precise f64 Biquad Filter Magnitude Response Calculation (Robert Bristow-Johnson Audio EQ Cookbook)
@@ -279,6 +282,53 @@ impl LunulaApp {
         self.sync_signal_chain_to_engine();
     }
 
+    /// Automatically splices the given EQ preset into the active signal chain path.
+    /// Exits Bit-Perfect mode, connects before the DAC output endpoint, and ensures EQ is not bypassed.
+    pub fn auto_connect_eq_preset_into_chain(&mut self, preset_name: &str) {
+        if self.chain_mode == ChainMode::BitPerfect {
+            self.chain_mode = ChainMode::DspActive;
+        }
+
+        let eq_node_id = if let Some(n) = self.nodes.iter().find(|n| n.node_type == NodeType::SavedEqPreset(preset_name.to_string())) {
+            n.id
+        } else {
+            self.add_modular_filter(NodeType::SavedEqPreset(preset_name.to_string()));
+            self.next_node_id - 1
+        };
+
+        let chain_eval = self.evaluate_signal_chain();
+        if chain_eval.node_status(eq_node_id) != SignalNodeStatus::Flowing {
+            let dest_id = if self.nodes.iter().any(|n| n.id == 5) {
+                5
+            } else if self.nodes.iter().any(|n| n.id == 4) {
+                4
+            } else {
+                5
+            };
+
+            let feeding_pos = self.connections.iter().position(|c| c.to_node == dest_id && c.from_node != eq_node_id);
+            if let Some(pos) = feeding_pos {
+                let from_node = self.connections[pos].from_node;
+                let from_port = self.connections[pos].from_port;
+                let to_port = self.connections[pos].to_port;
+                self.connections.remove(pos);
+                self.connections.push(CableConnection::with_ports(from_node, from_port, eq_node_id, 0));
+                self.connections.push(CableConnection::with_ports(eq_node_id, 0, dest_id, to_port));
+            } else {
+                let buffer_id = self.nodes.iter().find(|n| n.node_type == NodeType::Buffer).map(|n| n.id).unwrap_or(2);
+                self.connections.push(CableConnection::new(buffer_id, eq_node_id));
+                self.connections.push(CableConnection::new(eq_node_id, dest_id));
+            }
+        }
+
+        self.eq_bypass = false;
+        if let Some(ref engine) = self.audio_engine {
+            engine.set_eq_bypass(false);
+        }
+        self.invalidate_chain_cache();
+        self.sync_signal_chain_to_engine();
+    }
+
     pub fn render_spectrum_visualizer(&mut self, ui: &mut egui::Ui) {
         render_card_frame(ui, |ui| {
             ui.vertical(|ui| {
@@ -311,17 +361,24 @@ impl LunulaApp {
 
                 let max_bar_h = rect.height() - 20.0;
 
+                let max_boost = calculate_combined_peak_boost(&self.active_eq.bands, 44100.0);
+                let preamp = if self.active_eq.preamp_mode == PreampMode::Auto {
+                    if max_boost > 0.0 { -max_boost } else { 0.0 }
+                } else {
+                    self.active_eq.manual_preamp_db
+                };
+
                 for i in 0..bars {
-                    let t = i as f32 / bars as f32;
+                    let t = i as f32 / (bars - 1).max(1) as f32;
+                    let freq = 20.0 * (1000.0_f32).powf(t);
                     let fft_energy = self.spectrum_bars[i];
 
-                    let eq_factor = if !self.eq_bypass {
-                        let eq_idx = ((t * 9.99).floor() as usize).min(9);
-                        let gain_db = self.eq_bands[eq_idx];
-                        10.0_f32.powf(gain_db / 28.0)
+                    let response_db = if self.eq_bypass {
+                        0.0
                     } else {
-                        1.0
+                        compute_total_curve_db(&self.active_eq.bands, freq as f64, 44100.0, preamp as f64, false) as f32
                     };
+                    let eq_factor = 10.0_f32.powf((response_db / 20.0).clamp(-2.0, 1.5));
 
                     let has_energy = fft_energy > 0.005;
 
@@ -363,8 +420,15 @@ impl LunulaApp {
 
         self.render_parametric_eq_editor(ui, &mut active_eq, &mut is_dirty);
 
-        self.active_eq = active_eq;
+        self.active_eq = active_eq.clone();
         self.eq_is_dirty = is_dirty;
+
+        // Keep active A/B slot in sync
+        if self.eq_active_slot == 'A' {
+            self.eq_slot_a = Some(active_eq);
+        } else {
+            self.eq_slot_b = Some(active_eq);
+        }
     }
 
     // Reusable Parametric EQ Editor Widget operating on any EqPreset reference
@@ -376,6 +440,7 @@ impl LunulaApp {
     ) {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show(ui, |ui| {
                 render_card_frame(ui, |ui| {
                     ui.vertical(|ui| {
@@ -423,70 +488,155 @@ impl LunulaApp {
         is_dirty: &mut bool,
     ) {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("🎛️ PARAMETRIC EQUALIZER STUDIO").strong().size(15.0).color(Color32::from_rgb(15, 23, 42)));
+            // 1. Back Button to Signal Chain Studio (Patchbay)
+            let back_btn = egui::Button::new(
+                egui::RichText::new("◀ Ke Patchbay").size(11.5).strong().color(Color32::from_rgb(79, 70, 229))
+            )
+            .fill(Color32::from_rgb(238, 242, 255))
+            .stroke(Stroke::new(1.0, Color32::from_rgb(199, 210, 254)))
+            .corner_radius(6.0);
 
-            // Honest dirty indicator with star
+            if ui.add_sized([105.0, 25.0], back_btn).on_hover_text("Kembali ke Signal Chain Studio (Patchbay)").clicked() {
+                self.current_tab = AppTab::SignalChain;
+            }
+
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("🎛️ PARAMETRIC EQUALIZER STUDIO").strong().size(14.5).color(Color32::from_rgb(15, 23, 42)));
+
+            // Honest dirty indicator with star and active slot indicator
             let dirty_star = if *is_dirty { "*" } else { "" };
-            let preset_title = format!("Preset: \"{}{}\"", preset.name, dirty_star);
+            let slot_badge = format!("[Slot {}] ", self.eq_active_slot);
+            let preset_title = format!("{}{}{}", slot_badge, preset.name, dirty_star);
             let pill_color = if *is_dirty {
                 Color32::from_rgb(249, 115, 22) // Orange dirty badge
             } else {
                 Color32::from_rgb(100, 116, 139)
             };
-            ui.label(egui::RichText::new(preset_title).strong().size(12.5).color(pill_color));
+            ui.label(egui::RichText::new(preset_title).strong().size(12.0).color(pill_color));
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Modular connection status in Signal Chain Studio
+                // Modular connection status in Signal Chain Studio & 1-Click Auto-Connect
                 let chain_eval = self.evaluate_signal_chain();
                 let is_preset_flowing = self.nodes.iter().any(|n| {
                     n.node_type == NodeType::SavedEqPreset(preset.name.clone()) && chain_eval.node_status(n.id) == SignalNodeStatus::Flowing
                 });
                 let is_eq_flowing = self.chain_mode != ChainMode::BitPerfect && is_preset_flowing;
-                let is_preset_on_canvas = self.nodes.iter().any(|n| n.node_type == NodeType::SavedEqPreset(preset.name.clone()));
 
                 if is_eq_flowing {
-                    egui::Frame::new()
-                        .fill(Color32::from_rgb(236, 253, 245))
-                        .stroke(Stroke::new(1.0, Color32::from_rgb(167, 243, 208)))
-                        .corner_radius(6.0)
-                        .inner_margin(egui::Margin::symmetric(10, 4))
-                        .show(ui, |ui| {
-                            ui.label(egui::RichText::new("⚡ Terhubung di Signal Chain (Live Real-Time Tuning)").strong().size(11.5).color(Color32::from_rgb(16, 185, 129)));
-                        });
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(140.0, 25.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 6.0, Color32::from_rgb(236, 253, 245));
+                    ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, Color32::from_rgb(167, 243, 208)), egui::StrokeKind::Inside);
+                    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "⚡ Terhubung di Chain", egui::FontId::proportional(11.0), Color32::from_rgb(16, 185, 129));
+                    resp.on_hover_text("Preset ini aktif mengalirkan audio di kabel patchbay");
                 } else {
-                    if !is_preset_on_canvas {
-                        if ui.button(egui::RichText::new("➕ Pasang ke Canvas").size(11.0).strong().color(Color32::from_rgb(14, 165, 233)))
-                            .on_hover_text("Pasang preset ini langsung ke diagram Signal Chain Studio")
-                            .clicked()
-                        {
-                            self.add_modular_filter(NodeType::SavedEqPreset(preset.name.clone()));
-                        }
-                    }
+                    let connect_btn = egui::Button::new(
+                        egui::RichText::new("🔗 Sambungkan ke Chain").size(11.0).strong().color(Color32::from_rgb(14, 165, 233))
+                    )
+                    .fill(Color32::from_rgb(240, 249, 255))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(186, 230, 253)))
+                    .corner_radius(6.0);
 
-                    egui::Frame::new()
-                        .fill(Color32::from_rgb(248, 250, 252))
-                        .stroke(Stroke::new(1.0, Color32::from_rgb(226, 232, 240)))
-                        .corner_radius(6.0)
-                        .inner_margin(egui::Margin::symmetric(10, 4))
-                        .show(ui, |ui| {
-                            let status_text = if self.chain_mode == ChainMode::BitPerfect {
-                                "⚪ Dilewati (Bit-Perfect)"
-                            } else if is_preset_on_canvas {
-                                "⚠️ Terputus di Patchbay (Audio Tidak Terpengaruh)"
-                            } else {
-                                "⚪ Belum Terhubung di Patchbay (Audio Tidak Terpengaruh)"
-                            };
-                            ui.label(egui::RichText::new(status_text).size(11.5).color(Color32::from_rgb(100, 116, 139)));
-                        });
+                    if ui.add_sized([140.0, 25.0], connect_btn)
+                        .on_hover_text("Otomatis aktifkan mode DSP dan sambungkan preset equalizer ini ke kabel output audio")
+                        .clicked()
+                    {
+                        self.auto_connect_eq_preset_into_chain(&preset.name);
+                    }
                 }
+
+                ui.add_space(4.0);
+
+                // Bypass Toggle Button (Quick Instant AB vs Raw Signal)
+                let bypass_label = if self.eq_bypass {
+                    egui::RichText::new("⚪ BYPASS").size(11.0).strong().color(Color32::from_rgb(239, 68, 68))
+                } else {
+                    egui::RichText::new("⚡ AKTIF").size(11.0).strong().color(Color32::from_rgb(16, 185, 129))
+                };
+                let bypass_btn = egui::Button::new(bypass_label)
+                    .fill(if self.eq_bypass { Color32::from_rgb(254, 242, 242) } else { Color32::from_rgb(236, 253, 245) })
+                    .stroke(Stroke::new(1.0, if self.eq_bypass { Color32::from_rgb(254, 202, 202) } else { Color32::from_rgb(167, 243, 208) }))
+                    .corner_radius(6.0);
+
+                if ui.add_sized([78.0, 25.0], bypass_btn).on_hover_text("Toggle Bypass: Bandingkan langsung suara EQ vs Suara Asli (Bypass)").clicked() {
+                    self.toggle_eq_bypass();
+                }
+
+                ui.add_space(5.0);
+
+                // A/B Comparison Buttons Group
+                let slot_b_active = self.eq_active_slot == 'B';
+                let btn_b = egui::Button::new(
+                    egui::RichText::new("B").strong().size(11.0).color(if slot_b_active { Color32::WHITE } else { Color32::from_rgb(71, 85, 105) })
+                )
+                .fill(if slot_b_active { Color32::from_rgb(245, 158, 11) } else { Color32::from_rgb(241, 245, 249) })
+                .stroke(Stroke::new(1.0, if slot_b_active { Color32::from_rgb(217, 119, 6) } else { Color32::from_rgb(203, 213, 225) }))
+                .corner_radius(4.0);
+
+                if ui.add_sized([25.0, 25.0], btn_b).on_hover_text("Beralih ke Slot B (Snapshot Tuning B)").clicked() && self.eq_active_slot != 'B' {
+                    self.eq_slot_a = Some(preset.clone());
+                    if self.eq_slot_b.is_none() {
+                        let mut b = preset.clone();
+                        b.name = format!("{} (Slot B)", preset.name);
+                        self.eq_slot_b = Some(b);
+                    }
+                    *preset = self.eq_slot_b.as_ref().unwrap().clone();
+                    *is_dirty = false;
+                    self.active_eq = preset.clone();
+                    self.eq_active_slot = 'B';
+                    self.sync_parametric_to_legacy_eq();
+                }
+
+                let slot_a_active = self.eq_active_slot == 'A';
+                let btn_a = egui::Button::new(
+                    egui::RichText::new("A").strong().size(11.0).color(if slot_a_active { Color32::WHITE } else { Color32::from_rgb(71, 85, 105) })
+                )
+                .fill(if slot_a_active { Color32::from_rgb(79, 70, 229) } else { Color32::from_rgb(241, 245, 249) })
+                .stroke(Stroke::new(1.0, if slot_a_active { Color32::from_rgb(67, 56, 202) } else { Color32::from_rgb(203, 213, 225) }))
+                .corner_radius(4.0);
+
+                if ui.add_sized([25.0, 25.0], btn_a).on_hover_text("Beralih ke Slot A (Snapshot Tuning A)").clicked() && self.eq_active_slot != 'A' {
+                    self.eq_slot_b = Some(preset.clone());
+                    if self.eq_slot_a.is_none() {
+                        self.eq_slot_a = Some(preset.clone());
+                    }
+                    *preset = self.eq_slot_a.as_ref().unwrap().clone();
+                    *is_dirty = false;
+                    self.active_eq = preset.clone();
+                    self.eq_active_slot = 'A';
+                    self.sync_parametric_to_legacy_eq();
+                }
+
+                let copy_label = if slot_a_active { "Salin A➔B" } else { "Salin B➔A" };
+                let copy_btn = egui::Button::new(egui::RichText::new(copy_label).size(10.5).color(Color32::from_rgb(100, 116, 139)))
+                    .fill(Color32::from_rgb(248, 250, 252))
+                    .stroke(Stroke::new(0.8, Color32::from_rgb(226, 232, 240)))
+                    .corner_radius(4.0);
+
+                if ui.add_sized([72.0, 25.0], copy_btn).on_hover_text("Salin setting slot aktif ke slot alternatif untuk eksperimen komparasi").clicked() {
+                    if slot_a_active {
+                        let mut b = preset.clone();
+                        b.name = format!("{} (Slot B)", preset.name);
+                        self.eq_slot_b = Some(b);
+                    } else {
+                        let mut a = preset.clone();
+                        a.name = preset.name.replace(" (Slot B)", "");
+                        self.eq_slot_a = Some(a);
+                    }
+                }
+
+                ui.add_space(5.0);
 
                 // Spectrum Overlay Toggle Button
                 let spec_text = if self.eq_show_spectrum_overlay {
-                    egui::RichText::new("📊 Spektrum FFT: ON").size(11.5).strong().color(Color32::from_rgb(14, 165, 233))
+                    egui::RichText::new("📊 FFT: ON").size(11.0).strong().color(Color32::from_rgb(14, 165, 233))
                 } else {
-                    egui::RichText::new("📊 Spektrum FFT: OFF").size(11.5).color(Color32::from_rgb(148, 163, 184))
+                    egui::RichText::new("📊 FFT: OFF").size(11.0).color(Color32::from_rgb(148, 163, 184))
                 };
-                if ui.button(spec_text).clicked() {
+                let spec_btn = egui::Button::new(spec_text)
+                    .fill(if self.eq_show_spectrum_overlay { Color32::from_rgb(240, 249, 255) } else { Color32::from_rgb(248, 250, 252) })
+                    .stroke(Stroke::new(1.0, if self.eq_show_spectrum_overlay { Color32::from_rgb(186, 230, 253) } else { Color32::from_rgb(226, 232, 240) }))
+                    .corner_radius(4.0);
+                if ui.add_sized([76.0, 25.0], spec_btn).on_hover_text("Tampilkan/sembunyikan visualisasi spektrum energi FFT real-time").clicked() {
                     self.eq_show_spectrum_overlay = !self.eq_show_spectrum_overlay;
                 }
             });
@@ -678,7 +828,10 @@ impl LunulaApp {
         }
     }
 
-    fn render_eq_status_notice(&self, ui: &mut egui::Ui) {
+    fn render_eq_status_notice(&mut self, ui: &mut egui::Ui) {
+        let mut do_auto_connect = false;
+        let mut do_switch_dsp = false;
+
         if self.chain_mode == ChainMode::BitPerfect {
             egui::Frame::new()
                 .fill(Color32::from_rgba_premultiplied(236, 253, 245, 230))
@@ -686,7 +839,18 @@ impl LunulaApp {
                 .corner_radius(6.0)
                 .inner_margin(egui::Margin::symmetric(12, 6))
                 .show(ui, |ui| {
-                    ui.label(egui::RichText::new("⚡ Mode Bit-Perfect Aktif: Rantai equalizer dilewati murni (Bit-Perfect Passthrough) untuk menjaga keutuhan bit audio asli.").size(11.5).color(Color32::from_rgb(6, 95, 70)));
+                    ui.set_height(22.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("⚡ Mode Bit-Perfect Aktif • Equalizer dilewati murni (Bit-Perfect Passthrough).").size(11.5).color(Color32::from_rgb(6, 95, 70)));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button(egui::RichText::new("⚡ Beralih ke Mode DSP").strong().size(11.0).color(Color32::from_rgb(16, 185, 129)))
+                                .on_hover_text("Beralih ke mode DSP Active dan sambungkan equalizer ke rantai audio")
+                                .clicked()
+                            {
+                                do_switch_dsp = true;
+                            }
+                        });
+                    });
                 });
             ui.add_space(6.0);
         } else if self.is_equalizer_in_active_chain() {
@@ -696,7 +860,10 @@ impl LunulaApp {
                 .corner_radius(6.0)
                 .inner_margin(egui::Margin::symmetric(12, 6))
                 .show(ui, |ui| {
-                    ui.label(egui::RichText::new(format!("🟢 Status: Aktif di Signal Chain (Live Real-Time Tuning) • Preset \"{}\" sedang memproses audio secara modular.", self.active_eq.name)).size(11.5).color(Color32::from_rgb(6, 95, 70)));
+                    ui.set_height(22.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("🟢 Status: Aktif di Signal Chain • Modul \"{}\" sedang aktif memproses audio secara modular.", self.active_eq.name)).size(11.5).color(Color32::from_rgb(6, 95, 70)));
+                    });
                 });
             ui.add_space(6.0);
         } else {
@@ -706,9 +873,25 @@ impl LunulaApp {
                 .corner_radius(6.0)
                 .inner_margin(egui::Margin::symmetric(12, 6))
                 .show(ui, |ui| {
-                    ui.label(egui::RichText::new(format!("⚪ Status: Kartu EQ Tidak Terhubung di Patchbay • Perubahan slider/kurva tersimpan di preset, tetapi audio yang sedang diputar TIDAK terpengaruh sampai kartu \"{}\" disambungkan di Signal Chain Studio.", self.active_eq.name)).size(11.5).color(Color32::from_rgb(71, 85, 105)));
+                    ui.set_height(22.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("⚪ Status: Tidak Terhubung di Patchbay • Audio belum melewati kartu EQ \"{}\".", self.active_eq.name)).size(11.5).color(Color32::from_rgb(71, 85, 105)));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button(egui::RichText::new("🔗 Sambungkan Sekarang").strong().size(11.0).color(Color32::from_rgb(14, 165, 233)))
+                                .on_hover_text("Otomatis pasang dan sambungkan kartu EQ ini ke dalam rangkaian kabel studio audio")
+                                .clicked()
+                            {
+                                do_auto_connect = true;
+                            }
+                        });
+                    });
                 });
             ui.add_space(6.0);
+        }
+
+        if do_switch_dsp || do_auto_connect {
+            let name = self.active_eq.name.clone();
+            self.auto_connect_eq_preset_into_chain(&name);
         }
     }
 
@@ -769,7 +952,15 @@ impl LunulaApp {
             );
         }
 
-        // 3. Real-Time Hardware FFT Spectrum Analyzer Overlay (Ghost Bars in background)
+        // 3. Calculate Combined Peak Boost & Preamp Level
+        let max_boost = calculate_combined_peak_boost(&preset.bands, 44100.0);
+        let effective_preamp = if preset.preamp_mode == PreampMode::Auto {
+            if max_boost > 0.0 { -max_boost } else { 0.0 }
+        } else {
+            preset.manual_preamp_db
+        };
+
+        // 4. Real-Time Hardware FFT Spectrum Analyzer Overlay (Post-EQ Shaped with Pre-EQ Ghost)
         if self.eq_show_spectrum_overlay {
             let bars = 48;
             let spacing = 2.0;
@@ -779,22 +970,46 @@ impl LunulaApp {
             for i in 0..bars {
                 let fft_val = self.spectrum_bars[i];
                 if fft_val > 0.005 && vol_scale > 0.001 {
-                    let h = (fft_val * 110.0 * vol_scale).clamp(2.0, 120.0);
+                    let t = i as f32 / (bars - 1).max(1) as f32;
+                    let freq = 20.0 * (1000.0_f32).powf(t);
+
+                    let response_db = if self.eq_bypass {
+                        0.0
+                    } else {
+                        compute_total_curve_db(&preset.bands, freq as f64, 44100.0, effective_preamp as f64, false) as f32
+                    };
+                    let eq_factor = 10.0_f32.powf((response_db / 20.0).clamp(-2.0, 1.5));
+                    let post_fft = (fft_val * eq_factor).clamp(0.0, 1.5);
+
                     let x = rect.min.x + 16.0 + i as f32 * (bar_w + spacing);
                     let y_bottom = rect.max.y - 20.0;
-                    let bar_rect = Rect::from_min_max(Pos2::new(x, y_bottom - h), Pos2::new(x + bar_w, y_bottom));
-                    painter.rect_filled(bar_rect, 1.5, Color32::from_rgba_unmultiplied(14, 165, 233, 28));
+
+                    // Subtle pre-EQ raw input ghost bar if EQ is active
+                    if !self.eq_bypass && response_db.abs() > 0.5 {
+                        let h_pre = (fft_val * 110.0 * vol_scale).clamp(2.0, 120.0);
+                        let pre_rect = Rect::from_min_max(Pos2::new(x, y_bottom - h_pre), Pos2::new(x + bar_w, y_bottom));
+                        painter.rect_filled(pre_rect, 1.5, Color32::from_rgba_unmultiplied(148, 163, 184, 18));
+                    }
+
+                    // Post-EQ dynamic active bar with adaptive color tint reflecting boost/cut
+                    let h_post = (post_fft * 110.0 * vol_scale).clamp(2.0, 130.0);
+                    let bar_rect = Rect::from_min_max(Pos2::new(x, y_bottom - h_post), Pos2::new(x + bar_w, y_bottom));
+
+                    let bar_color = if self.eq_bypass {
+                        Color32::from_rgba_unmultiplied(148, 163, 184, 25)
+                    } else if response_db > 1.2 {
+                        Color32::from_rgba_unmultiplied(56, 189, 248, 48) // Boost: glowing sky cyan
+                    } else if response_db < -1.2 {
+                        Color32::from_rgba_unmultiplied(251, 146, 60, 36) // Cut: warm amber
+                    } else {
+                        Color32::from_rgba_unmultiplied(14, 165, 233, 34) // Flat/near 0dB: teal
+                    };
+                    painter.rect_filled(bar_rect, 1.5, bar_color);
                 }
             }
         }
 
-        // 4. Calculate Combined Peak Boost & Response Curve Points (Optimized with Hash Caching & Single-Mesh Batching)
-        let max_boost = calculate_combined_peak_boost(&preset.bands, 44100.0);
-        let effective_preamp = if preset.preamp_mode == PreampMode::Auto {
-            if max_boost > 0.0 { -max_boost } else { 0.0 }
-        } else {
-            preset.manual_preamp_db
-        };
+        // 5. Calculate Response Curve Points (Optimized with Hash Caching & Single-Mesh Batching)
 
         // Cache curve points to eliminate 2,800 trigonometric calculations on static frames
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -1054,17 +1269,38 @@ impl LunulaApp {
 
             ui.add_space(8.0);
 
-            // Preamp Slider & Display (Without -0.0 dB artifact!)
+            // Preamp Slider & Display (Consistent width preventing layout shifts)
             if preset.preamp_mode == PreampMode::Auto {
-                ui.label(
-                    egui::RichText::new(format!("Kompensasi Otomatis: {}", format_db_clean(required_attenuation)))
-                        .strong()
-                        .size(12.0)
-                        .color(Color32::from_rgb(14, 165, 233)),
+                ui.add_sized(
+                    [160.0, 22.0],
+                    egui::Label::new(
+                        egui::RichText::new(format!("Kompensasi: {}", format_db_clean(required_attenuation)))
+                            .strong()
+                            .size(11.5)
+                            .color(Color32::from_rgb(14, 165, 233)),
+                    ),
                 );
+                let mut auto_val = required_attenuation;
+                ui.add_enabled_ui(false, |ui| {
+                    ui.add_sized(
+                        [130.0, 20.0],
+                        egui::Slider::new(&mut auto_val, -24.0..=12.0).suffix(" dB").show_value(false),
+                    );
+                });
             } else {
-                ui.label(egui::RichText::new(format!("Gain: {}", format_db_clean(preset.manual_preamp_db))).strong().size(12.0));
-                let s_res = ui.add(egui::Slider::new(&mut preset.manual_preamp_db, -24.0..=12.0).suffix(" dB").show_value(false));
+                ui.add_sized(
+                    [160.0, 22.0],
+                    egui::Label::new(
+                        egui::RichText::new(format!("Manual Preamp: {}", format_db_clean(preset.manual_preamp_db)))
+                            .strong()
+                            .size(11.5)
+                            .color(Color32::from_rgb(71, 85, 105)),
+                    ),
+                );
+                let s_res = ui.add_sized(
+                    [130.0, 20.0],
+                    egui::Slider::new(&mut preset.manual_preamp_db, -24.0..=12.0).suffix(" dB").show_value(false),
+                );
                 if s_res.changed() {
                     *is_dirty = true;
                     self.active_eq = preset.clone();
@@ -1127,6 +1363,7 @@ impl LunulaApp {
             .corner_radius(8.0)
             .inner_margin(egui::Margin::symmetric(14, 10))
             .show(ui, |ui| {
+                ui.set_min_height(78.0);
                 ui.horizontal(|ui| {
                     // Band Index & Status
                     let mut is_enabled = band.enabled;
@@ -1192,12 +1429,16 @@ impl LunulaApp {
                         }
                     });
 
-                    // Column 2: Gain OR Filter Slope (Adaptive!)
+                    // Column 2: Gain OR Filter Slope (Adaptive with standardized rows preventing height shifts)
                     columns[1].vertical(|ui| {
                         match band.filter_type {
                             FilterType::HighPass | FilterType::LowPass => {
-                                // HPF / LPF has no Gain: Show Slope Selector (12/24/48 dB/oct)
-                                ui.label(egui::RichText::new("Slope Filter:").strong().size(12.0));
+                                // Row 1: Slope Header & Current Selection
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new("Slope Filter:").strong().size(12.0));
+                                    ui.label(egui::RichText::new(band.slope.name()).size(11.0).color(Color32::from_rgb(14, 165, 233)));
+                                });
+                                // Row 2: Slope Selector Buttons (12/24/48 dB/oct)
                                 ui.horizontal(|ui| {
                                     let slopes = [
                                         (FilterSlope::Db12, "12 dB/oct"),
@@ -1217,12 +1458,18 @@ impl LunulaApp {
                                 });
                             }
                             FilterType::Notch => {
-                                // Notch has no Gain: Label indicating band-stop
-                                ui.label(egui::RichText::new("Karakteristik:").strong().size(12.0));
-                                ui.label(egui::RichText::new("Zero-Gain Band Stop Notch").size(11.0).color(Color32::from_rgb(100, 116, 139)));
+                                // Row 1: Characteristic Header
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new("Karakteristik:").strong().size(12.0));
+                                    ui.label(egui::RichText::new("Reduksi Total (-∞ dB)").size(11.0).color(Color32::from_rgb(239, 68, 68)));
+                                });
+                                // Row 2: Secondary description badge matching slider height
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new("Zero-Gain Band Stop Filter (Narrow Cut)").size(10.5).color(Color32::from_rgb(100, 116, 139)));
+                                });
                             }
                             FilterType::Peaking | FilterType::LowShelf | FilterType::HighShelf => {
-                                // Peaking and Shelves have Gain slider
+                                // Row 1: Gain Label & Quick 0dB Reset
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new("Gain:").strong().size(12.0));
                                     let dv = ui.add(egui::DragValue::new(&mut band.gain_db).range(-18.0..=18.0).speed(0.1).custom_formatter(|g, _| format_db_clean(g as f32)));
@@ -1234,6 +1481,7 @@ impl LunulaApp {
                                         changed = true;
                                     }
                                 });
+                                // Row 2: Continuous Gain Slider
                                 let s = ui.add(egui::Slider::new(&mut band.gain_db, -18.0..=18.0).show_value(false));
                                 if s.changed() {
                                     changed = true;
@@ -1704,6 +1952,189 @@ mod tests {
                 time: Some(0.3),
                 ..Default::default()
             },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    app.render_equalizer_panel(ui);
+                });
+            },
+        );
+        out3.textures_delta.clear();
+    }
+
+    #[test]
+    fn test_auto_connect_eq_preset_into_chain() {
+        let mut app = LunulaApp::default();
+        // Start in Bit-Perfect mode with no EQ in chain
+        assert_eq!(app.chain_mode, ChainMode::BitPerfect);
+        assert!(!app.is_equalizer_in_active_chain());
+
+        // Call auto-connect
+        app.auto_connect_eq_preset_into_chain("Flat (Netral)");
+
+        // Mode must have transitioned to DspActive
+        assert_eq!(app.chain_mode, ChainMode::DspActive);
+        // EQ must be active (not bypassed)
+        assert!(!app.eq_bypass);
+        // Equalizer must now be flowing in active chain
+        assert!(app.is_equalizer_in_active_chain(), "EQ preset must be flowing in chain after auto_connect");
+    }
+
+    #[test]
+    fn test_equalizer_ab_slots_and_navigation_controls() {
+        let ctx = egui::Context::default();
+        let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 900.0)));
+        let mut app = LunulaApp::default();
+        app.current_tab = AppTab::Equalizer;
+
+        // Frame 1: Slot A initial state
+        assert_eq!(app.eq_active_slot, 'A');
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: screen,
+                time: Some(0.0),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    app.render_equalizer_panel(ui);
+                });
+            },
+        );
+        out.textures_delta.clear();
+
+        // Helper to find text
+        fn find_text(shape: &egui::epaint::Shape, needle: &str) -> bool {
+            match shape {
+                egui::epaint::Shape::Text(t) => t.galley.job.text.contains(needle),
+                egui::epaint::Shape::Vec(v) => v.iter().any(|s| find_text(s, needle)),
+                _ => false,
+            }
+        }
+
+        let has_back = out.shapes.iter().any(|s| find_text(&s.shape, "◀ Ke Patchbay"));
+        assert!(has_back, "Header must contain back navigation button '◀ Ke Patchbay'");
+
+        // Test slot transition logic
+        // Modify Slot A
+        app.active_eq.bands[0].gain_db = 6.0;
+        app.eq_slot_a = Some(app.active_eq.clone());
+
+        // Simulate switching to Slot B
+        let mut b_preset = app.active_eq.clone();
+        b_preset.name = "Custom Tuning (Slot B)".to_string();
+        b_preset.bands[0].gain_db = -4.0;
+        app.eq_slot_b = Some(b_preset.clone());
+
+        // Switch to Slot B
+        app.active_eq = b_preset;
+        app.eq_active_slot = 'B';
+        assert_eq!(app.active_eq.bands[0].gain_db, -4.0);
+
+        // Switch back to Slot A
+        app.active_eq = app.eq_slot_a.clone().unwrap();
+        app.eq_active_slot = 'A';
+        assert_eq!(app.active_eq.bands[0].gain_db, 6.0, "Slot A parameters must be preserved during A/B switching");
+    }
+
+    #[test]
+    fn test_equalizer_fft_overlay_reflects_ab_slot_and_bypass_difference() {
+        let ctx = egui::Context::default();
+        let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 900.0)));
+        let mut app = LunulaApp::default();
+        app.current_tab = AppTab::Equalizer;
+        app.eq_show_spectrum_overlay = true;
+        app.spectrum_bars[0] = 0.5;
+
+        // Slot A: Boost Bass Band 0 to +8 dB
+        app.active_eq.bands[0].gain_db = 8.0;
+        app.eq_slot_a = Some(app.active_eq.clone());
+        let mut out_a = ctx.run_ui(
+            egui::RawInput { screen_rect: screen, time: Some(0.0), ..Default::default() },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    app.render_equalizer_panel(ui);
+                });
+            },
+        );
+        out_a.textures_delta.clear();
+
+        // Calculate expected response at band 0 frequency
+        let f0 = app.active_eq.bands[0].freq as f64;
+        let resp_a = compute_total_curve_db(&app.active_eq.bands, f0, 44100.0, 0.0, false);
+        assert!(resp_a > 3.0, "Slot A should boost at f0, got {:.1} dB", resp_a);
+
+        // Slot B: Cut Bass Band 0 to -8 dB
+        let mut b_preset = app.active_eq.clone();
+        b_preset.bands[0].gain_db = -8.0;
+        app.eq_slot_b = Some(b_preset.clone());
+        app.active_eq = b_preset;
+        app.eq_active_slot = 'B';
+        let mut out_b = ctx.run_ui(
+            egui::RawInput { screen_rect: screen, time: Some(0.1), ..Default::default() },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    app.render_equalizer_panel(ui);
+                });
+            },
+        );
+        out_b.textures_delta.clear();
+
+        let resp_b = compute_total_curve_db(&app.active_eq.bands, f0, 44100.0, 0.0, false);
+        assert!(resp_b < -3.0, "Slot B should cut at f0, got {:.1} dB", resp_b);
+
+        // Bypass: Response must be flat 0 dB
+        app.eq_bypass = true;
+        let mut out_bypass = ctx.run_ui(
+            egui::RawInput { screen_rect: screen, time: Some(0.2), ..Default::default() },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    app.render_equalizer_panel(ui);
+                });
+            },
+        );
+        out_bypass.textures_delta.clear();
+
+        let resp_bypass = compute_total_curve_db(&app.active_eq.bands, f0, 44100.0, 0.0, true);
+        assert_eq!(resp_bypass, 0.0, "Bypass must yield 0.0 dB response");
+    }
+
+    #[test]
+    fn test_equalizer_layout_shift_stability_across_modes() {
+        let ctx = egui::Context::default();
+        let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 900.0)));
+        let mut app = LunulaApp::default();
+        app.current_tab = AppTab::Equalizer;
+
+        // Frame 1: Auto Preamp mode + Peaking band
+        app.active_eq.preamp_mode = PreampMode::Auto;
+        app.selected_band_idx = Some(0);
+        let mut out1 = ctx.run_ui(
+            egui::RawInput { screen_rect: screen, time: Some(0.0), ..Default::default() },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    app.render_equalizer_panel(ui);
+                });
+            },
+        );
+        out1.textures_delta.clear();
+
+        // Frame 2: Manual Preamp mode + HighPass band
+        app.active_eq.preamp_mode = PreampMode::Manual;
+        app.active_eq.bands[0].filter_type = FilterType::HighPass;
+        let mut out2 = ctx.run_ui(
+            egui::RawInput { screen_rect: screen, time: Some(0.1), ..Default::default() },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    app.render_equalizer_panel(ui);
+                });
+            },
+        );
+        out2.textures_delta.clear();
+
+        // Frame 3: Notch band
+        app.active_eq.bands[0].filter_type = FilterType::Notch;
+        let mut out3 = ctx.run_ui(
+            egui::RawInput { screen_rect: screen, time: Some(0.2), ..Default::default() },
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     app.render_equalizer_panel(ui);

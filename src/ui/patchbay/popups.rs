@@ -1,7 +1,8 @@
 use eframe::egui;
-use egui::{Color32, Pos2, Stroke};
+use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 use crate::models::{ChainMode, NodeType, SignalNodeStatus};
 use crate::app::LunulaApp;
+use crate::ui::components::lerp_color;
 
 impl LunulaApp {
     /// Floating popup widget displaying all saved equalizers.
@@ -13,7 +14,7 @@ impl LunulaApp {
 
         let screen_rect = ui.ctx().input(|i| i.raw.screen_rect).unwrap_or_else(|| ui.clip_rect());
         let popup_w = 400.0;
-        let popup_h = 440.0;
+        let popup_h = 490.0;
 
         // Position calculation:
         // Positioned cleanly to the LEFT of the sidebar palette with a 12px gap,
@@ -35,12 +36,23 @@ impl LunulaApp {
         let ideal_y = anchor_y - popup_h * 0.5;
         let y = ideal_y.clamp(min_y, max_y);
 
-        let popup_pos = Pos2::new(x, y);
+        // Fluid entrance animation (slide from right + smooth border glow)
+        let popup_anim_id = ui.scope_id().with("saved_eq_popup_entrance_anim");
+        let open_t = ui.ctx().animate_bool(popup_anim_id, self.show_saved_eq_palette_popup);
+        let slide_offset = (1.0 - open_t) * 14.0;
+        let popup_pos = Pos2::new(x + slide_offset, y);
 
         let mut close_popup = false;
         let mut open_preset: Option<String> = None;
+        let mut open_full_eq = false;
         let mut add_preset_to_canvas: Option<String> = None;
         let mut delete_preset_name: Option<String> = None;
+
+        let popup_border_color = lerp_color(
+            Color32::from_rgb(196, 181, 253),
+            Color32::from_rgb(147, 51, 234),
+            open_t,
+        );
 
         let popup_id = ui.scope_id().with("saved_eq_floating_popup_area");
         let area_resp = egui::Area::new(popup_id)
@@ -49,7 +61,7 @@ impl LunulaApp {
             .show(ui.ctx(), |ui| {
                 egui::Frame::new()
                     .fill(Color32::WHITE)
-                    .stroke(Stroke::new(1.5, Color32::from_rgb(147, 51, 234)))
+                    .stroke(Stroke::new(1.5, popup_border_color))
                     .corner_radius(12.0)
                     .inner_margin(14.0)
                     .show(ui, |ui| {
@@ -58,7 +70,7 @@ impl LunulaApp {
 
                         // Header Bar
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("🎛️").size(15.0));
+                            ui.label(egui::RichText::new("🎛️").size(16.0));
                             ui.vertical(|ui| {
                                 ui.label(
                                     egui::RichText::new("Koleksi Preset Equalizer")
@@ -74,6 +86,7 @@ impl LunulaApp {
                             });
 
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let close_btn_id = ui.scope_id().with("close_eq_popup_btn");
                                 let close_btn = egui::Button::new(
                                     egui::RichText::new("✖").strong().size(11.0).color(Color32::from_rgb(100, 116, 139))
                                 )
@@ -81,19 +94,110 @@ impl LunulaApp {
                                 .stroke(Stroke::new(1.0, Color32::from_rgb(226, 232, 240)))
                                 .corner_radius(6.0);
 
-                                if ui.add_sized([24.0, 24.0], close_btn).on_hover_text("Tutup jendela preset").clicked() {
+                                let close_resp = ui.add_sized([24.0, 24.0], close_btn).on_hover_text("Tutup jendela preset");
+                                let _close_hover_t = ui.ctx().animate_bool(close_btn_id, close_resp.hovered());
+                                if close_resp.clicked() {
                                     close_popup = true;
                                 }
                             });
                         });
 
                         ui.add_space(8.0);
+
+                        // =========================================================================
+                        // OPSI B: MASTER ACTION BANNER -> BUKA STUDIO EQUALIZER PENUH (ANIMATED)
+                        // =========================================================================
+                        let banner_h = 44.0;
+                        let (banner_rect, banner_resp) = ui.allocate_exact_size(
+                            Vec2::new(ui.available_width(), banner_h),
+                            egui::Sense::click(),
+                        );
+                        let banner_hover_t = ui.ctx().animate_bool(
+                            ui.scope_id().with("master_eq_banner_hover"),
+                            banner_resp.hovered(),
+                        );
+
+                        let b_painter = ui.painter();
+
+                        // Smooth gradient background and border glow
+                        let banner_bg = lerp_color(
+                            Color32::from_rgb(24, 24, 37),
+                            Color32::from_rgb(46, 32, 75),
+                            banner_hover_t,
+                        );
+                        let banner_border = lerp_color(
+                            Color32::from_rgb(126, 34, 206),
+                            Color32::from_rgb(192, 132, 252),
+                            banner_hover_t,
+                        );
+                        let banner_stroke_w = 1.0 + banner_hover_t * 0.6;
+
+                        b_painter.rect_filled(banner_rect, 8.0, banner_bg);
+                        b_painter.rect_stroke(banner_rect, 8.0, Stroke::new(banner_stroke_w, banner_border), egui::StrokeKind::Inside);
+
+                        // Icon badge on the left
+                        let icon_box = Rect::from_center_size(
+                            Pos2::new(banner_rect.min.x + 22.0, banner_rect.center().y),
+                            Vec2::splat(26.0),
+                        );
+                        let icon_bg = lerp_color(
+                            Color32::from_rgb(39, 39, 62),
+                            Color32::from_rgb(88, 28, 135),
+                            banner_hover_t,
+                        );
+                        b_painter.rect_filled(icon_box, 6.0, icon_bg);
+                        b_painter.text(
+                            icon_box.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "🎛️",
+                            egui::FontId::proportional(14.0),
+                            Color32::WHITE,
+                        );
+
+                        // Banner Text
+                        let text_left = banner_rect.min.x + 42.0;
+                        let text_top = banner_rect.min.y + 6.0;
+
+                        b_painter.text(
+                            Pos2::new(text_left, text_top),
+                            egui::Align2::LEFT_TOP,
+                            "Buka Studio Equalizer Penuh",
+                            egui::FontId::proportional(12.5),
+                            Color32::WHITE,
+                        );
+                        b_painter.text(
+                            Pos2::new(text_left, text_top + 16.0),
+                            egui::Align2::LEFT_TOP,
+                            "10-Band Parametric • Respon Frekuensi & FFT 60 FPS",
+                            egui::FontId::proportional(10.0),
+                            Color32::from_rgb(216, 180, 254),
+                        );
+
+                        // Animated arrow on the right with smooth shift
+                        let arrow_x = banner_rect.max.x - 20.0 + banner_hover_t * 3.5;
+                        b_painter.text(
+                            Pos2::new(arrow_x, banner_rect.center().y),
+                            egui::Align2::CENTER_CENTER,
+                            "▶",
+                            egui::FontId::proportional(12.0),
+                            lerp_color(Color32::from_rgb(196, 181, 253), Color32::WHITE, banner_hover_t),
+                        );
+
+                        let banner_tooltip = "Buka panel Studio Equalizer Parametrik lengkap dengan kontrol presisi biquad dan visualizer spektrum real-time";
+                        let banner_resp = banner_resp.on_hover_text(banner_tooltip);
+
+                        if banner_resp.clicked() {
+                            open_full_eq = true;
+                        }
+
+                        ui.add_space(8.0);
                         ui.separator();
                         ui.add_space(6.0);
 
+                        // Presets Scroll List with Animated Cards
                         egui::ScrollArea::vertical()
                             .id_salt("saved_eq_popup_scroll")
-                            .max_height(popup_h - 110.0)
+                            .max_height(popup_h - 160.0)
                             .show(ui, |ui| {
                                 for preset in &self.eq_presets {
                                     let is_on_canvas = self.nodes.iter().any(|n| n.node_type == NodeType::SavedEqPreset(preset.name.clone()));
@@ -102,21 +206,47 @@ impl LunulaApp {
                                         n.node_type == NodeType::SavedEqPreset(preset.name.clone()) && chain_eval.node_status(n.id) == SignalNodeStatus::Flowing
                                     });
 
+                                    // Card hover animation
+                                    let card_start = ui.cursor().min;
+                                    let card_est_rect = Rect::from_min_size(card_start, Vec2::new(ui.available_width(), 76.0));
+                                    let is_card_hovered = ui.input(|i| i.pointer.hover_pos().map_or(false, |p| card_est_rect.contains(p)));
+                                    let card_hover_t = ui.ctx().animate_bool(
+                                        ui.scope_id().with(("eq_card_hover", &preset.name)),
+                                        is_card_hovered,
+                                    );
+
                                     let card_bg = if is_flowing_in_chain {
-                                        Color32::from_rgb(240, 253, 244)
+                                        lerp_color(
+                                            Color32::from_rgb(240, 253, 244),
+                                            Color32::from_rgb(220, 252, 231),
+                                            card_hover_t,
+                                        )
                                     } else {
-                                        Color32::from_rgb(255, 255, 255)
+                                        lerp_color(
+                                            Color32::from_rgb(255, 255, 255),
+                                            Color32::from_rgb(248, 250, 252),
+                                            card_hover_t,
+                                        )
                                     };
 
-                                    let border_stroke = if is_flowing_in_chain {
-                                        Stroke::new(1.2, Color32::from_rgb(34, 197, 94))
+                                    let border_color = if is_flowing_in_chain {
+                                        Color32::from_rgb(34, 197, 94)
                                     } else {
-                                        Stroke::new(1.0, Color32::from_rgb(226, 232, 240))
+                                        lerp_color(
+                                            Color32::from_rgb(226, 232, 240),
+                                            Color32::from_rgb(168, 85, 247),
+                                            card_hover_t,
+                                        )
+                                    };
+                                    let border_stroke_w = if is_flowing_in_chain {
+                                        1.2 + card_hover_t * 0.3
+                                    } else {
+                                        1.0 + card_hover_t * 0.4
                                     };
 
                                     egui::Frame::new()
                                         .fill(card_bg)
-                                        .stroke(border_stroke)
+                                        .stroke(Stroke::new(border_stroke_w, border_color))
                                         .corner_radius(10.0)
                                         .inner_margin(egui::Margin::symmetric(12, 10))
                                         .show(ui, |ui| {
@@ -135,7 +265,7 @@ impl LunulaApp {
                                                         let is_factory = crate::models::ParametricEqPreset::default_presets().iter().any(|dp| dp.name == preset.name);
                                                         if !is_factory && self.eq_presets.len() > 1 {
                                                             let del_btn = egui::Button::new(
-                                                                egui::RichText::new("🗑").size(10.5).color(Color32::from_rgb(239, 68, 68))
+                                                                 egui::RichText::new("🗑").size(10.5).color(Color32::from_rgb(239, 68, 68))
                                                             )
                                                             .fill(Color32::from_rgb(254, 242, 242))
                                                             .stroke(Stroke::new(0.8, Color32::from_rgb(254, 202, 202)))
@@ -148,12 +278,28 @@ impl LunulaApp {
 
                                                         // Badges: ONLY displayed if actually on canvas
                                                         if is_flowing_in_chain {
+                                                            // Live pulsing signal indicator
+                                                            let time = ui.input(|i| i.time);
+                                                            let pulse = ((time * 4.0).sin() * 0.5 + 0.5) as f32;
+                                                            ui.ctx().request_repaint();
+
+                                                            let pulse_badge_bg = lerp_color(
+                                                                Color32::from_rgb(220, 252, 231),
+                                                                Color32::from_rgb(187, 247, 208),
+                                                                pulse,
+                                                            );
+
                                                             egui::Frame::new()
-                                                                .fill(Color32::from_rgb(220, 252, 231))
+                                                                .fill(pulse_badge_bg)
                                                                 .corner_radius(4.0)
                                                                 .inner_margin(egui::Margin::symmetric(6, 2))
                                                                 .show(ui, |ui| {
-                                                                    ui.label(egui::RichText::new("⚡ Aktif di Chain").size(9.5).strong().color(Color32::from_rgb(22, 163, 74)));
+                                                                    ui.label(
+                                                                        egui::RichText::new("⚡ Aktif di Chain")
+                                                                            .size(9.5)
+                                                                            .strong()
+                                                                            .color(Color32::from_rgb(22, 163, 74))
+                                                                    );
                                                                 });
                                                         } else if is_on_canvas {
                                                             egui::Frame::new()
@@ -161,7 +307,12 @@ impl LunulaApp {
                                                                 .corner_radius(4.0)
                                                                 .inner_margin(egui::Margin::symmetric(6, 2))
                                                                 .show(ui, |ui| {
-                                                                    ui.label(egui::RichText::new("✓ Di Canvas").size(9.5).strong().color(Color32::from_rgb(147, 51, 234)));
+                                                                    ui.label(
+                                                                        egui::RichText::new("✓ Di Canvas")
+                                                                            .size(9.5)
+                                                                            .strong()
+                                                                            .color(Color32::from_rgb(147, 51, 234))
+                                                                    );
                                                                 });
                                                         }
                                                     });
@@ -183,7 +334,7 @@ impl LunulaApp {
 
                                                 ui.add_space(8.0);
 
-                                                // ROW 3: Dedicated Action Buttons (Full breathing room, never overlap!)
+                                                // ROW 3: Dedicated Action Buttons with Animated Hover
                                                 ui.horizontal(|ui| {
                                                     // Button 1: Buka & Edit di Tab Equalizer
                                                     let btn_open = egui::Button::new(
@@ -254,6 +405,12 @@ impl LunulaApp {
         }
 
         if close_popup {
+            self.show_saved_eq_palette_popup = false;
+        }
+
+        if open_full_eq {
+            self.sync_parametric_to_legacy_eq();
+            self.current_tab = crate::models::AppTab::Equalizer;
             self.show_saved_eq_palette_popup = false;
         }
 
