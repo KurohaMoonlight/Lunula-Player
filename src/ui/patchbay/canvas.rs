@@ -1803,37 +1803,72 @@ impl LunulaApp {
             } else if node.node_type == NodeType::Splitter {
                 if !is_bypassed_effect {
                     let cy = node_rect.min.y + 42.0;
-                    let p_in = Pos2::new(node_rect.min.x + 26.0, cy);
-                    let p_fork = Pos2::new(node_rect.center().x - 6.0, cy);
-                    let p_out_a = Pos2::new(node_rect.max.x - 26.0, cy - 14.0);
-                    let p_out_b = Pos2::new(node_rect.max.x - 26.0, cy + 14.0);
+                    let p_in = Pos2::new(node_rect.min.x + 22.0, cy);
+                    let p_fork = Pos2::new(node_rect.min.x + 68.0, cy);
+                    let p_out_a = Pos2::new(node_rect.max.x - 22.0, cy - 14.0);
+                    let p_out_b = Pos2::new(node_rect.max.x - 22.0, cy + 14.0);
 
-                    let branch_stroke = Stroke::new(1.8, Color32::from_rgb(245, 158, 11));
-                    painter.line_segment([p_in, p_fork], branch_stroke);
-                    painter.line_segment([p_fork, p_out_a], branch_stroke);
-                    painter.line_segment([p_fork, p_out_b], branch_stroke);
+                    // 1. River Bed Channel / Tanggul Dasar (Slate background guide)
+                    let hulu_pts = [p_in, p_fork];
+                    painter.line_segment(hulu_pts, Stroke::new(6.0, Color32::from_rgba_premultiplied(51, 65, 85, 75)));
+                    let pts_a = generate_river_bezier_points(p_fork, p_out_a, 14);
+                    let pts_b = generate_river_bezier_points(p_fork, p_out_b, 14);
+                    painter.add(egui::Shape::line(pts_a.clone(), Stroke::new(5.0, Color32::from_rgba_premultiplied(51, 65, 85, 65))));
+                    painter.add(egui::Shape::line(pts_b.clone(), Stroke::new(5.0, Color32::from_rgba_premultiplied(51, 65, 85, 65))));
 
-                    // Fork dot
-                    painter.circle_filled(p_fork, 3.0, Color32::from_rgb(217, 119, 6));
+                    // 2. Incoming Hulu River Stream (Blended Dry+Wet tone)
+                    let hulu_col = blend_river_colors(RIVER_COLOR_DRY, RIVER_COLOR_WET, 0.5);
+                    painter.line_segment(hulu_pts, Stroke::new(3.6, hulu_col));
 
-                    // Animated pulsing dots flowing along the fork if playing
+                    // 3. Bifurcation Streams: Out A (Dry Orange) & Out B (Wet Cyan)
+                    painter.add(egui::Shape::line(pts_a.clone(), Stroke::new(3.0, RIVER_COLOR_DRY)));
+                    painter.add(egui::Shape::line(pts_b.clone(), Stroke::new(3.0, RIVER_COLOR_WET)));
+
+                    // 4. Confluence/Bifurcation Joint Dot
+                    painter.circle_filled(p_fork, 3.8, hulu_col);
+                    painter.circle_stroke(p_fork, 3.8, Stroke::new(1.2, Color32::WHITE));
+
+                    // 5. Water Ripples / Flow Animation when active (Ultra-lightweight)
                     if self.is_playing && is_flowing {
-                        let t = (self.visualizer_anim_phase * 3.0).fract();
-                        let d_fork = p_in.lerp(p_fork, t);
-                        painter.circle_filled(d_fork, 2.0, Color32::WHITE);
-                        let d_a = p_fork.lerp(p_out_a, t);
-                        painter.circle_filled(d_a, 2.0, Color32::WHITE);
-                        let d_b = p_fork.lerp(p_out_b, t);
-                        painter.circle_filled(d_b, 2.0, Color32::WHITE);
+                        let t = (self.visualizer_anim_phase * 2.5).fract();
+                        // Ripple in Hulu
+                        let d_in = p_in.lerp(p_fork, t);
+                        painter.circle_filled(d_in, 2.4, Color32::from_rgba_premultiplied(255, 255, 255, 220));
+
+                        // Ripples in branches
+                        let idx_a = ((pts_a.len() - 1) as f32 * t).round() as usize;
+                        if let Some(&pa) = pts_a.get(idx_a) {
+                            painter.circle_filled(pa, 2.2, Color32::from_rgba_premultiplied(255, 240, 220, 240));
+                        }
+                        let idx_b = ((pts_b.len() - 1) as f32 * t).round() as usize;
+                        if let Some(&pb) = pts_b.get(idx_b) {
+                            painter.circle_filled(pb, 2.2, Color32::from_rgba_premultiplied(220, 245, 255, 240));
+                        }
                     }
 
-                    // Readout text below fork
+                    // 6. Branch labels (Dry / Wet indicator)
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 68.0),
+                        Pos2::new(p_out_a.x - 4.0, p_out_a.y - 7.0),
+                        egui::Align2::RIGHT_BOTTOM,
+                        "DRY (A)",
+                        egui::FontId::monospace(8.2),
+                        RIVER_COLOR_DRY,
+                    );
+                    painter.text(
+                        Pos2::new(p_out_b.x - 4.0, p_out_b.y + 7.0),
+                        egui::Align2::RIGHT_TOP,
+                        "WET (B)",
+                        egui::FontId::monospace(8.2),
+                        RIVER_COLOR_WET,
+                    );
+
+                    // 7. Readout text below river
+                    painter.text(
+                        Pos2::new(node_rect.center().x, node_rect.min.y + 70.0),
                         egui::Align2::CENTER_CENTER,
-                        "1 In ➔ Out A & B",
-                        egui::FontId::proportional(11.0),
-                        Color32::from_rgb(217, 119, 6),
+                        "🌊 1 Hulu ➔ 2 Cabang (1:1 Bit-Identical)",
+                        egui::FontId::proportional(9.8),
+                        Color32::from_rgb(148, 163, 184),
                     );
                 } else {
                     painter.text(

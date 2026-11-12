@@ -1,6 +1,7 @@
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
 use crate::LunulaApp;
 use crate::models::{ChainMode, NodeType, RollOffProfile, SincQuality};
+use crate::ui::patchbay::types::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TelemetryTab {
@@ -2487,7 +2488,7 @@ impl LunulaApp {
         }
     }
 
-    /// Circuit inspector for Splitter: Real live PCM waveform distribution buffer & null-test verification
+    /// Circuit inspector for Splitter: River Bifurcation Telemetry Desk (Real live PCM waveform distribution buffer & null-test)
     fn draw_splitter_inspector(&self, painter: &egui::Painter, rect: Rect, _node_id: usize, _t: f32) {
         let avail_w = rect.width();
         let c2_w = (avail_w * 0.32).clamp(260.0, 360.0).min(avail_w * 0.48);
@@ -2498,44 +2499,182 @@ impl LunulaApp {
         painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
         painter.rect_stroke(c1_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
 
-        painter.text(c1_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, "🔀 ACTIVE ZERO-LOSS DISTRIBUTION BUFFER (REAL PCM)", egui::FontId::proportional(10.5), Color32::from_rgb(16, 185, 129));
+        painter.text(
+            c1_rect.min + Vec2::new(10.0, 10.0),
+            egui::Align2::LEFT_TOP,
+            "🌊 TELEMETRIC RIVER SPLITTER (1 HULU ➔ 2 CABANG ALIRAN)",
+            egui::FontId::proportional(10.5),
+            Color32::from_rgb(16, 185, 129),
+        );
 
-        let g_left = c1_rect.min.x + 60.0;
-        let g_right = c1_rect.max.x - 20.0;
-        let g_w = (g_right - g_left).max(20.0);
+        let cy = c1_rect.min.y + c1_rect.height() * 0.48;
+        let x_in = c1_rect.min.x + 36.0;
+        let x_fork = c1_rect.min.x + (c1_w * 0.28).clamp(70.0, 150.0);
+        let x_end = c1_rect.max.x - 70.0;
+        let y_a = cy - 28.0;
+        let y_b = cy + 28.0;
 
-        let w1_y = c1_rect.min.y + 40.0;
-        let w2_y = c1_rect.min.y + 74.0;
+        let p_in = Pos2::new(x_in, cy);
+        let p_fork = Pos2::new(x_fork, cy);
+        let p_out_a = Pos2::new(x_end, y_a);
+        let p_out_b = Pos2::new(x_end, y_b);
 
-        let steps = 48;
-        painter.text(Pos2::new(c1_rect.min.x + 10.0, w1_y), egui::Align2::LEFT_CENTER, "OUT A", egui::FontId::monospace(9.0), Color32::from_rgb(56, 189, 248));
-        let mut pts_a = Vec::with_capacity(steps);
-        for s in 0..steps {
-            let frac = s as f32 / (steps - 1) as f32;
-            let px = g_left + g_w * frac;
-            let sample = if self.is_playing { self.live_pcm_waveform[s].clamp(-1.0, 1.0) } else { 0.0 };
-            let py = w1_y - sample * 14.0;
-            pts_a.push(Pos2::new(px, py));
+        let phase = self.visualizer_anim_phase;
+        let is_active = self.is_playing;
+        let flow_speed = if is_active { 3.5 } else { 0.8 };
+        let flow_t = phase * flow_speed;
+
+        // 1. Palung Dasar Sungai (Deep River Bed Channel & Tanggul)
+        let hulu_pts = [p_in, p_fork];
+        painter.line_segment(hulu_pts, Stroke::new(18.0, Color32::from_rgba_premultiplied(15, 23, 42, 230)));
+        painter.line_segment([Pos2::new(x_in, cy - 9.0), Pos2::new(x_fork, cy - 9.0)], Stroke::new(1.0, Color32::from_rgb(51, 65, 85)));
+        painter.line_segment([Pos2::new(x_in, cy + 9.0), Pos2::new(x_fork, cy + 9.0)], Stroke::new(1.0, Color32::from_rgb(51, 65, 85)));
+
+        let base_a = generate_river_bezier_points(p_fork, p_out_a, 27);
+        let base_b = generate_river_bezier_points(p_fork, p_out_b, 27);
+        painter.add(egui::Shape::line(base_a.clone(), Stroke::new(14.0, Color32::from_rgba_premultiplied(20, 24, 38, 220))));
+        painter.add(egui::Shape::line(base_b.clone(), Stroke::new(14.0, Color32::from_rgba_premultiplied(15, 25, 40, 220))));
+
+        // 2. Badan Air Sungai Berpendar Transparan (Translucent Water Body)
+        let hulu_col = blend_river_colors(RIVER_COLOR_DRY, RIVER_COLOR_WET, 0.5);
+        painter.line_segment(hulu_pts, Stroke::new(12.0, Color32::from_rgba_premultiplied(30, 80, 110, 110)));
+        painter.add(egui::Shape::line(base_a.clone(), Stroke::new(9.5, Color32::from_rgba_premultiplied(194, 65, 12, 100))));
+        painter.add(egui::Shape::line(base_b.clone(), Stroke::new(9.5, Color32::from_rgba_premultiplied(14, 116, 144, 100))));
+
+        // 3. Aliran Serat Fluida Laminer di Hulu (3 Multi-Strand Fluid Currents)
+        let hulu_steps = 24;
+        let mut hulu_s0 = Vec::with_capacity(hulu_steps); // Serat atas
+        let mut hulu_s1 = Vec::with_capacity(hulu_steps); // Serat tengah inti (dimodulasi getaran PCM)
+        let mut hulu_s2 = Vec::with_capacity(hulu_steps); // Serat bawah
+
+        for s in 0..hulu_steps {
+            let frac = s as f32 / (hulu_steps - 1) as f32;
+            let px = x_in + (x_fork - x_in) * frac;
+            let sample_idx = (frac * 47.0).round() as usize;
+            let sample = if is_active { self.live_pcm_waveform[sample_idx].clamp(-1.0, 1.0) } else { 0.0 };
+            let wave_pulse = (frac * 14.0 - flow_t * 5.0).sin();
+
+            // Inti tengah: merespons hentakan gelombang PCM musik secara langsung
+            let pcm_amp = if is_active { 8.5 } else { 0.0 };
+            let y_mid = cy + wave_pulse * (if is_active { 1.8 } else { 0.7 }) - sample * pcm_amp;
+            hulu_s1.push(Pos2::new(px, y_mid));
+
+            // Serat tepi atas dan bawah dengan fasa hidrodinamis berbeda
+            let y_top = cy - 3.8 + (frac * 14.0 - flow_t * 5.0 + 1.2).sin() * 1.4;
+            hulu_s0.push(Pos2::new(px, y_top));
+
+            let y_bot = cy + 3.8 + (frac * 14.0 - flow_t * 5.0 - 1.2).sin() * 1.4;
+            hulu_s2.push(Pos2::new(px, y_bot));
         }
-        for pair in pts_a.windows(2) {
-            painter.line_segment([pair[0], pair[1]], Stroke::new(1.8, Color32::from_rgb(56, 189, 248)));
+
+        // Gambar serat arus hulu
+        painter.add(egui::Shape::line(hulu_s0, Stroke::new(1.2, Color32::from_rgba_premultiplied(148, 163, 184, 120))));
+        painter.add(egui::Shape::line(hulu_s1.clone(), Stroke::new(2.0, hulu_col)));
+        painter.add(egui::Shape::line(hulu_s2, Stroke::new(1.2, Color32::from_rgba_premultiplied(148, 163, 184, 120))));
+
+        // Kemilau riak air memanjang di hulu (Drifting Water Crest Glint)
+        let g_hulu = (flow_t * 0.35).fract();
+        let gh_idx = (g_hulu * (hulu_steps - 3) as f32).floor() as usize;
+        if gh_idx + 2 < hulu_s1.len() {
+            painter.line_segment([hulu_s1[gh_idx], hulu_s1[gh_idx + 1]], Stroke::new(3.0, Color32::from_rgba_premultiplied(255, 255, 255, 210)));
+            painter.line_segment([hulu_s1[gh_idx + 1], hulu_s1[gh_idx + 2]], Stroke::new(2.4, Color32::from_rgba_premultiplied(255, 255, 255, 140)));
         }
 
-        painter.text(Pos2::new(c1_rect.min.x + 10.0, w2_y), egui::Align2::LEFT_CENTER, "OUT B", egui::FontId::monospace(9.0), Color32::from_rgb(251, 146, 60));
-        let mut pts_b = Vec::with_capacity(steps);
-        for s in 0..steps {
-            let frac = s as f32 / (steps - 1) as f32;
-            let px = g_left + g_w * frac;
-            let sample = if self.is_playing { self.live_pcm_waveform[s].clamp(-1.0, 1.0) } else { 0.0 };
-            let py = w2_y - sample * 14.0;
-            pts_b.push(Pos2::new(px, py));
-        }
-        for pair in pts_b.windows(2) {
-            painter.line_segment([pair[0], pair[1]], Stroke::new(1.8, Color32::from_rgb(251, 146, 60)));
+        // 4. Pulau Pemecah Arus Hydrodynamic di Titik Percabangan
+        let wedge_tip = Pos2::new(x_fork - 2.0, cy);
+        let wedge_top = Pos2::new(x_fork + 10.0, cy - 5.5);
+        let wedge_bot = Pos2::new(x_fork + 10.0, cy + 5.5);
+        painter.add(egui::Shape::convex_polygon(
+            vec![wedge_tip, wedge_top, wedge_bot],
+            Color32::from_rgb(30, 41, 59),
+            Stroke::new(1.2, Color32::from_rgb(71, 85, 105)),
+        ));
+
+        // 5. Aliran Serat Fluida di Cabang A (DRY - Oranye) & Cabang B (WET - Cyan)
+        let branch_steps = base_a.len();
+        let mut a_s0 = Vec::with_capacity(branch_steps); // Atas
+        let mut a_s1 = Vec::with_capacity(branch_steps); // Inti (PCM)
+        let mut a_s2 = Vec::with_capacity(branch_steps); // Bawah
+
+        let mut b_s0 = Vec::with_capacity(branch_steps); // Atas
+        let mut b_s1 = Vec::with_capacity(branch_steps); // Inti (PCM)
+        let mut b_s2 = Vec::with_capacity(branch_steps); // Bawah
+
+        for s in 0..branch_steps {
+            let frac = s as f32 / (branch_steps - 1) as f32;
+            let sample_idx = (frac * 47.0).round() as usize;
+            let sample = if is_active { self.live_pcm_waveform[sample_idx].clamp(-1.0, 1.0) } else { 0.0 };
+            let pcm_amp = if is_active { 10.5 } else { 0.0 };
+
+            let pa = base_a[s];
+            let pb = base_b[s];
+
+            let wave_a = (frac * 12.0 - flow_t * 6.0).sin();
+            let wave_b = (frac * 12.0 - flow_t * 6.0).sin();
+
+            // Cabang A (Dry - Warm Orange)
+            a_s1.push(Pos2::new(pa.x, pa.y + wave_a * 1.8 - sample * pcm_amp));
+            a_s0.push(Pos2::new(pa.x, pa.y - 3.2 + (frac * 12.0 - flow_t * 6.0 + 1.1).sin() * 1.3));
+            a_s2.push(Pos2::new(pa.x, pa.y + 3.2 + (frac * 12.0 - flow_t * 6.0 - 1.1).sin() * 1.3));
+
+            // Cabang B (Wet - Aqua Cyan)
+            b_s1.push(Pos2::new(pb.x, pb.y + wave_b * 1.8 - sample * pcm_amp));
+            b_s0.push(Pos2::new(pb.x, pb.y - 3.2 + (frac * 12.0 - flow_t * 6.0 + 1.1).sin() * 1.3));
+            b_s2.push(Pos2::new(pb.x, pb.y + 3.2 + (frac * 12.0 - flow_t * 6.0 - 1.1).sin() * 1.3));
         }
 
+        // Gambar serat fluida Cabang A (Oranye)
+        painter.add(egui::Shape::line(a_s0, Stroke::new(1.1, Color32::from_rgba_premultiplied(254, 215, 170, 130))));
+        painter.add(egui::Shape::line(a_s1.clone(), Stroke::new(2.1, RIVER_COLOR_DRY)));
+        painter.add(egui::Shape::line(a_s2, Stroke::new(1.1, Color32::from_rgba_premultiplied(217, 119, 6, 120))));
+
+        // Gambar serat fluida Cabang B (Cyan)
+        painter.add(egui::Shape::line(b_s0, Stroke::new(1.1, Color32::from_rgba_premultiplied(186, 230, 253, 130))));
+        painter.add(egui::Shape::line(b_s1.clone(), Stroke::new(2.1, RIVER_COLOR_WET)));
+        painter.add(egui::Shape::line(b_s2, Stroke::new(1.1, Color32::from_rgba_premultiplied(3, 105, 161, 120))));
+
+        // Kemilau pantulan air memanjang di Cabang A & B
+        let g_ab = (flow_t * 0.38 + 0.25).fract();
+        let gab_idx = (g_ab * (branch_steps - 3) as f32).floor() as usize;
+        if gab_idx + 2 < a_s1.len() {
+            painter.line_segment([a_s1[gab_idx], a_s1[gab_idx + 1]], Stroke::new(3.2, Color32::from_rgba_premultiplied(255, 250, 235, 220)));
+            painter.line_segment([a_s1[gab_idx + 1], a_s1[gab_idx + 2]], Stroke::new(2.4, Color32::from_rgba_premultiplied(255, 240, 215, 140)));
+
+            painter.line_segment([b_s1[gab_idx], b_s1[gab_idx + 1]], Stroke::new(3.2, Color32::from_rgba_premultiplied(235, 250, 255, 220)));
+            painter.line_segment([b_s1[gab_idx + 1], b_s1[gab_idx + 2]], Stroke::new(2.4, Color32::from_rgba_premultiplied(215, 245, 255, 140)));
+        }
+
+        // 6. Label & Badges Aliran
+        // Hulu Label
+        painter.text(
+            Pos2::new(p_in.x - 8.0, p_in.y),
+            egui::Align2::RIGHT_CENTER,
+            "HULU (IN)\n100% Sinyal",
+            egui::FontId::monospace(8.5),
+            Color32::from_rgb(203, 213, 225),
+        );
+
+        // Branch A Label
+        painter.text(
+            Pos2::new(p_out_a.x + 8.0, p_out_a.y),
+            egui::Align2::LEFT_CENTER,
+            "OUT A (DRY)\n1.0x (0.00 dB)",
+            egui::FontId::monospace(9.0),
+            RIVER_COLOR_DRY,
+        );
+
+        // Branch B Label
+        painter.text(
+            Pos2::new(p_out_b.x + 8.0, p_out_b.y),
+            egui::Align2::LEFT_CENTER,
+            "OUT B (WET)\n1.0x (0.00 dB)",
+            egui::FontId::monospace(9.0),
+            RIVER_COLOR_WET,
+        );
+
+        // 7. Footer Status: Null-Test Verification
         let null_text = if c1_rect.width() >= 400.0 {
-            "Null-Test (Out A - Out B): -∞ dBFS (Bit-Identical 64-bit f64 Buffer Clone)"
+            "Null-Test (Out A - Out B): -∞ dBFS (Kloning Aliran Bit-Identical 64-bit f64)"
         } else {
             "Null-Test: Out A == Out B (1:1 Bit-Identical)"
         };
@@ -2547,17 +2686,19 @@ impl LunulaApp {
             Color32::from_rgb(52, 211, 153),
         );
 
+        // --- C2: Panel Spesifikasi & Topologi ---
         painter.rect_filled(c2_rect, 6.0, Color32::from_rgb(12, 17, 29));
         painter.rect_stroke(c2_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
 
         painter.text(c2_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, "SPLITTER SPECIFICATIONS", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
 
         let specs = [
-            ("Topologi Buffer:", "64-bit f64 Slice Copy"),
-            ("Gain Cabang A/B:", "0.000 dB (Unity 1.0x)"),
-            ("Selisih Fasa A/B:", "0.000° (Zero Delay)"),
-            ("Kehilangan Sinyal:", "0.000 dB (Zero Loss)"),
-            ("Tujuan Utama:", "Routing Paralel Dry/Wet"),
+            ("Topologi Aliran:", "Zero-Loss Distribution Buffer"),
+            ("Cabang A (Dry):", "0.000 dB (Unity 1.0x • Oranye)"),
+            ("Cabang B (Wet):", "0.000 dB (Unity 1.0x • Cyan)"),
+            ("Selisih Fasa A/B:", "0.000° (Fase Terkunci 1:1)"),
+            ("Korelasi Sinyal:", "r = +1.000 (Sempurna)"),
+            ("Tujuan DSP:", "Percabangan Paralel Dry/Wet"),
         ];
 
         let start_y = c2_rect.min.y + 28.0;

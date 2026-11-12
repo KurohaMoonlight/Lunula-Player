@@ -4066,9 +4066,10 @@ mod tests {
         app.dac_clip_l = false;
         app.dac_clip_r = true;
 
-        // Add Tube Warmer and Stereo Widener to canvas
+        // Add Tube Warmer, Stereo Widener, and Splitter to canvas
         app.add_modular_filter(NodeType::TubeWarmer);
         app.add_modular_filter(NodeType::StereoWidener);
+        app.add_modular_filter(NodeType::Splitter);
 
         let mut out = ctx.run_ui(
             egui::RawInput {
@@ -4251,6 +4252,24 @@ mod tests {
                 },
             );
             assert!(!out.shapes.is_empty(), "Must render Compressor Gain Reduction inspection");
+            out.textures_delta.clear();
+        }
+
+        // Test Splitter node inspection with River Bifurcation Telemetry Desk
+        app.add_modular_filter(crate::models::NodeType::Splitter);
+        if let Some(split_node) = app.nodes.iter().find(|n| n.node_type == crate::models::NodeType::Splitter) {
+            app.selected_node = Some(split_node.id);
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: screen,
+                    time: Some(0.30),
+                    ..Default::default()
+                },
+                |ui| {
+                    app.render_telemetry_inspection_desk(ui, 220.0);
+                },
+            );
+            assert!(!out.shapes.is_empty(), "Must render Splitter River Bifurcation telemetry inspection");
             out.textures_delta.clear();
         }
 
