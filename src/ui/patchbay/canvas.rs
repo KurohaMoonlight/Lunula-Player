@@ -11,8 +11,18 @@ impl LunulaApp {
     pub fn reset_patchbay_layout(&mut self, canvas_width: f32, canvas_height: f32) {
         self.patchbay_pan = Vec2::ZERO;
         let node_width = 198.0;
-        let gap_x = 52.0;
-        let margin_x = ((canvas_width - (4.0 * node_width + 3.0 * gap_x)) * 0.5).max(30.0);
+        let gap_x = 42.0;
+        let needed_w = 4.0 * node_width + 3.0 * gap_x + 60.0;
+
+        // Auto-fit zoom if the canvas is narrower than the full 4-node highway chain
+        if canvas_width > 200.0 && canvas_width < needed_w {
+            self.patchbay_zoom = (canvas_width / needed_w).clamp(0.65, 1.0);
+        } else {
+            self.patchbay_zoom = 1.0;
+        }
+
+        let effective_w = if self.patchbay_zoom > 0.01 { canvas_width / self.patchbay_zoom } else { canvas_width };
+        let margin_x = ((effective_w - (4.0 * node_width + 3.0 * gap_x)) * 0.5).max(30.0);
         let top_y = (canvas_height * 0.18).clamp(40.0, 70.0);
         let bot_y = top_y + 145.0;
 
@@ -70,6 +80,7 @@ impl LunulaApp {
             NodeType::BandPassFilter => 1000.0,
             NodeType::Crossover => 500.0,
             NodeType::Mixer => 0.5,
+            NodeType::Splitter => 0.5,
             NodeType::StereoWidener => 35.0,
             NodeType::VolumeAttenuator => -6.02,
             NodeType::TubeWarmer => 35.0,
@@ -86,7 +97,7 @@ impl LunulaApp {
         };
         let new_node = ModularNode {
             id,
-            node_type,
+            node_type: node_type.clone(),
             title,
             sub1,
             sub2,
@@ -95,6 +106,16 @@ impl LunulaApp {
             param_val,
         };
 
+        // For Mixer/Splitter: pre-register independent satellite world-coords at spawn
+        if matches!(node_type, NodeType::Mixer | NodeType::Splitter) {
+            if node_type == NodeType::Mixer {
+                self.satellite_positions.insert((id, 0), Pos2::new(spawn_x - 90.0, spawn_y - 10.0));
+                self.satellite_positions.insert((id, 1), Pos2::new(spawn_x - 90.0, spawn_y + 44.0));
+            } else {
+                self.satellite_positions.insert((id, 0), Pos2::new(spawn_x + 155.0, spawn_y - 10.0));
+                self.satellite_positions.insert((id, 1), Pos2::new(spawn_x + 155.0, spawn_y + 44.0));
+            }
+        }
         self.nodes.push(new_node);
         self.selected_node = Some(id);
         self.invalidate_chain_cache();
@@ -104,17 +125,33 @@ impl LunulaApp {
     // Interactive Modular Patchbay Canvas with Pan, Drag, and Connect/Disconnect Cables
     pub fn render_modular_patchbay_canvas(&mut self, ui: &mut egui::Ui, canvas_size: Vec2) {
         let (canvas_rect, response) = ui.allocate_exact_size(canvas_size, egui::Sense::click_and_drag());
-        let painter = ui.painter().with_clip_rect(canvas_rect);
+        let base_painter = ui.painter().with_clip_rect(canvas_rect);
 
-        // Canvas Background
-        painter.rect_filled(canvas_rect, 10.0, Color32::from_rgb(248, 250, 252));
-        painter.rect_stroke(canvas_rect, 10.0, Stroke::new(1.0, Color32::from_rgb(226, 232, 240)), egui::StrokeKind::Outside);
+        // Canvas Background (drawn unscaled to fill exact canvas_rect)
+        base_painter.rect_filled(canvas_rect, 10.0, Color32::from_rgb(248, 250, 252));
+        base_painter.rect_stroke(canvas_rect, 10.0, Stroke::new(1.0, Color32::from_rgb(226, 232, 240)), egui::StrokeKind::Outside);
 
         let is_modal_blocking = self.is_modal_or_overlay_active();
         let raw_pointer_pos = response.interact_pointer_pos().or_else(|| ui.input(|i| i.pointer.latest_pos()));
 
-        // Panning with Mouse Wheel / Trackpad Scroll
-        let scroll = ui.input(|i| i.smooth_scroll_delta);
+        // Panning with Mouse Wheel / Trackpad Scroll OR Zoom with Ctrl + Scroll
+        let mut is_ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
+        let pinch_zoom: f32 = ui.input(|i| i.zoom_delta());
+        let smooth_scroll = ui.input(|i| i.smooth_scroll_delta);
+
+        let mut raw_wheel_delta = Vec2::ZERO;
+        let mut has_raw_wheel = false;
+        ui.input(|i| {
+            for ev in &i.raw.events {
+                if let egui::Event::MouseWheel { delta, modifiers, .. } = ev {
+                    raw_wheel_delta += *delta;
+                    has_raw_wheel = true;
+                    if modifiers.ctrl || modifiers.command {
+                        is_ctrl = true;
+                    }
+                }
+            }
+        });
         let is_interacting_with_tutorial = if self.show_patchbay_tutorial || self.active_filter_tutorial.is_some() {
             let padding = 12.0;
             let card_w = 440.0f32.min(canvas_rect.width() - 24.0);
@@ -165,23 +202,101 @@ impl LunulaApp {
         let is_interacting_with_popup = is_interacting_with_saved_eq_popup || is_interacting_with_clipping_popup;
 
         let is_canvas_blocked = is_modal_blocking || is_interacting_with_tutorial || is_interacting_with_popup;
-        let mouse_pos = if is_canvas_blocked { None } else { raw_pointer_pos };
 
-        if response.hovered() && !is_canvas_blocked && (scroll.x.abs() > 0.0 || scroll.y.abs() > 0.0) {
-            self.patchbay_pan += scroll;
+        // Dynamic Zoom (Ctrl + Scroll / Pinch) vs Pan (Normal Scroll)
+        let zoom_scroll = if has_raw_wheel {
+            raw_wheel_delta.y + raw_wheel_delta.x
+        } else if is_ctrl && (smooth_scroll.y.abs() > 0.0 || smooth_scroll.x.abs() > 0.0) {
+            smooth_scroll.y + smooth_scroll.x
+        } else {
+            0.0
+        };
+
+        let has_zoom = (is_ctrl && zoom_scroll.abs() > 0.0) || (pinch_zoom - 1.0).abs() > 0.001;
+
+        if is_ctrl {
+            // When Ctrl is held, ONLY perform zoom. Never let scroll leak into canvas panning!
+            if response.hovered() && !is_canvas_blocked && has_zoom {
+                let factor = if (pinch_zoom - 1.0).abs() > 0.001 {
+                    pinch_zoom.clamp(0.90, 1.10)
+                } else if zoom_scroll > 0.0 {
+                    // Zoom In: Gentle ~8% step per wheel notch (120 units)
+                    1.0 + (zoom_scroll.abs() / 120.0).clamp(0.25, 2.0) * 0.08
+                } else if zoom_scroll < 0.0 {
+                    // Zoom Out: Gentle ~8% step per wheel notch
+                    1.0 / (1.0 + (zoom_scroll.abs() / 120.0).clamp(0.25, 2.0) * 0.08)
+                } else {
+                    1.0
+                };
+
+                let old_zoom = self.patchbay_zoom;
+                let new_zoom = (old_zoom * factor).clamp(0.45, 1.8);
+                if (new_zoom - old_zoom).abs() > 0.0001 {
+                    if let Some(mpos) = raw_pointer_pos {
+                        let m_rel = mpos - canvas_rect.min;
+                        self.patchbay_pan = self.patchbay_pan + m_rel * (1.0 / new_zoom - 1.0 / old_zoom);
+                        self.patchbay_pan.x = self.patchbay_pan.x.clamp(-3500.0, 3500.0);
+                        self.patchbay_pan.y = self.patchbay_pan.y.clamp(-2500.0, 2500.0);
+                    }
+                    self.patchbay_zoom = new_zoom;
+                    ui.ctx().request_repaint();
+                }
+            }
+        } else {
+            // Normal scroll (without Ctrl) pans the canvas
+            let pan_scroll = if has_raw_wheel {
+                raw_wheel_delta
+            } else {
+                smooth_scroll
+            };
+            if response.hovered() && !is_canvas_blocked && (pan_scroll.x.abs() > 0.0 || pan_scroll.y.abs() > 0.0) {
+                self.patchbay_pan += pan_scroll / self.patchbay_zoom;
+                self.patchbay_pan.x = self.patchbay_pan.x.clamp(-3500.0, 3500.0);
+                self.patchbay_pan.y = self.patchbay_pan.y.clamp(-2500.0, 2500.0);
+            }
         }
 
-        // Dynamic scrolling dot grid
-        let grid_size = 28.0;
-        let offset_x = (self.patchbay_pan.x % grid_size + grid_size) % grid_size;
-        let offset_y = (self.patchbay_pan.y % grid_size + grid_size) % grid_size;
+        // TSTransform is applied AFTER all shapes are drawn via transform_layer_shapes() at the
+        // end of this function.  This means every shape is drawn in pre-transform screen-space coords:
+        //   drawn_pos = canvas_rect.min + patchbay_pan + node.pos
+        // After transform_layer_shapes(ts), egui re-scales those positions to:
+        //   final_screen = drawn_pos * zoom + canvas_rect.min * (1 - zoom)
+        //                = canvas_rect.min + (patchbay_pan + node.pos) * zoom  ✓
+        //
+        // Because the painter clips shapes in pre-transform coords, virt_clip_rect must be large
+        // enough to contain every possible drawn_pos regardless of pan or zoom value.
+        // We use the full (unpanned) canvas_rect as the base and expand generously by the maximum
+        // possible pan extent plus a fixed node-size budget — simple and correct at any zoom level.
+        let canvas_layer_id = egui::LayerId::new(egui::Order::Middle, ui.scope_id().with("patchbay_canvas_world"));
+        let ts = egui::emath::TSTransform::new(
+            canvas_rect.min.to_vec2() * (1.0 - self.patchbay_zoom),
+            self.patchbay_zoom,
+        );
+        // Painter clip rect is in pre-transform screen coords.
+        // When transform_layer_shapes(ts) runs at the end of the frame, egui transforms all shape
+        // clip rects by: shape.clip_rect = ts * shape.clip_rect.
+        // Therefore, setting the pre-transform clip rect to ts.inverse() * canvas_rect via set_clip_rect()
+        // (which bypasses with_clip_rect's self.clip_rect intersection) guarantees that post-transform
+        // on-screen clip rect is EXACTLY canvas_rect at any zoom level, preventing horizontal/vertical clipping!
+        let mut painter = ui.ctx().layer_painter(canvas_layer_id);
+        painter.set_clip_rect(ts.inverse() * canvas_rect);
+
+        // Virtual pointer coordinates mapped through inverse TSTransform
+        let mouse_pos = if is_canvas_blocked { None } else { raw_pointer_pos.map(|p| ts.inverse() * p) };
+
+        // Dynamic scrolling dot grid on unscaled base canvas
+        let grid_size = (28.0 * self.patchbay_zoom).clamp(14.0, 56.0);
+        let eff_pan_x = self.patchbay_pan.x * self.patchbay_zoom;
+        let eff_pan_y = self.patchbay_pan.y * self.patchbay_zoom;
+        let offset_x = (eff_pan_x % grid_size + grid_size) % grid_size;
+        let offset_y = (eff_pan_y % grid_size + grid_size) % grid_size;
         let mut gx = offset_x - grid_size;
         while gx <= canvas_size.x + grid_size {
             let mut gy = offset_y - grid_size;
             while gy <= canvas_size.y + grid_size {
-                painter.circle_filled(
+                base_painter.circle_filled(
                     Pos2::new(canvas_rect.min.x + gx, canvas_rect.min.y + gy),
-                    1.0,
+                    (1.0 * self.patchbay_zoom).clamp(0.7, 1.4),
                     Color32::from_rgb(203, 213, 225),
                 );
                 gy += grid_size;
@@ -209,7 +324,7 @@ impl LunulaApp {
         let mut auto_fix_node: Option<usize> = None;
         let mut resampler_setting_change: Option<crate::models::ResamplerSettings> = None;
 
-        let pointer_pos = if is_canvas_blocked { None } else { ui.input(|i| i.pointer.latest_pos()).or(mouse_pos) };
+        let pointer_pos = if is_canvas_blocked { None } else { ui.input(|i| i.pointer.latest_pos()).map(|p| ts.inverse() * p).or(mouse_pos) };
         let is_left_pressed = !is_canvas_blocked && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
 
         // Check if cursor is hovering over any node rect
@@ -393,7 +508,7 @@ impl LunulaApp {
         }
 
         if (is_right_down || is_middle_down) && self.is_panning_canvas {
-            let delta = ui.input(|i| i.pointer.delta());
+            let delta = ui.input(|i| i.pointer.delta()) / self.patchbay_zoom;
             self.patchbay_pan += delta;
         }
 
@@ -406,6 +521,35 @@ impl LunulaApp {
             // Slider active, ignore canvas drag
         } else if response.drag_started() && is_left_down && !is_right_down && !is_middle_down && !is_canvas_blocked {
             if let Some(pos) = mouse_pos {
+                // Check if user clicked a Satellite Box body to drag the satellite independently
+                let mut hit_satellite_body = false;
+                for node in &self.nodes {
+                    if node.node_type == NodeType::Splitter || node.node_type == NodeType::Mixer {
+                        for port in 0..2 {
+                            let sat_world = self.get_satellite_pos(node.id, port, node.pos, &node.node_type);
+                            let sat_screen = Pos2::new(
+                                canvas_rect.min.x + self.patchbay_pan.x + sat_world.x,
+                                canvas_rect.min.y + self.patchbay_pan.y + sat_world.y,
+                            );
+                            let sat_rect = Rect::from_min_size(sat_screen, Vec2::new(52.0, 34.0));
+                            if sat_rect.contains(pos) {
+                                let pin_pos = if node.node_type == NodeType::Mixer {
+                                    Pos2::new(sat_screen.x, sat_screen.y + 17.0)
+                                } else {
+                                    Pos2::new(sat_screen.x + 52.0, sat_screen.y + 17.0)
+                                };
+                                if pos.distance(pin_pos) > 16.0 {
+                                    self.dragging_satellite = Some((node.id, port));
+                                    self.dragging_node = None;
+                                    self.selected_node = Some(node.id);
+                                    hit_satellite_body = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if hit_satellite_body { break; }
+                }
                 // Check if user clicked an Output Pin (Right dot) OR an Input Pin (Left dot)
                 for node in &self.nodes {
                     let n_size = get_node_size(&node.node_type);
@@ -419,7 +563,25 @@ impl LunulaApp {
 
                     // 1. Output Pin (Right dot) - Except Endpoint
                     if node.node_type != NodeType::Endpoint {
-                        let hit_out_pin = if node.node_type == NodeType::Splitter || node.node_type == NodeType::Crossover {
+                        let hit_out_pin = if node.node_type == NodeType::Splitter {
+                            let sat_a_world = self.get_satellite_pos(node.id, 0, node.pos, &node.node_type);
+                            let sat_b_world = self.get_satellite_pos(node.id, 1, node.pos, &node.node_type);
+                            let pin_a = Pos2::new(canvas_rect.min.x + self.patchbay_pan.x + sat_a_world.x + 52.0, canvas_rect.min.y + self.patchbay_pan.y + sat_a_world.y + 17.0);
+                            let pin_b = Pos2::new(canvas_rect.min.x + self.patchbay_pan.x + sat_b_world.x + 52.0, canvas_rect.min.y + self.patchbay_pan.y + sat_b_world.y + 17.0);
+                            if pos.distance(pin_a) <= 20.0 {
+                                self.connecting_from_node = Some(node.id);
+                                self.connecting_from_port = 0;
+                                self.connecting_is_input_drag = false;
+                                true
+                            } else if pos.distance(pin_b) <= 20.0 {
+                                self.connecting_from_node = Some(node.id);
+                                self.connecting_from_port = 1;
+                                self.connecting_is_input_drag = false;
+                                true
+                            } else {
+                                false
+                            }
+                        } else if node.node_type == NodeType::Crossover {
                             let pin_a = Pos2::new(world_rect.max.x, world_rect.center().y - 14.0);
                             let pin_b = Pos2::new(world_rect.max.x, world_rect.center().y + 14.0);
                             if pos.distance(pin_a) <= 20.0 {
@@ -454,8 +616,10 @@ impl LunulaApp {
                     // 2. Input Pin (Left dot) - Except Source (Enables Reverse Dragging!)
                     if node.node_type != NodeType::Source {
                         let hit_in_pin = if node.node_type == NodeType::Mixer {
-                            let pin_a = Pos2::new(world_rect.min.x, world_rect.center().y - 14.0);
-                            let pin_b = Pos2::new(world_rect.min.x, world_rect.center().y + 14.0);
+                            let sat_a_world = self.get_satellite_pos(node.id, 0, node.pos, &node.node_type);
+                            let sat_b_world = self.get_satellite_pos(node.id, 1, node.pos, &node.node_type);
+                            let pin_a = Pos2::new(canvas_rect.min.x + self.patchbay_pan.x + sat_a_world.x, canvas_rect.min.y + self.patchbay_pan.y + sat_a_world.y + 17.0);
+                            let pin_b = Pos2::new(canvas_rect.min.x + self.patchbay_pan.x + sat_b_world.x, canvas_rect.min.y + self.patchbay_pan.y + sat_b_world.y + 17.0);
                             if pos.distance(pin_a) <= 20.0 {
                                 self.connecting_from_node = Some(node.id);
                                 self.connecting_from_port = 0;
@@ -539,10 +703,16 @@ impl LunulaApp {
             }
         }
 
-        // 2. Handle Node Dragging OR Canvas Background Panning (Left Click)
+        // 2. Handle Node Dragging, Satellite Dragging, OR Canvas Background Panning (Left Click)
         if is_mouse_down && is_left_down && self.connecting_from_node.is_none() && self.dragging_slider_node.is_none() {
-            let delta = ui.input(|i| i.pointer.delta());
-            if let Some(drag_idx) = self.dragging_node {
+            let raw_delta = ui.input(|i| i.pointer.delta());
+            let delta = raw_delta / self.patchbay_zoom;
+            if let Some((node_id, port)) = self.dragging_satellite {
+                let node_pos = self.nodes.iter().find(|n| n.id == node_id).map(|n| n.pos).unwrap_or(Pos2::ZERO);
+                let node_type = self.nodes.iter().find(|n| n.id == node_id).map(|n| n.node_type.clone()).unwrap_or(NodeType::Mixer);
+                let cur = self.get_satellite_pos(node_id, port, node_pos, &node_type);
+                self.satellite_positions.insert((node_id, port), cur + delta);
+            } else if let Some(drag_idx) = self.dragging_node {
                 let node = &mut self.nodes[drag_idx];
                 node.pos += delta;
             } else if self.is_panning_canvas {
@@ -567,14 +737,14 @@ impl LunulaApp {
                             );
                             let is_mixer = node.node_type == NodeType::Mixer;
                             let (hit_in_pin, target_port) = if is_mixer {
-                                let pin_a = Pos2::new(world_rect.min.x, world_rect.center().y - 14.0);
-                                let pin_b = Pos2::new(world_rect.min.x, world_rect.center().y + 14.0);
+                                let sat_a_world = self.get_satellite_pos(node.id, 0, node.pos, &node.node_type);
+                                let sat_b_world = self.get_satellite_pos(node.id, 1, node.pos, &node.node_type);
+                                let pin_a = Pos2::new(canvas_rect.min.x + self.patchbay_pan.x + sat_a_world.x, canvas_rect.min.y + self.patchbay_pan.y + sat_a_world.y + 17.0);
+                                let pin_b = Pos2::new(canvas_rect.min.x + self.patchbay_pan.x + sat_b_world.x, canvas_rect.min.y + self.patchbay_pan.y + sat_b_world.y + 17.0);
                                 if pos.distance(pin_a) <= 20.0 {
                                     (true, 0)
                                 } else if pos.distance(pin_b) <= 20.0 {
                                     (true, 1)
-                                } else if pos.distance(Pos2::new(world_rect.min.x, world_rect.center().y)) <= 20.0 {
-                                    if pos.y < world_rect.center().y { (true, 0) } else { (true, 1) }
                                 } else {
                                     (false, 0)
                                 }
@@ -629,7 +799,19 @@ impl LunulaApp {
                                 n_size,
                             );
                             let is_splitter = node.node_type == NodeType::Splitter || node.node_type == NodeType::Crossover;
-                            let (hit_out_pin, target_out_port) = if is_splitter {
+                            let (hit_out_pin, target_out_port) = if node.node_type == NodeType::Splitter {
+                                let sat_a_world = self.get_satellite_pos(node.id, 0, node.pos, &node.node_type);
+                                let sat_b_world = self.get_satellite_pos(node.id, 1, node.pos, &node.node_type);
+                                let pin_a = Pos2::new(canvas_rect.min.x + self.patchbay_pan.x + sat_a_world.x + 52.0, canvas_rect.min.y + self.patchbay_pan.y + sat_a_world.y + 17.0);
+                                let pin_b = Pos2::new(canvas_rect.min.x + self.patchbay_pan.x + sat_b_world.x + 52.0, canvas_rect.min.y + self.patchbay_pan.y + sat_b_world.y + 17.0);
+                                if pos.distance(pin_a) <= 20.0 {
+                                    (true, 0)
+                                } else if pos.distance(pin_b) <= 20.0 {
+                                    (true, 1)
+                                } else {
+                                    (false, 0)
+                                }
+                            } else if node.node_type == NodeType::Crossover {
                                 let pin_a = Pos2::new(world_rect.max.x, world_rect.center().y - 14.0);
                                 let pin_b = Pos2::new(world_rect.max.x, world_rect.center().y + 14.0);
                                 if pos.distance(pin_a) <= 20.0 {
@@ -687,6 +869,7 @@ impl LunulaApp {
             self.connecting_from_port = 0;
             self.connecting_is_input_drag = false;
             self.dragging_node = None;
+            self.dragging_satellite = None;
             self.is_panning_canvas = false;
         }
 
@@ -739,8 +922,14 @@ impl LunulaApp {
             if let (Some(from_n), Some(to_n)) = (from_node, to_node) {
                 let from_size = get_node_size(&from_n.node_type);
                 let to_size = get_node_size(&to_n.node_type);
-                let p_start = if from_n.node_type == NodeType::Splitter || from_n.node_type == NodeType::Crossover {
-                    let pin_offset_y = if conn.from_port == 1 { 12.0 } else { -12.0 };
+                let p_start = if from_n.node_type == NodeType::Splitter {
+                    let sat_world = self.get_satellite_pos(from_n.id, conn.from_port, from_n.pos, &from_n.node_type);
+                    Pos2::new(
+                        canvas_rect.min.x + self.patchbay_pan.x + sat_world.x + 52.0,
+                        canvas_rect.min.y + self.patchbay_pan.y + sat_world.y + 17.0,
+                    )
+                } else if from_n.node_type == NodeType::Crossover {
+                    let pin_offset_y = if conn.from_port == 1 { 14.0 } else { -14.0 };
                     Pos2::new(
                         canvas_rect.min.x + self.patchbay_pan.x + from_n.pos.x + from_size.x,
                         canvas_rect.min.y + self.patchbay_pan.y + from_n.pos.y + from_size.y * 0.5 + pin_offset_y,
@@ -752,10 +941,10 @@ impl LunulaApp {
                     )
                 };
                 let p_end = if to_n.node_type == NodeType::Mixer {
-                    let pin_offset_y = if conn.to_port == 1 { 12.0 } else { -12.0 };
+                    let sat_world = self.get_satellite_pos(to_n.id, conn.to_port, to_n.pos, &to_n.node_type);
                     Pos2::new(
-                        canvas_rect.min.x + self.patchbay_pan.x + to_n.pos.x,
-                        canvas_rect.min.y + self.patchbay_pan.y + to_n.pos.y + to_size.y * 0.5 + pin_offset_y,
+                        canvas_rect.min.x + self.patchbay_pan.x + sat_world.x,
+                        canvas_rect.min.y + self.patchbay_pan.y + sat_world.y + 17.0,
                     )
                 } else {
                     Pos2::new(
@@ -872,7 +1061,8 @@ impl LunulaApp {
                 // Cut hint bubble on hover or hot signal badge
                 if !is_canvas_blocked && is_hover_cable {
                     if is_hot_cable && is_flowing_cable {
-                        response.show_tooltip_text("⚡ KABEL PANAS (> 0 dBFS)\nSinyal melampaui batas full-scale audio.\nKlik untuk memilih kabel, klik tanda ✕ untuk memutus.");
+                        let cable_tip = ui.interact(Rect::from_center_size(ts.mul_pos(mid), Vec2::splat(24.0)), ui.scope_id().with(("cable_tip", conn_idx)), egui::Sense::hover());
+                        cable_tip.show_tooltip_text("⚡ KABEL PANAS (> 0 dBFS)\nSinyal melampaui batas full-scale audio.\nKlik untuk memilih kabel, klik tanda ✕ untuk memutus.");
                     }
                     painter.circle_filled(mid, 9.5, Color32::from_rgb(239, 68, 68));
                     painter.text(mid, egui::Align2::CENTER_CENTER, "✕", egui::FontId::proportional(10.5), Color32::WHITE);
@@ -1100,10 +1290,10 @@ impl LunulaApp {
                 let (p_start, p_end) = if self.connecting_is_input_drag {
                     // Reverse Drag: Originates from Input Pin (Left), target cursor searching for Output Pin
                     let p_in = if from_n.node_type == NodeType::Mixer {
-                        let pin_offset_y = if self.connecting_from_port == 1 { 14.0 } else { -14.0 };
+                        let sat_world = self.get_satellite_pos(from_n.id, self.connecting_from_port, from_n.pos, &from_n.node_type);
                         Pos2::new(
-                            canvas_rect.min.x + self.patchbay_pan.x + from_n.pos.x,
-                            canvas_rect.min.y + self.patchbay_pan.y + from_n.pos.y + from_size.y * 0.5 + pin_offset_y,
+                            canvas_rect.min.x + self.patchbay_pan.x + sat_world.x,
+                            canvas_rect.min.y + self.patchbay_pan.y + sat_world.y + 17.0,
                         )
                     } else {
                         Pos2::new(
@@ -1114,7 +1304,13 @@ impl LunulaApp {
                     (pos, p_in)
                 } else {
                     // Standard Drag: Originates from Output Pin (Right), target cursor searching for Input Pin
-                    let p_out = if from_n.node_type == NodeType::Splitter || from_n.node_type == NodeType::Crossover {
+                    let p_out = if from_n.node_type == NodeType::Splitter {
+                        let sat_world = self.get_satellite_pos(from_n.id, self.connecting_from_port, from_n.pos, &from_n.node_type);
+                        Pos2::new(
+                            canvas_rect.min.x + self.patchbay_pan.x + sat_world.x + 52.0,
+                            canvas_rect.min.y + self.patchbay_pan.y + sat_world.y + 17.0,
+                        )
+                    } else if from_n.node_type == NodeType::Crossover {
                         let pin_offset_y = if self.connecting_from_port == 1 { 14.0 } else { -14.0 };
                         Pos2::new(
                             canvas_rect.min.x + self.patchbay_pan.x + from_n.pos.x + from_size.x,
@@ -1194,8 +1390,9 @@ impl LunulaApp {
             }
 
             // Dedicated interaction responses: separated IDs so context menu and hover tooltip never collide layers in egui
-            let node_resp = ui.interact(node_rect, ui.scope_id().with(("patch_node_ctx", node.id)), egui::Sense::click());
-            let tooltip_resp = ui.interact(node_rect, ui.scope_id().with(("patch_node_tip", node.id)), egui::Sense::hover());
+            let screen_node_rect = ts.mul_rect(node_rect);
+            let node_resp = ui.interact(screen_node_rect, ui.scope_id().with(("patch_node_ctx", node.id)), egui::Sense::click());
+            let tooltip_resp = ui.interact(screen_node_rect, ui.scope_id().with(("patch_node_tip", node.id)), egui::Sense::hover());
 
             // Static analysis diagnostic tooltip on hover (strictly suppressed if canvas is blocked, dragging, or context menu is open)
             if !is_canvas_blocked && is_hovered && !node_resp.is_pointer_button_down_on() {
@@ -1390,192 +1587,159 @@ impl LunulaApp {
                 Color32::WHITE
             };
 
-            painter.rect_filled(node_rect, 10.0, bg);
+            let is_portal_chassis = node.node_type == NodeType::Splitter || node.node_type == NodeType::Mixer;
+            let is_pass_filter = matches!(node.node_type, NodeType::LowPassFilter | NodeType::HighPassFilter | NodeType::BandPassFilter);
+            let is_custom_chassis = is_portal_chassis || is_pass_filter;
 
-            // Subtle Header Bar styling with grip dots
-            let header_rect = Rect::from_min_size(node_rect.min, Vec2::new(n_size.x, 26.0));
-            let header_bg = if is_hovered {
-                Color32::from_rgba_premultiplied(theme_color.r(), theme_color.g(), theme_color.b(), (16.0 + hover_anim * 20.0) as u8)
-            } else {
-                Color32::from_rgb(248, 250, 252)
-            };
-            painter.rect_filled(header_rect, 10.0, header_bg);
-            painter.rect_filled(Rect::from_min_size(Pos2::new(header_rect.min.x, header_rect.max.y - 6.0), Vec2::new(n_size.x, 6.0)), 0.0, header_bg);
-            painter.line_segment(
-                [Pos2::new(node_rect.min.x, header_rect.max.y), Pos2::new(node_rect.max.x, header_rect.max.y)],
-                Stroke::new(0.8, Color32::from_rgb(226, 232, 240)),
-            );
+            if !is_custom_chassis {
+                painter.rect_filled(node_rect, 10.0, bg);
 
-            // Tactile grip dots on header left
-            let grip_x = node_rect.min.x + 10.0;
-            let grip_cy = header_rect.center().y;
-            let grip_col = if is_hovered { theme_color } else { Color32::from_rgb(203, 213, 225) };
-            for gr_r in 0..2 {
-                for gr_c in 0..2 {
-                    painter.circle_filled(
-                        Pos2::new(grip_x + gr_c as f32 * 3.5, grip_cy - 2.5 + gr_r as f32 * 5.0),
-                        1.0,
-                        grip_col,
-                    );
-                }
-            }
+                // Subtle Header Bar styling with grip dots
+                let header_rect = Rect::from_min_size(node_rect.min, Vec2::new(n_size.x, 26.0));
+                let header_bg = if is_hovered {
+                    Color32::from_rgba_premultiplied(theme_color.r(), theme_color.g(), theme_color.b(), (16.0 + hover_anim * 20.0) as u8)
+                } else {
+                    Color32::from_rgb(248, 250, 252)
+                };
+                painter.rect_filled(header_rect, 10.0, header_bg);
+                painter.rect_filled(Rect::from_min_size(Pos2::new(header_rect.min.x, header_rect.max.y - 6.0), Vec2::new(n_size.x, 6.0)), 0.0, header_bg);
+                painter.line_segment(
+                    [Pos2::new(node_rect.min.x, header_rect.max.y), Pos2::new(node_rect.max.x, header_rect.max.y)],
+                    Stroke::new(0.8, Color32::from_rgb(226, 232, 240)),
+                );
 
-            // Dynamic Outline Styling & Animation
-            if is_bypassed_effect {
-                // Option B: Effect is BYPASSED / DILEWATI — calm muted slate border & direct dashed wire inside
-                painter.rect_stroke(node_rect, 10.0, Stroke::new(1.2, Color32::from_rgb(203, 213, 225)), egui::StrokeKind::Outside);
-                
-                // Dashed direct jumper wire through the center of effect
-                let pin_l = Pos2::new(node_rect.min.x + 8.0, node_rect.center().y);
-                let pin_r = Pos2::new(node_rect.max.x - 8.0, node_rect.center().y);
-                for d in 0..10 {
-                    if d % 2 == 0 {
-                        let p1 = pin_l.lerp(pin_r, d as f32 / 10.0);
-                        let p2 = pin_l.lerp(pin_r, (d + 1) as f32 / 10.0);
-                        painter.line_segment([p1, p2], Stroke::new(1.2, Color32::from_rgb(203, 213, 225)));
+                // Tactile grip dots on header left
+                let grip_x = node_rect.min.x + 10.0;
+                let grip_cy = header_rect.center().y;
+                let grip_col = if is_hovered { theme_color } else { Color32::from_rgb(203, 213, 225) };
+                for gr_r in 0..2 {
+                    for gr_c in 0..2 {
+                        painter.circle_filled(
+                            Pos2::new(grip_x + gr_c as f32 * 3.5, grip_cy - 2.5 + gr_r as f32 * 5.0),
+                            1.0,
+                            grip_col,
+                        );
                     }
                 }
 
-                // Click on bypassed node to re-engage Modular DSP mode
-                if is_node_clicked {
-                    switch_mode = Some(ChainMode::DspActive);
-                }
-            } else if is_flowing {
-                let border_color = if is_culprit_node {
-                    Color32::from_rgb(239, 68, 68) // Crimson hazard for clipping origin
-                } else if is_overdriven_victim {
-                    Color32::from_rgb(245, 158, 11) // Amber warning for downstream victim
-                } else {
-                    theme_color
-                };
-
-                if self.is_playing {
-                    // Pulsing luminous aura matching theme or hazard
-                    let aura_alpha = (60.0 + 35.0 * (self.visualizer_anim_phase * 4.0).sin()) as u8;
-                    painter.rect_stroke(
-                        node_rect.expand(2.0),
-                        10.0,
-                        Stroke::new(1.8, Color32::from_rgba_premultiplied(border_color.r(), border_color.g(), border_color.b(), aura_alpha / 2)),
-                        egui::StrokeKind::Outside,
-                    );
-
-                    // Animated laser beacons moving along the rectangle's perimeter
-                    let p_len = 2.0 * (node_rect.width() + node_rect.height());
-                    let travel_dist = (self.visualizer_anim_phase * 140.0 + (node.id as f32) * 55.0) % p_len;
-                    let b1 = get_rect_perimeter_pos(node_rect, travel_dist);
-                    let b2 = get_rect_perimeter_pos(node_rect, travel_dist + p_len * 0.5);
-
-                    let (b1_col, b2_col) = if is_culprit_node {
-                        (Color32::from_rgb(239, 68, 68), Color32::from_rgb(252, 165, 165))
-                    } else if is_overdriven_victim {
-                        (Color32::from_rgb(245, 158, 11), Color32::from_rgb(253, 230, 138))
-                    } else {
-                        match self.chain_mode {
-                            ChainMode::BitPerfect => (Color32::from_rgb(52, 211, 153), Color32::from_rgb(34, 211, 238)),
-                            ChainMode::DspActive => (Color32::from_rgb(129, 140, 248), Color32::from_rgb(192, 132, 252)),
-                            ChainMode::OsResampled => (Color32::from_rgb(251, 191, 36), Color32::from_rgb(245, 158, 11)),
+                // Dynamic Outline Styling & Animation
+                if is_bypassed_effect {
+                    // Option B: Effect is BYPASSED / DILEWATI — calm muted slate border & direct dashed wire inside
+                    painter.rect_stroke(node_rect, 10.0, Stroke::new(1.2, Color32::from_rgb(203, 213, 225)), egui::StrokeKind::Outside);
+                    
+                    // Dashed direct jumper wire through the center of effect
+                    let pin_l = Pos2::new(node_rect.min.x + 8.0, node_rect.center().y);
+                    let pin_r = Pos2::new(node_rect.max.x - 8.0, node_rect.center().y);
+                    for d in 0..10 {
+                        if d % 2 == 0 {
+                            let p1 = pin_l.lerp(pin_r, d as f32 / 10.0);
+                            let p2 = pin_l.lerp(pin_r, (d + 1) as f32 / 10.0);
+                            painter.line_segment([p1, p2], Stroke::new(1.2, Color32::from_rgb(203, 213, 225)));
                         }
+                    }
+
+                    // Click on bypassed node to re-engage Modular DSP mode
+                    if is_node_clicked {
+                        switch_mode = Some(ChainMode::DspActive);
+                    }
+                } else if is_flowing {
+                    let border_color = if is_culprit_node {
+                        Color32::from_rgb(239, 68, 68) // Crimson hazard for clipping origin
+                    } else if is_overdriven_victim {
+                        Color32::from_rgb(245, 158, 11) // Amber warning for downstream victim
+                    } else {
+                        theme_color
                     };
 
-                    painter.circle_filled(b1, 3.8, b1_col);
-                    painter.circle_filled(b1, 1.8, Color32::WHITE);
-                    painter.circle_filled(b2, 3.8, b2_col);
-                    painter.circle_filled(b2, 1.8, Color32::WHITE);
+                    if self.is_playing {
+                        // Pulsing luminous aura matching theme or hazard
+                        let aura_alpha = (60.0 + 35.0 * (self.visualizer_anim_phase * 4.0).sin()) as u8;
+                        painter.rect_stroke(
+                            node_rect.expand(2.0),
+                            10.0,
+                            Stroke::new(1.8, Color32::from_rgba_premultiplied(border_color.r(), border_color.g(), border_color.b(), aura_alpha / 2)),
+                            egui::StrokeKind::Outside,
+                        );
 
-                    // Flowing border
-                    let stroke_w = 1.6 + 0.4 * (self.visualizer_anim_phase * 3.5).sin();
-                    painter.rect_stroke(node_rect, 8.0, Stroke::new(stroke_w, border_color), egui::StrokeKind::Outside);
+                        // Animated laser beacons moving along the rectangle's perimeter
+                        let p_len = 2.0 * (node_rect.width() + node_rect.height());
+                        let travel_dist = (self.visualizer_anim_phase * 140.0 + (node.id as f32) * 55.0) % p_len;
+                        let b1 = get_rect_perimeter_pos(node_rect, travel_dist);
+                        let b2 = get_rect_perimeter_pos(node_rect, travel_dist + p_len * 0.5);
+
+                        let (b1_col, b2_col) = if is_culprit_node {
+                            (Color32::from_rgb(239, 68, 68), Color32::from_rgb(252, 165, 165))
+                        } else if is_overdriven_victim {
+                            (Color32::from_rgb(245, 158, 11), Color32::from_rgb(253, 230, 138))
+                        } else {
+                            match self.chain_mode {
+                                ChainMode::BitPerfect => (Color32::from_rgb(52, 211, 153), Color32::from_rgb(34, 211, 238)),
+                                ChainMode::DspActive => (Color32::from_rgb(129, 140, 248), Color32::from_rgb(192, 132, 252)),
+                                ChainMode::OsResampled => (Color32::from_rgb(251, 191, 36), Color32::from_rgb(245, 158, 11)),
+                            }
+                        };
+
+                        painter.circle_filled(b1, 3.8, b1_col);
+                        painter.circle_filled(b1, 1.8, Color32::WHITE);
+                        painter.circle_filled(b2, 3.8, b2_col);
+                        painter.circle_filled(b2, 1.8, Color32::WHITE);
+
+                        // Flowing border
+                        let stroke_w = 1.6 + 0.4 * (self.visualizer_anim_phase * 3.5).sin();
+                        painter.rect_stroke(node_rect, 8.0, Stroke::new(stroke_w, border_color), egui::StrokeKind::Outside);
+                    } else {
+                        // Ready / Paused: Crisp theme border
+                        let stroke_w = if is_culprit_node { 1.8 } else { 1.3 };
+                        painter.rect_stroke(node_rect, 8.0, Stroke::new(stroke_w, border_color), egui::StrokeKind::Outside);
+                    }
                 } else {
-                    // Ready / Paused: Crisp theme border
-                    let stroke_w = if is_culprit_node { 1.8 } else { 1.3 };
-                    painter.rect_stroke(node_rect, 8.0, Stroke::new(stroke_w, border_color), egui::StrokeKind::Outside);
+                    // BROKEN / NO SIGNAL: Pulsing Crimson Alert
+                    let warn_t = (ui.input(|i| i.time) * 4.0).sin().abs() as f32;
+                    let stroke_w = 1.5 + warn_t * 0.8;
+                    painter.rect_stroke(node_rect, 8.0, Stroke::new(stroke_w, Color32::from_rgb(239, 68, 68)), egui::StrokeKind::Outside);
+                    painter.rect_stroke(node_rect.expand(2.0), 10.0, Stroke::new(1.5, Color32::from_rgba_premultiplied(239, 68, 68, 35)), egui::StrokeKind::Outside);
                 }
-            } else {
-                // BROKEN / NO SIGNAL: Pulsing Crimson Alert
-                let warn_t = (ui.input(|i| i.time) * 4.0).sin().abs() as f32;
-                let stroke_w = 1.5 + warn_t * 0.8;
-                painter.rect_stroke(node_rect, 8.0, Stroke::new(stroke_w, Color32::from_rgb(239, 68, 68)), egui::StrokeKind::Outside);
-                painter.rect_stroke(node_rect.expand(2.0), 10.0, Stroke::new(1.5, Color32::from_rgba_premultiplied(239, 68, 68, 35)), egui::StrokeKind::Outside);
             }
 
-            // 1. Dynamic Liquid Wave Animation for Low-Pass Filter (Drawn in background BEFORE text/slider)
-            if node.node_type == NodeType::LowPassFilter {
-                let cutoff = if node.param_val > 50.0 { node.param_val } else { 800.0 };
-                let active_cutoff = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(cutoff);
-
-                if self.is_playing && is_flowing && !is_bypassed_effect {
-                    let wave_painter = painter.with_clip_rect(node_rect);
-                    let time = ui.input(|i| i.time);
-
-                    // Water depth: keep water level strictly in the lower area so title is NEVER submerged!
-                    let norm_cutoff = ((active_cutoff / 100.0).log10() / 2.0).clamp(0.0, 1.0);
-                    let water_depth = 0.50 - norm_cutoff * 0.25; // depth 0.25 (10kHz) to 0.50 (100Hz)
-                    let base_y = node_rect.max.y - (node_rect.height() * water_depth);
-
-                    let w_speed = 3.2;
-                    let w_amp = 1.8;
-
-                    // Back wave layer (translucent cyan)
-                    let mut back_poly = Vec::new();
-                    back_poly.push(Pos2::new(node_rect.min.x, node_rect.max.y));
-                    let steps = 14;
-                    for s in 0..=steps {
-                        let fx = node_rect.min.x + (node_rect.width() * (s as f32 / steps as f32));
-                        let wave_offset = ((fx * 0.08 + (time * w_speed) as f32).sin()) * w_amp;
-                        back_poly.push(Pos2::new(fx, base_y + wave_offset));
-                    }
-                    back_poly.push(Pos2::new(node_rect.max.x, node_rect.max.y));
-                    wave_painter.add(egui::Shape::convex_polygon(
-                        back_poly,
-                        Color32::from_rgba_premultiplied(14, 165, 233, 40),
-                        Stroke::NONE,
-                    ));
-
-                    // Front wave layer (vibrant teal/cyan)
-                    let mut front_poly = Vec::new();
-                    front_poly.push(Pos2::new(node_rect.min.x, node_rect.max.y));
-                    for s in 0..=steps {
-                        let fx = node_rect.min.x + (node_rect.width() * (s as f32 / steps as f32));
-                        let wave_offset = (((fx * 0.09 - (time * (w_speed * 1.25)) as f32) + 1.8).sin()) * (w_amp * 0.9);
-                        front_poly.push(Pos2::new(fx, base_y + wave_offset + 0.8));
-                    }
-                    front_poly.push(Pos2::new(node_rect.max.x, node_rect.max.y));
-                    wave_painter.add(egui::Shape::convex_polygon(
-                        front_poly,
-                        Color32::from_rgba_premultiplied(6, 182, 212, 70),
-                        Stroke::NONE,
-                    ));
-
-                    // Rising bubbles when audio is flowing & playing
-                    let b1_y = node_rect.max.y - (((time * 16.0) as f32) % (node_rect.height() * 0.45));
-                    let b2_y = node_rect.max.y - ((((time * 22.0) + 7.0) as f32) % (node_rect.height() * 0.45));
-                    wave_painter.circle_stroke(
-                        Pos2::new(node_rect.min.x + 20.0, b1_y),
-                        1.5,
-                        Stroke::new(0.8, Color32::from_rgba_premultiplied(255, 255, 255, 180)),
-                    );
-                    wave_painter.circle_stroke(
-                        Pos2::new(node_rect.max.x - 24.0, b2_y),
-                        2.0,
-                        Stroke::new(1.0, Color32::from_rgba_premultiplied(255, 255, 255, 160)),
-                    );
-                    ui.ctx().request_repaint();
-                }
+            // =========================================================================
+            // PASS FILTER REACTORS (LPF, HPF, BPF): BESPOKE CHASSIS & FULL ANIMATION
+            // =========================================================================
+            if is_pass_filter {
+                self.render_pass_filter_node(
+                    ui,
+                    &painter,
+                    node,
+                    node_rect,
+                    node_width,
+                    &mut param_change,
+                    &mut switch_mode,
+                    is_node_clicked,
+                    is_hovered,
+                    is_dragging,
+                    hover_anim,
+                    is_flowing,
+                    is_bypassed_effect,
+                    is_culprit_node,
+                    is_overdriven_victim,
+                    theme_color,
+                );
             }
 
             // 2. Title Text (Foreground: high contrast, rendered ON TOP of wave background)
-            let title_col = if is_bypassed_effect {
-                Color32::from_rgb(100, 116, 139)
-            } else {
-                Color32::from_rgb(15, 23, 42)
-            };
-            painter.text(
-                Pos2::new(node_rect.center().x, node_rect.min.y + 13.0),
-                egui::Align2::CENTER_CENTER,
-                &node.title,
-                egui::FontId::proportional(12.5),
-                title_col,
-            );
+            if !is_custom_chassis {
+                let title_col = if is_bypassed_effect {
+                    Color32::from_rgb(100, 116, 139)
+                } else {
+                    Color32::from_rgb(15, 23, 42)
+                };
+                painter.text(
+                    Pos2::new(node_rect.center().x, node_rect.min.y + 13.0),
+                    egui::Align2::CENTER_CENTER,
+                    &node.title,
+                    egui::FontId::proportional(12.5),
+                    title_col,
+                );
+            }
 
             // Culprit or Overdriven Header Badge
             if is_culprit_node {
@@ -1611,22 +1775,12 @@ impl LunulaApp {
                 );
             }
 
-            if node.node_type == NodeType::LowPassFilter || node.node_type == NodeType::HighPassFilter || node.node_type == NodeType::BandPassFilter || node.node_type == NodeType::Crossover {
-                let default_f = match node.node_type {
-                    NodeType::HighPassFilter => 80.0,
-                    NodeType::BandPassFilter => 1000.0,
-                    NodeType::Crossover => 500.0,
-                    _ => 800.0,
-                };
+            if node.node_type == NodeType::Crossover {
+                let default_f = 500.0;
                 let freq = if node.param_val > 10.0 { node.param_val } else { default_f };
                 let active_freq = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(freq);
 
-                let (accent_col, track_col, stroke_col, label_prefix) = match node.node_type {
-                    NodeType::HighPassFilter => (Color32::from_rgb(56, 189, 248), Color32::from_rgb(224, 242, 254), Color32::from_rgb(2, 132, 199), "Cutoff"),
-                    NodeType::BandPassFilter => (Color32::from_rgb(245, 158, 11), Color32::from_rgb(254, 243, 199), Color32::from_rgb(217, 119, 6), "Center"),
-                    NodeType::Crossover => (Color32::from_rgb(168, 85, 247), Color32::from_rgb(250, 245, 255), Color32::from_rgb(147, 51, 234), "X-Over"),
-                    _ => (Color32::from_rgb(14, 165, 233), Color32::from_rgb(224, 242, 254), Color32::from_rgb(2, 132, 199), "Cutoff"),
-                };
+                let (accent_col, track_col, stroke_col, label_prefix) = (Color32::from_rgb(168, 85, 247), Color32::from_rgb(250, 245, 255), Color32::from_rgb(147, 51, 234), "X-Over");
 
                 // Interactive Mini Cutoff Slider & High-Contrast Dual Telemetry Badges
                 if !is_bypassed_effect {
@@ -1732,159 +1886,1038 @@ impl LunulaApp {
                     );
                 }
             } else if node.node_type == NodeType::Mixer {
-                let mix = (node.param_val).clamp(0.0, 1.0);
-                let active_mix = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(mix);
+                let active_mix = node.param_val.clamp(0.0, 1.0);
+                let weight_a = 1.0 - active_mix;
+                let weight_b = active_mix;
 
-                if !is_bypassed_effect {
-                    let slider_track_rect = Rect::from_min_size(
-                        Pos2::new(node_rect.min.x + 30.0, node_rect.min.y + 42.0),
-                        Vec2::new((node_width - 60.0).max(10.0), 5.0),
-                    );
-                    let thumb_x = slider_track_rect.min.x + slider_track_rect.width() * active_mix;
-                    let cy = slider_track_rect.center().y;
+                let conn_a = self.connections.iter().any(|c| c.to_node == node.id && c.to_port == 0);
+                let conn_b = self.connections.iter().any(|c| c.to_node == node.id && c.to_port == 1);
+                let is_active_audio = self.is_playing && is_flowing && (conn_a || conn_b);
 
-                    // Track background
-                    painter.rect_filled(
-                        Rect::from_min_size(Pos2::new(slider_track_rect.min.x, cy - 2.0), Vec2::new(slider_track_rect.width(), 4.0)),
-                        2.0,
-                        Color32::from_rgb(243, 232, 255),
-                    );
-                    // Center notch at 50%
-                    let center_x = slider_track_rect.center().x;
-                    painter.line_segment([Pos2::new(center_x, cy - 4.0), Pos2::new(center_x, cy + 4.0)], Stroke::new(1.2, Color32::from_rgb(192, 132, 252)));
+                let instance_idx = self.nodes.iter()
+                    .filter(|n| n.node_type == NodeType::Mixer)
+                    .position(|n| n.id == node.id)
+                    .unwrap_or(0);
+                let theme = get_instance_color_theme(instance_idx);
+                let col_a = theme.col_a;
+                let col_b = theme.col_b;
+                let pal_a = theme.pal_a;
+                let pal_b = theme.pal_b;
+                let lerp_rgb = |c1: Color32, c2: Color32, k: f32| -> Color32 {
+                    let t = k.clamp(0.0, 1.0);
+                    Color32::from_rgb(
+                        (c1.r() as f32 * (1.0 - t) + c2.r() as f32 * t).round() as u8,
+                        (c1.g() as f32 * (1.0 - t) + c2.g() as f32 * t).round() as u8,
+                        (c1.b() as f32 * (1.0 - t) + c2.b() as f32 * t).round() as u8,
+                    )
+                };
+                let col_mixed = if conn_a && conn_b { lerp_rgb(col_a, col_b, active_mix) }
+                    else if conn_a { col_a } else if conn_b { col_b }
+                    else { Color32::from_rgb(168, 85, 247) };
 
-                    // Active fill from center
-                    let (fill_start, fill_w) = if thumb_x >= center_x {
-                        (center_x, thumb_x - center_x)
-                    } else {
-                        (thumb_x, center_x - thumb_x)
-                    };
-                    painter.rect_filled(
-                        Rect::from_min_size(Pos2::new(fill_start, cy - 2.0), Vec2::new(fill_w, 4.0)),
-                        2.0,
-                        Color32::from_rgb(147, 51, 234),
-                    );
+                let t = ui.input(|i| i.time) as f32;
+                let pulse = (t * 3.5).sin().abs();
 
-                    // Thumb knob
-                    painter.circle_filled(Pos2::new(thumb_x, cy), 5.0, Color32::WHITE);
-                    painter.circle_stroke(Pos2::new(thumb_x, cy), 5.0, Stroke::new(1.8, Color32::from_rgb(126, 34, 206)));
+                // Compute Satellite World & Screen Coordinates
+                let sat_a_world = self.get_satellite_pos(node.id, 0, node.pos, &node.node_type);
+                let sat_b_world = self.get_satellite_pos(node.id, 1, node.pos, &node.node_type);
+                let sat_a_screen = Pos2::new(
+                    canvas_rect.min.x + self.patchbay_pan.x + sat_a_world.x,
+                    canvas_rect.min.y + self.patchbay_pan.y + sat_a_world.y,
+                );
+                let sat_b_screen = Pos2::new(
+                    canvas_rect.min.x + self.patchbay_pan.x + sat_b_world.x,
+                    canvas_rect.min.y + self.patchbay_pan.y + sat_b_world.y,
+                );
+                let sat_a_rect = Rect::from_min_size(sat_a_screen, Vec2::new(52.0, 34.0));
+                let sat_b_rect = Rect::from_min_size(sat_b_screen, Vec2::new(52.0, 34.0));
 
-                    // A / B labels beside track
-                    painter.text(Pos2::new(slider_track_rect.min.x - 5.0, cy), egui::Align2::RIGHT_CENTER, "A", egui::FontId::proportional(10.5), Color32::from_rgb(126, 34, 206));
-                    painter.text(Pos2::new(slider_track_rect.max.x + 5.0, cy), egui::Align2::LEFT_CENTER, "B", egui::FontId::proportional(10.5), Color32::from_rgb(126, 34, 206));
+                let is_sat_a_hovered = !is_canvas_blocked && raw_pointer_pos.map_or(false, |p| sat_a_rect.contains(p));
+                let is_sat_b_hovered = !is_canvas_blocked && raw_pointer_pos.map_or(false, |p| sat_b_rect.contains(p));
+                let is_sat_a_dragged = self.dragging_satellite == Some((node.id, 0));
+                let is_sat_b_dragged = self.dragging_satellite == Some((node.id, 1));
+                let is_gate_hovered = is_hovered;
+                let is_gate_selected = self.selected_node == Some(node.id);
+                let is_gate_dragged = self.dragging_node == Some(node.id);
 
-                    // Readout
-                    let a_pct = (1.0 - active_mix) * 100.0;
-                    let b_pct = active_mix * 100.0;
-                    let readout = format!("A: {:.0}% • B: {:.0}%", a_pct, b_pct);
-                    painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 68.0),
-                        egui::Align2::CENTER_CENTER,
-                        readout,
-                        egui::FontId::proportional(11.0),
-                        Color32::from_rgb(126, 34, 206),
-                    );
-                } else {
-                    painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 38.0),
-                        egui::Align2::CENTER_CENTER,
-                        "DILEWATI (Bypassed)",
-                        egui::FontId::proportional(12.0),
-                        Color32::from_rgb(148, 163, 184),
-                    );
-                    painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 56.0),
-                        egui::Align2::CENTER_CENTER,
-                        "Nonaktif di Bit-Perfect",
-                        egui::FontId::proportional(11.0),
-                        Color32::from_rgb(148, 163, 184),
+                let is_family_active = is_gate_hovered || is_gate_selected || is_gate_dragged || is_sat_a_hovered || is_sat_b_hovered || is_sat_a_dragged || is_sat_b_dragged;
+
+                let vortex_pos = Pos2::new(node_rect.min.x + 18.0, node_rect.min.y + 44.0);
+
+                // =========================================================================
+                // 1. GERBANG UTAMA (MODERN FUSION RECEPTOR CONSOLE) - 140 x 78 px
+                // =========================================================================
+                painter.rect_filled(node_rect.translate(Vec2::new(0.0, 3.0)), 10.0, Color32::from_black_alpha(16));
+
+                if is_family_active {
+                    painter.rect_stroke(
+                        node_rect.expand(2.0),
+                        11.0,
+                        Stroke::new(2.0, Color32::from_rgba_unmultiplied(col_mixed.r(), col_mixed.g(), col_mixed.b(), 70)),
+                        egui::StrokeKind::Outside,
                     );
                 }
-            } else if node.node_type == NodeType::Splitter {
-                if !is_bypassed_effect {
-                    let cy = node_rect.min.y + 42.0;
-                    let p_in = Pos2::new(node_rect.min.x + 22.0, cy);
-                    let p_fork = Pos2::new(node_rect.min.x + 68.0, cy);
-                    let p_out_a = Pos2::new(node_rect.max.x - 22.0, cy - 14.0);
-                    let p_out_b = Pos2::new(node_rect.max.x - 22.0, cy + 14.0);
 
-                    // 1. River Bed Channel / Tanggul Dasar (Slate background guide)
-                    let hulu_pts = [p_in, p_fork];
-                    painter.line_segment(hulu_pts, Stroke::new(6.0, Color32::from_rgba_premultiplied(51, 65, 85, 75)));
-                    let pts_a = generate_river_bezier_points(p_fork, p_out_a, 14);
-                    let pts_b = generate_river_bezier_points(p_fork, p_out_b, 14);
-                    painter.add(egui::Shape::line(pts_a.clone(), Stroke::new(5.0, Color32::from_rgba_premultiplied(51, 65, 85, 65))));
-                    painter.add(egui::Shape::line(pts_b.clone(), Stroke::new(5.0, Color32::from_rgba_premultiplied(51, 65, 85, 65))));
+                painter.rect_filled(node_rect, 10.0, Color32::WHITE);
 
-                    // 2. Incoming Hulu River Stream (Blended Dry+Wet tone)
-                    let hulu_col = blend_river_colors(RIVER_COLOR_DRY, RIVER_COLOR_WET, 0.5);
-                    painter.line_segment(hulu_pts, Stroke::new(3.6, hulu_col));
+                let header_rect = Rect::from_min_size(node_rect.min, Vec2::new(node_rect.width(), 22.0));
+                let header_bg = if is_family_active {
+                    Color32::from_rgba_unmultiplied(col_mixed.r(), col_mixed.g(), col_mixed.b(), 18)
+                } else {
+                    Color32::from_rgb(248, 250, 252)
+                };
+                painter.rect_filled(header_rect, 10.0, header_bg);
+                painter.rect_filled(Rect::from_min_size(Pos2::new(header_rect.min.x, header_rect.max.y - 6.0), Vec2::new(node_rect.width(), 6.0)), 0.0, header_bg);
+                painter.line_segment(
+                    [Pos2::new(node_rect.min.x, header_rect.max.y), Pos2::new(node_rect.max.x, header_rect.max.y)],
+                    Stroke::new(0.8, Color32::from_rgb(241, 245, 249)),
+                );
 
-                    // 3. Bifurcation Streams: Out A (Dry Orange) & Out B (Wet Cyan)
-                    painter.add(egui::Shape::line(pts_a.clone(), Stroke::new(3.0, RIVER_COLOR_DRY)));
-                    painter.add(egui::Shape::line(pts_b.clone(), Stroke::new(3.0, RIVER_COLOR_WET)));
+                let border_col = if is_family_active {
+                    col_mixed
+                } else if is_active_audio {
+                    Color32::from_rgba_unmultiplied(col_mixed.r(), col_mixed.g(), col_mixed.b(), 200)
+                } else {
+                    Color32::from_rgb(226, 232, 240)
+                };
+                painter.rect_stroke(node_rect, 10.0, Stroke::new(if is_family_active { 1.8 } else { 1.2 }, border_col), egui::StrokeKind::Outside);
 
-                    // 4. Confluence/Bifurcation Joint Dot
-                    painter.circle_filled(p_fork, 3.8, hulu_col);
-                    painter.circle_stroke(p_fork, 3.8, Stroke::new(1.2, Color32::WHITE));
+                // 4 Corner Allen Bolts
+                for &(dx, dy) in &[(5.5, 5.5), (node_rect.width() - 5.5, 5.5), (5.5, node_rect.height() - 5.5), (node_rect.width() - 5.5, node_rect.height() - 5.5)] {
+                    let bp = Pos2::new(node_rect.min.x + dx, node_rect.min.y + dy);
+                    painter.circle_filled(bp, 1.2, Color32::from_rgb(226, 232, 240));
+                }
 
-                    // 5. Water Ripples / Flow Animation when active (Ultra-lightweight)
-                    if self.is_playing && is_flowing {
-                        let t = (self.visualizer_anim_phase * 2.5).fract();
-                        // Ripple in Hulu
-                        let d_in = p_in.lerp(p_fork, t);
-                        painter.circle_filled(d_in, 2.4, Color32::from_rgba_premultiplied(255, 255, 255, 220));
+                // Left: Title Badge Pill
+                let title_pill = Rect::from_min_size(Pos2::new(node_rect.min.x + 8.0, node_rect.min.y + 4.0), Vec2::new(76.0, 14.0));
+                painter.rect_filled(title_pill, 4.0, Color32::from_rgb(241, 245, 249));
+                painter.text(
+                    Pos2::new(title_pill.min.x + 4.0, title_pill.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    "🎚️ MIXER",
+                    egui::FontId::proportional(8.5),
+                    Color32::from_rgb(15, 23, 42),
+                );
+                painter.text(
+                    Pos2::new(title_pill.max.x - 4.0, title_pill.center().y),
+                    egui::Align2::RIGHT_CENTER,
+                    format!("CH-0{}", theme.instance_num),
+                    egui::FontId::monospace(7.2),
+                    Color32::from_rgb(100, 116, 139),
+                );
 
-                        // Ripples in branches
-                        let idx_a = ((pts_a.len() - 1) as f32 * t).round() as usize;
-                        if let Some(&pa) = pts_a.get(idx_a) {
-                            painter.circle_filled(pa, 2.2, Color32::from_rgba_premultiplied(255, 240, 220, 240));
+                // Right: Status LED
+                let led_pos = Pos2::new(node_rect.max.x - 12.0, node_rect.min.y + 11.0);
+                if is_active_audio {
+                    let led_pulse = (t * 5.0).sin().abs();
+                    let halo_alpha = (60.0 + 90.0 * led_pulse) as u8;
+                    painter.circle_stroke(led_pos, 4.2, Stroke::new(1.0, Color32::from_rgba_unmultiplied(34, 197, 94, halo_alpha)));
+                    painter.circle_filled(led_pos, 2.2, Color32::from_rgb(34, 197, 94));
+                    painter.circle_filled(led_pos, 1.0, Color32::WHITE);
+                } else if conn_a || conn_b {
+                    painter.circle_filled(led_pos, 2.0, Color32::from_rgb(52, 211, 153));
+                } else {
+                    painter.circle_filled(led_pos, 2.0, Color32::from_rgb(203, 213, 225));
+                }
+
+                // Left: Fusion Core Vortex Aperture (Obsidian Chamber with Orbiting Quantum Plasma)
+                painter.circle_filled(vortex_pos, 10.0, Color32::from_rgb(15, 23, 42));
+                let vortex_alpha = if is_active_audio { (180.0 + 75.0 * pulse) as u8 } else { 90 };
+                painter.circle_stroke(
+                    vortex_pos,
+                    9.5,
+                    Stroke::new(1.2, Color32::from_rgba_unmultiplied(col_mixed.r(), col_mixed.g(), col_mixed.b(), vortex_alpha)),
+                );
+
+                let spin_spd = if is_active_audio { 4.5 } else { 1.2 };
+                let ang = t * spin_spd;
+                let r_orb = 4.2;
+                let orb_a = Pos2::new(vortex_pos.x + ang.cos() * r_orb, vortex_pos.y + ang.sin() * r_orb);
+                let orb_b = Pos2::new(vortex_pos.x - ang.cos() * r_orb, vortex_pos.y - ang.sin() * r_orb);
+
+                painter.circle_filled(orb_a, 2.0, col_a);
+                painter.circle_stroke(orb_a, 3.2, Stroke::new(0.8, Color32::from_rgba_unmultiplied(col_a.r(), col_a.g(), col_a.b(), 120)));
+                painter.circle_filled(orb_b, 2.0, col_b);
+                painter.circle_stroke(orb_b, 3.2, Stroke::new(0.8, Color32::from_rgba_unmultiplied(col_b.r(), col_b.g(), col_b.b(), 120)));
+                painter.circle_filled(vortex_pos, 1.8, Color32::WHITE);
+
+                if is_active_audio && conn_a && conn_b && weight_a > 0.05 && weight_b > 0.05 {
+                    for ring in 0..2 {
+                        let ring_r = 5.0 + ((t * 2.5 + ring as f32 * 0.5).fract()) * 16.0;
+                        let ring_alpha = ((1.0 - ring_r / 21.0) * 160.0) as u8;
+                        painter.circle_stroke(
+                            vortex_pos,
+                            ring_r,
+                            Stroke::new(1.2, Color32::from_rgba_unmultiplied(col_mixed.r(), col_mixed.g(), col_mixed.b(), ring_alpha)),
+                        );
+                    }
+                }
+
+                // Crossfader Slider Track (Precision Studio Fader)
+                let track_min_x = node_rect.min.x + 36.0;
+                let track_max_x = node_rect.max.x - 22.0;
+                let track_y = node_rect.min.y + 44.0;
+                let track_w = track_max_x - track_min_x;
+                let knob_x = track_min_x + active_mix * track_w;
+
+                let track_rect = Rect::from_min_size(Pos2::new(track_min_x, track_y - 2.5), Vec2::new(track_w, 5.0));
+                painter.rect_filled(track_rect, 2.5, Color32::from_rgb(241, 245, 249));
+                painter.rect_stroke(track_rect, 2.5, Stroke::new(0.8, Color32::from_rgb(226, 232, 240)), egui::StrokeKind::Outside);
+
+                let cnx = track_min_x + track_w * 0.5;
+                painter.line_segment([Pos2::new(cnx, track_y - 4.5), Pos2::new(cnx, track_y + 4.5)],
+                    Stroke::new(1.0, Color32::from_rgb(148, 163, 184)));
+
+                if (knob_x - cnx).abs() > 1.0 {
+                    let (fs, fe) = if knob_x > cnx { (cnx, knob_x) } else { (knob_x, cnx) };
+                    let fc = if knob_x > cnx { col_b } else { col_a };
+                    painter.rect_filled(Rect::from_min_max(Pos2::new(fs, track_y - 2.0), Pos2::new(fe, track_y + 2.0)), 2.0,
+                        Color32::from_rgba_unmultiplied(fc.r(), fc.g(), fc.b(), 180));
+                }
+
+                let knob_pos = Pos2::new(knob_x, track_y);
+                painter.circle_filled(knob_pos + Vec2::new(0.0, 1.2), 5.2, Color32::from_black_alpha(25));
+                painter.circle_filled(knob_pos, 5.2, Color32::WHITE);
+                painter.circle_stroke(knob_pos, 5.2, Stroke::new(1.6, col_mixed));
+                painter.circle_filled(knob_pos, 2.0, col_mixed);
+
+                painter.text(Pos2::new(track_min_x, track_y + 11.0), egui::Align2::LEFT_TOP,
+                    format!("{:.0}% A", weight_a * 100.0), egui::FontId::monospace(7.8), col_a);
+                painter.text(Pos2::new(track_max_x, track_y + 11.0), egui::Align2::RIGHT_TOP,
+                    format!("{:.0}% B", weight_b * 100.0), egui::FontId::monospace(7.8), col_b);
+
+                painter.text(Pos2::new(node_rect.center().x, node_rect.max.y - 6.0), egui::Align2::CENTER_BOTTOM,
+                    "SUMMING BUS", egui::FontId::monospace(7.2), Color32::from_rgb(148, 163, 184));
+
+                // =========================================================================
+                // 2. KOTAK MESIN SATELIT (INPUT POD A & B) & TRANSMISSION
+                // =========================================================================
+                for port in 0..2u8 {
+                    let sat_rect = if port == 0 { sat_a_rect } else { sat_b_rect };
+                    let is_conn = if port == 0 { conn_a } else { conn_b };
+                    let pod_col = if port == 0 { col_a } else { col_b };
+                    let pal = if port == 0 { &pal_a } else { &pal_b };
+                    let is_pod_dragged = if port == 0 { is_sat_a_dragged } else { is_sat_b_dragged };
+                    let is_pod_hovered = if port == 0 { is_sat_a_hovered } else { is_sat_b_hovered };
+                    let weight = if port == 0 { weight_a } else { weight_b };
+
+                    if is_pod_hovered && !is_canvas_blocked {
+                        let screen_sat_rect = ts.mul_rect(sat_rect);
+                        let sat_tip = ui.interact(screen_sat_rect, ui.scope_id().with(("sat_tip_mix", node.id, port)), egui::Sense::hover());
+                        sat_tip.show_tooltip_text(format!(
+                            "📡 Satelit Input {} // 🎚️ MIXER #{}\n• Klik tahan & geser untuk memindah posisi\n• Tarik kabel ke port lingkaran kiri untuk menyambung",
+                            if port == 0 { "A" } else { "B" }, theme.instance_num
+                        ));
+                    }
+
+                    // Shadow + outer glow
+                    let shadow_y = if is_pod_dragged { 4.0 } else if is_pod_hovered { 2.5 } else { 1.8 };
+                    painter.rect_filled(sat_rect.translate(Vec2::new(0.0, shadow_y)), 7.0,
+                        Color32::from_black_alpha(if is_pod_dragged { 32 } else if is_pod_hovered { 20 } else { 12 }));
+
+                    if is_family_active || is_pod_hovered {
+                        painter.rect_stroke(
+                            sat_rect.expand(1.5),
+                            8.0,
+                            Stroke::new(1.5, Color32::from_rgba_unmultiplied(pod_col.r(), pod_col.g(), pod_col.b(), if is_pod_dragged || is_pod_hovered { 180 } else { 80 })),
+                            egui::StrokeKind::Outside,
+                        );
+                    }
+
+                    // Body
+                    painter.rect_filled(sat_rect, 7.0, Color32::WHITE);
+                    let pod_border = if is_pod_dragged || is_pod_hovered {
+                        pod_col
+                    } else if is_conn {
+                        Color32::from_rgba_unmultiplied(pod_col.r(), pod_col.g(), pod_col.b(), 180)
+                    } else {
+                        Color32::from_rgb(226, 232, 240)
+                    };
+                    painter.rect_stroke(sat_rect, 7.0, Stroke::new(if is_pod_dragged || is_pod_hovered { 1.6 } else { 1.2 }, pod_border), egui::StrokeKind::Outside);
+
+                    // Micro LED Status Indicator
+                    let sat_led = Pos2::new(sat_rect.min.x + 8.5, sat_rect.min.y + 7.5);
+                    if is_active_audio && is_conn && weight > 0.01 {
+                        let l_pulse = (t * 6.0 + port as f32 * 1.57).sin().abs();
+                        painter.circle_stroke(sat_led, 3.5, Stroke::new(1.0, Color32::from_rgba_unmultiplied(pod_col.r(), pod_col.g(), pod_col.b(), (100.0 + 120.0 * l_pulse) as u8)));
+                        painter.circle_filled(sat_led, 2.0, pod_col);
+                        painter.circle_filled(sat_led, 0.9, Color32::WHITE);
+                    } else if is_conn {
+                        painter.circle_filled(sat_led, 1.8, pod_col);
+                    } else {
+                        painter.circle_filled(sat_led, 1.8, Color32::from_rgb(203, 213, 225));
+                    }
+
+                    // Tactile Grip Dots (Top Right)
+                    for gx in [-3.5f32, 0.0, 3.5] {
+                        painter.line_segment(
+                            [Pos2::new(sat_rect.max.x - 10.0 + gx, sat_rect.min.y + 3.0),
+                             Pos2::new(sat_rect.max.x - 10.0 + gx, sat_rect.min.y + 5.5)],
+                            Stroke::new(0.8, Color32::from_rgb(226, 232, 240)),
+                        );
+                    }
+
+                    // Modern Badge Chip
+                    let badge_rect = Rect::from_center_size(Pos2::new(sat_rect.center().x + 2.0, sat_rect.center().y - 2.0), Vec2::new(32.0, 13.0));
+                    painter.rect_filled(badge_rect, 3.0, Color32::from_rgb(248, 250, 252));
+                    painter.text(
+                        badge_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        if port == 0 { "IN A" } else { "IN B" },
+                        egui::FontId::monospace(7.8),
+                        if is_conn { pod_col } else { Color32::from_rgb(100, 116, 139) },
+                    );
+
+                    // Channel Sub-code Text (e.g. #1.A)
+                    painter.text(
+                        Pos2::new(sat_rect.center().x + 2.0, sat_rect.max.y - 4.5),
+                        egui::Align2::CENTER_BOTTOM,
+                        format!("#{}.{}", theme.instance_num, if port == 0 { "A" } else { "B" }),
+                        egui::FontId::monospace(6.8),
+                        if is_conn { Color32::from_rgba_unmultiplied(pod_col.r(), pod_col.g(), pod_col.b(), 180) } else { Color32::from_rgb(148, 163, 184) },
+                    );
+
+                    // Left Cable Dock Pin (Chrome Ring + Illuminated Socket)
+                    let pin_pos = Pos2::new(sat_rect.min.x + 3.0, sat_rect.center().y);
+                    painter.circle_stroke(pin_pos, 4.5, Stroke::new(1.2, Color32::from_rgb(203, 213, 225)));
+                    if is_conn {
+                        painter.circle_filled(pin_pos, 3.0, pod_col);
+                        painter.circle_filled(pin_pos, 1.2, Color32::WHITE);
+                    } else {
+                        painter.circle_filled(pin_pos, 2.5, Color32::from_rgb(241, 245, 249));
+                    }
+
+                    // === RIGHT APERTURE: "DOORWAY LIGHT SPILL" (Scaled by slider weight) ===
+                    let mouth_x = sat_rect.max.x;
+                    let mouth_cy = sat_rect.center().y;
+                    let aperture_active = is_conn && weight > 0.01;
+                    let base_alpha = if is_active_audio && aperture_active {
+                        ((160.0 + 80.0 * (t * 6.0 + port as f32 * 1.57).sin()) * weight).clamp(0.0, 255.0) as u8
+                    } else if aperture_active {
+                        (45.0 * weight).clamp(0.0, 255.0) as u8
+                    } else {
+                        0u8
+                    };
+
+                    // Slit line
+                    if base_alpha > 0 {
+                        painter.line_segment(
+                            [Pos2::new(mouth_x - 1.5, mouth_cy - 7.5), Pos2::new(mouth_x - 1.5, mouth_cy + 7.5)],
+                            Stroke::new(2.5, Color32::from_rgba_unmultiplied(pod_col.r(), pod_col.g(), pod_col.b(), base_alpha)));
+
+                        // Doorway light fan (scaled by weight)
+                        let scale_factor = 0.35 + 0.65 * weight;
+                        let fan_colors = [base_alpha, (base_alpha as u16 * 60 / 100) as u8,
+                            (base_alpha as u16 * 35 / 100) as u8, (base_alpha as u16 * 18 / 100) as u8];
+                        let fan_widths = [3.0f32 * scale_factor, 7.0 * scale_factor, 13.0 * scale_factor, 20.0 * scale_factor];
+                        let fan_depths = [4.0f32 * scale_factor, 9.0 * scale_factor, 16.0 * scale_factor, 24.0 * scale_factor];
+                        for fi in 0..4 {
+                            let fa = fan_colors[fi];
+                            let hw = fan_widths[fi];
+                            let depth = fan_depths[fi];
+                            let tri = vec![
+                                Pos2::new(mouth_x, mouth_cy - 2.0),
+                                Pos2::new(mouth_x, mouth_cy + 2.0),
+                                Pos2::new(mouth_x + depth, mouth_cy + hw),
+                                Pos2::new(mouth_x + depth, mouth_cy - hw),
+                            ];
+                            painter.add(egui::Shape::convex_polygon(
+                                tri,
+                                Color32::from_rgba_unmultiplied(pod_col.r(), pod_col.g(), pod_col.b(), fa),
+                                Stroke::NONE,
+                            ));
                         }
-                        let idx_b = ((pts_b.len() - 1) as f32 * t).round() as usize;
-                        if let Some(&pb) = pts_b.get(idx_b) {
-                            painter.circle_filled(pb, 2.2, Color32::from_rgba_premultiplied(220, 245, 255, 240));
+                        painter.circle_filled(Pos2::new(mouth_x - 1.0, mouth_cy), 2.0, Color32::WHITE);
+                    }
+
+                    // === TRANSMISSION DYNAMICS (Pod -> Gate Vortex) ===
+                    let p_pod_exit = Pos2::new(mouth_x + 2.0, mouth_cy);
+                    let p_target = vortex_pos;
+                    let raw_dx = p_target.x - p_pod_exit.x;
+                    let raw_dy = (p_target.y - p_pod_exit.y).abs();
+                    let dist = p_pod_exit.distance(p_target);
+                    let is_direct = raw_dx > 10.0 && raw_dy <= raw_dx * 2.5 && dist <= 260.0;
+
+                    if is_direct {
+                        // DIRECT FLUID TELEMETRY STREAM (Color blends as particles approach fusion core)
+                        let bezier_eval = |p0: Pos2, p3: Pos2, u: f32| -> Pos2 {
+                            let cp1 = Pos2::new(p0.x + raw_dx * 0.4, p0.y);
+                            let cp2 = Pos2::new(p3.x - raw_dx * 0.4, p3.y);
+                            let v = 1.0 - u;
+                            Pos2::new(
+                                v*v*v*p0.x + 3.0*v*v*u*cp1.x + 3.0*v*u*u*cp2.x + u*u*u*p3.x,
+                                v*v*v*p0.y + 3.0*v*v*u*cp1.y + 3.0*v*u*u*cp2.y + u*u*u*p3.y,
+                            )
+                        };
+
+                        if is_active_audio && is_conn && weight > 0.01 {
+                            // Active: particle count proportional to weight
+                            let count = ((36.0 * weight).round() as usize).max(4);
+                            let phi = 0.6180339887f32;
+                            for i in 0..count {
+                                let seed = i as f32 * phi;
+                                let speed = 0.42 + (seed.fract() * 0.28);
+                                let u = ((i as f32 / count as f32) + t * speed).fract();
+                                let u_prev = (u - 0.045).max(0.0);
+
+                                // Lateral spread & wave turbulence
+                                let spread = ((i as f32 * 1.91).sin()) * (2.0 + 4.5 * weight) * (0.3 + 0.7 * (u * (1.0 - u) * 4.0));
+                                let wave = (u * 11.0 - t * 4.8 + seed * 6.28).sin() * 1.4;
+                                let total_offset = spread + wave;
+
+                                let bp = bezier_eval(p_pod_exit, p_target, u);
+                                let bp_prv = bezier_eval(p_pod_exit, p_target, u_prev);
+
+                                let pos = Pos2::new(bp.x, bp.y + total_offset);
+                                let prv = Pos2::new(bp_prv.x, bp_prv.y + total_offset);
+
+                                // Dynamic color blending near fusion point:
+                                // As u approaches 1.0, stream A and stream B blend colors!
+                                let blend_k = ((u - 0.45) / 0.55).clamp(0.0, 1.0).powf(1.3);
+                                let p_col_base = pal[i % 8];
+                                let p_col = lerp_rgb(p_col_base, col_mixed, blend_k);
+                                let r = (1.1 + (seed * 2.9).fract() * 1.2) * (0.7 + 0.5 * weight);
+
+                                // Comet trail & core
+                                painter.line_segment([prv, pos],
+                                    Stroke::new(r * 0.9, Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), 90)));
+                                painter.circle_filled(pos, r + 1.1, Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), 35));
+                                painter.circle_filled(pos, r, p_col);
+                            }
+                        } else if is_conn && weight > 0.01 {
+                            // Idle: faint motes
+                            let idle_count = ((6.0 * weight).round() as usize).max(2);
+                            for i in 0..idle_count {
+                                let seed = i as f32 * 0.618;
+                                let u = ((i as f32 / idle_count as f32) + t * 0.14).fract();
+                                let bp = bezier_eval(p_pod_exit, p_target, u);
+                                let wave = (u * 8.0 - t * 2.0 + seed * 6.28).sin() * 1.5;
+                                let p_col = pal[i % 8];
+                                painter.circle_filled(Pos2::new(bp.x, bp.y + wave), 1.5,
+                                    Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), 90));
+                            }
+                        }
+                    } else if is_conn && weight > 0.01 {
+                        // =================================================================
+                        // WARP: BLACK HOLE (In-Portal) -> WHITE HOLE (Out-Portal)
+                        // Spawns farther away from mouths (~65px)
+                        // =================================================================
+                        let p_bh = Pos2::new(p_pod_exit.x + 65.0, p_pod_exit.y);
+                        let p_wh = Pos2::new(p_target.x - 65.0, p_target.y + if port == 0 { -10.0 } else { 10.0 });
+
+                        // Subspace Einstein-Rosen bridge
+                        let link_alpha = if is_active_audio { 60 } else { 25 };
+                        for step in 0..10 {
+                            let u = step as f32 / 9.0;
+                            let lp = p_bh + (p_wh - p_bh) * u;
+                            let wave_off = (u * 6.0 + t * 3.0).sin() * 1.5;
+                            painter.circle_filled(Pos2::new(lp.x, lp.y + wave_off), 1.1,
+                                Color32::from_rgba_unmultiplied(pod_col.r(), pod_col.g(), pod_col.b(), link_alpha));
+                        }
+
+                        // --- 1. BLACK HOLE (Gravitational Inward Swirl) ---
+                        // Event horizon
+                        painter.circle_filled(p_bh, 7.5, Color32::from_rgb(4, 6, 14));
+                        // Photon sphere / gravitational lensing
+                        painter.circle_stroke(p_bh, 8.0, Stroke::new(1.8, Color32::from_rgb(255, 255, 255)));
+                        // Glowing accretion disk
+                        painter.circle_stroke(p_bh, 12.0 + 1.5 * pulse, Stroke::new(2.2,
+                            Color32::from_rgba_unmultiplied(pod_col.r(), pod_col.g(), pod_col.b(), 180)));
+                        painter.circle_stroke(p_bh, 16.0 + 2.5 * pulse, Stroke::new(1.4,
+                            Color32::from_rgba_unmultiplied(pod_col.r(), pod_col.g(), pod_col.b(), 90)));
+                        // Orbiting accretion photons
+                        for k in 0..4 {
+                            let ang = t * 8.0 + k as f32 * 1.57;
+                            let r_orb = 11.5 + 2.0 * (k as f32 * 0.7).sin();
+                            painter.circle_filled(Pos2::new(p_bh.x + r_orb * ang.cos(), p_bh.y + r_orb * ang.sin()), 1.4, Color32::WHITE);
+                        }
+
+                        // --- 2. WHITE HOLE (Radiant Singularity Outward Swirl) ---
+                        // Luminous quasar core
+                        painter.circle_filled(p_wh, 5.0, Color32::WHITE);
+                        painter.circle_stroke(p_wh, 7.5 + pulse * 1.5, Stroke::new(2.2,
+                            Color32::from_rgba_unmultiplied(255, 255, 255, 220)));
+                        painter.circle_filled(p_wh, 14.0, Color32::from_rgba_unmultiplied(pod_col.r(), pod_col.g(), pod_col.b(), 40));
+                        // Ejection shockwave rings
+                        let wave_r = 6.0 + ((t * 2.8).fract()) * 18.0;
+                        painter.circle_stroke(p_wh, wave_r, Stroke::new(1.2,
+                            Color32::from_rgba_unmultiplied(pod_col.r(), pod_col.g(), pod_col.b(), ((1.0 - wave_r / 24.0) * 180.0) as u8)));
+
+                        // --- PARTICLES: Spiral into Black Hole ---
+                        if is_active_audio {
+                            let count = ((24.0 * weight).round() as usize).max(4);
+                            let phi = 0.6180339887f32;
+                            for i in 0..count {
+                                let seed = i as f32 * phi;
+                                let speed = 0.45 + (seed.fract() * 0.25);
+                                let u = ((i as f32 / count as f32) + t * speed).fract();
+                                let p_col = pal[i % 8];
+
+                                let (pos, r, col) = if u < 0.65 {
+                                    // Approach straight line towards Black Hole perimeter
+                                    let tau = u / 0.65;
+                                    let target_entry = Pos2::new(p_bh.x - 18.0, p_bh.y);
+                                    let pt = p_pod_exit + (target_entry - p_pod_exit) * tau;
+                                    let wave = (tau * 10.0 - t * 4.0 + seed * 6.28).sin() * 1.2;
+                                    (Pos2::new(pt.x, pt.y + wave), 1.5, p_col)
+                                } else {
+                                    // Spiral into Black Hole singularity (inward spiral)
+                                    let tau = (u - 0.65) / 0.35; // 0..1
+                                    let spiral_r = 18.0 * (1.0 - tau).powf(1.2);
+                                    let spiral_ang = std::f32::consts::PI + tau * 3.5 * std::f32::consts::PI + seed * 2.0;
+                                    let pt = Pos2::new(p_bh.x + spiral_r * spiral_ang.cos(), p_bh.y + spiral_r * spiral_ang.sin());
+                                    let heated_col = lerp_rgb(p_col, Color32::WHITE, tau);
+                                    (pt, 1.4 * (1.0 - 0.5 * tau), heated_col)
+                                };
+                                painter.circle_filled(pos, r + 0.8, Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 50));
+                                painter.circle_filled(pos, r, col);
+                            }
+
+                            // --- PARTICLES: Spiral out of White Hole -> Gate Vortex ---
+                            for i in 0..count {
+                                let seed = i as f32 * phi + 0.35;
+                                let speed = 0.45 + (seed.fract() * 0.25);
+                                let u = ((i as f32 / count as f32) + t * speed + 0.5).fract();
+
+                                let (pos, r, col) = if u < 0.35 {
+                                    // Spiral out of White Hole (outward spiral)
+                                    let tau = u / 0.35; // 0..1
+                                    let spiral_r = 18.0 * tau.powf(0.85);
+                                    let spiral_ang = tau * 3.2 * std::f32::consts::PI + seed * 2.0;
+                                    let pt = Pos2::new(p_wh.x + spiral_r * spiral_ang.cos(), p_wh.y + spiral_r * spiral_ang.sin());
+                                    let cool_col = lerp_rgb(Color32::WHITE, pod_col, tau);
+                                    (pt, 1.2 + 0.3 * tau, cool_col)
+                                } else {
+                                    // Fly from White Hole perimeter towards Fusion Vortex
+                                    let tau = (u - 0.35) / 0.65;
+                                    let exit_origin = Pos2::new(p_wh.x + 18.0, p_wh.y);
+                                    let pt = exit_origin + (p_target - exit_origin) * tau;
+                                    let wave = (tau * 10.0 - t * 4.0 + seed * 6.28).sin() * 1.2;
+                                    // Color blends with mixed fusion as it reaches vortex
+                                    let blended = lerp_rgb(pod_col, col_mixed, tau.powf(1.4));
+                                    (Pos2::new(pt.x, pt.y + wave), 1.5, blended)
+                                };
+                                painter.circle_filled(pos, r + 0.8, Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 50));
+                                painter.circle_filled(pos, r, col);
+                            }
                         }
                     }
 
-                    // 6. Branch labels (Dry / Wet indicator)
-                    painter.text(
-                        Pos2::new(p_out_a.x - 4.0, p_out_a.y - 7.0),
-                        egui::Align2::RIGHT_BOTTOM,
-                        "DRY (A)",
-                        egui::FontId::monospace(8.2),
-                        RIVER_COLOR_DRY,
+                    ui.ctx().request_repaint();
+                }
+            } else if node.node_type == NodeType::Splitter {
+                let active_split = if node.param_val <= 0.001 { 0.5 } else { node.param_val.clamp(0.0, 1.0) };
+                let pct_a = 1.0 - active_split;
+                let pct_b = active_split;
+
+                let conn_in = self.connections.iter().any(|c| c.to_node == node.id);
+                let conn_out_a = self.connections.iter().any(|c| c.from_node == node.id && c.from_port == 0);
+                let conn_out_b = self.connections.iter().any(|c| c.from_node == node.id && c.from_port == 1);
+                let is_active_audio = self.is_playing && is_flowing && conn_in;
+
+                let instance_idx = self.nodes.iter()
+                    .filter(|n| n.node_type == NodeType::Splitter)
+                    .position(|n| n.id == node.id)
+                    .unwrap_or(0);
+                let theme = get_instance_color_theme(instance_idx);
+                let col_a = theme.col_a;
+                let col_b = theme.col_b;
+                let col_hulu = theme.col_primary;
+                let pal_a = theme.pal_a;
+                let pal_b = theme.pal_b;
+                let lerp_rgb = |c1: Color32, c2: Color32, k: f32| -> Color32 {
+                    let t = k.clamp(0.0, 1.0);
+                    Color32::from_rgb(
+                        (c1.r() as f32 * (1.0 - t) + c2.r() as f32 * t).round() as u8,
+                        (c1.g() as f32 * (1.0 - t) + c2.g() as f32 * t).round() as u8,
+                        (c1.b() as f32 * (1.0 - t) + c2.b() as f32 * t).round() as u8,
+                    )
+                };
+
+                let t = ui.input(|i| i.time) as f32;
+                let pulse = (t * 3.5).sin().abs();
+
+                // Compute Satellite World & Screen Coordinates
+                let sat_a_world = self.get_satellite_pos(node.id, 0, node.pos, &node.node_type);
+                let sat_b_world = self.get_satellite_pos(node.id, 1, node.pos, &node.node_type);
+                let sat_a_screen = Pos2::new(
+                    canvas_rect.min.x + self.patchbay_pan.x + sat_a_world.x,
+                    canvas_rect.min.y + self.patchbay_pan.y + sat_a_world.y,
+                );
+                let sat_b_screen = Pos2::new(
+                    canvas_rect.min.x + self.patchbay_pan.x + sat_b_world.x,
+                    canvas_rect.min.y + self.patchbay_pan.y + sat_b_world.y,
+                );
+                let sat_a_rect = Rect::from_min_size(sat_a_screen, Vec2::new(52.0, 34.0));
+                let sat_b_rect = Rect::from_min_size(sat_b_screen, Vec2::new(52.0, 34.0));
+
+                let is_sat_a_hovered = !is_canvas_blocked && raw_pointer_pos.map_or(false, |p| sat_a_rect.contains(p));
+                let is_sat_b_hovered = !is_canvas_blocked && raw_pointer_pos.map_or(false, |p| sat_b_rect.contains(p));
+                let is_sat_a_dragged = self.dragging_satellite == Some((node.id, 0));
+                let is_sat_b_dragged = self.dragging_satellite == Some((node.id, 1));
+                let is_gate_hovered = is_hovered;
+                let is_gate_selected = self.selected_node == Some(node.id);
+                let is_gate_dragged = self.dragging_node == Some(node.id);
+
+                let is_family_active = is_gate_hovered || is_gate_selected || is_gate_dragged || is_sat_a_hovered || is_sat_b_hovered || is_sat_a_dragged || is_sat_b_dragged;
+
+                let emitter_pos = Pos2::new(node_rect.max.x - 15.0, node_rect.min.y + 44.0);
+
+                // =========================================================================
+                // 1. GERBANG UTAMA (MODERN QUANTUM EMITTER CONSOLE) - 140 x 78 px
+                // =========================================================================
+                painter.rect_filled(node_rect.translate(Vec2::new(0.0, 3.0)), 10.0, Color32::from_black_alpha(16));
+
+                if is_family_active {
+                    painter.rect_stroke(
+                        node_rect.expand(2.0),
+                        11.0,
+                        Stroke::new(2.0, Color32::from_rgba_unmultiplied(col_hulu.r(), col_hulu.g(), col_hulu.b(), 70)),
+                        egui::StrokeKind::Outside,
                     );
+                }
+
+                painter.rect_filled(node_rect, 10.0, Color32::WHITE);
+
+                let header_rect = Rect::from_min_size(node_rect.min, Vec2::new(node_rect.width(), 22.0));
+                let header_bg = if is_family_active {
+                    Color32::from_rgba_unmultiplied(col_hulu.r(), col_hulu.g(), col_hulu.b(), 18)
+                } else {
+                    Color32::from_rgb(248, 250, 252)
+                };
+                painter.rect_filled(header_rect, 10.0, header_bg);
+                painter.rect_filled(Rect::from_min_size(Pos2::new(header_rect.min.x, header_rect.max.y - 6.0), Vec2::new(node_rect.width(), 6.0)), 0.0, header_bg);
+                painter.line_segment(
+                    [Pos2::new(node_rect.min.x, header_rect.max.y), Pos2::new(node_rect.max.x, header_rect.max.y)],
+                    Stroke::new(0.8, Color32::from_rgb(241, 245, 249)),
+                );
+
+                let border_col = if is_family_active {
+                    col_hulu
+                } else if is_active_audio {
+                    Color32::from_rgba_unmultiplied(col_hulu.r(), col_hulu.g(), col_hulu.b(), 200)
+                } else {
+                    Color32::from_rgb(226, 232, 240)
+                };
+                painter.rect_stroke(node_rect, 10.0, Stroke::new(if is_family_active { 1.8 } else { 1.2 }, border_col), egui::StrokeKind::Outside);
+
+                // 4 Corner Allen Bolts
+                for &(dx, dy) in &[(5.5, 5.5), (node_rect.width() - 5.5, 5.5), (5.5, node_rect.height() - 5.5), (node_rect.width() - 5.5, node_rect.height() - 5.5)] {
+                    let bp = Pos2::new(node_rect.min.x + dx, node_rect.min.y + dy);
+                    painter.circle_filled(bp, 1.2, Color32::from_rgb(226, 232, 240));
+                }
+
+                // Left: Title Badge Pill
+                let title_pill = Rect::from_min_size(Pos2::new(node_rect.min.x + 8.0, node_rect.min.y + 4.0), Vec2::new(82.0, 14.0));
+                painter.rect_filled(title_pill, 4.0, Color32::from_rgb(241, 245, 249));
+                painter.text(
+                    Pos2::new(title_pill.min.x + 4.0, title_pill.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    "🔀 SPLITTER",
+                    egui::FontId::proportional(8.5),
+                    Color32::from_rgb(15, 23, 42),
+                );
+                painter.text(
+                    Pos2::new(title_pill.max.x - 4.0, title_pill.center().y),
+                    egui::Align2::RIGHT_CENTER,
+                    format!("CH-0{}", theme.instance_num),
+                    egui::FontId::monospace(7.2),
+                    Color32::from_rgb(100, 116, 139),
+                );
+
+                // Right: Status LED
+                let led_pos = Pos2::new(node_rect.max.x - 12.0, node_rect.min.y + 11.0);
+                if is_active_audio {
+                    let led_pulse = (t * 5.0).sin().abs();
+                    let halo_alpha = (60.0 + 90.0 * led_pulse) as u8;
+                    painter.circle_stroke(led_pos, 4.2, Stroke::new(1.0, Color32::from_rgba_unmultiplied(34, 197, 94, halo_alpha)));
+                    painter.circle_filled(led_pos, 2.2, Color32::from_rgb(34, 197, 94));
+                    painter.circle_filled(led_pos, 1.0, Color32::WHITE);
+                } else if conn_in {
+                    painter.circle_filled(led_pos, 2.0, Color32::from_rgb(52, 211, 153));
+                } else {
+                    painter.circle_filled(led_pos, 2.0, Color32::from_rgb(203, 213, 225));
+                }
+
+                // Input Hulu Pin on Left
+                let in_hulu = Pos2::new(node_rect.min.x + 3.0, node_rect.min.y + 44.0);
+                painter.circle_stroke(in_hulu, 4.5, Stroke::new(1.2, Color32::from_rgb(203, 213, 225)));
+                if conn_in {
+                    painter.circle_filled(in_hulu, 3.0, col_hulu);
+                    painter.circle_filled(in_hulu, 1.2, Color32::WHITE);
+                } else {
+                    painter.circle_filled(in_hulu, 2.5, Color32::from_rgb(241, 245, 249));
+                }
+
+                // Internal Waveguide Light Beam from Input to Emitter
+                let beam_alpha = if is_active_audio { (140.0 + 80.0 * pulse) as u8 } else if conn_in { 60 } else { 20 };
+                painter.line_segment(
+                    [Pos2::new(in_hulu.x + 5.0, in_hulu.y), emitter_pos],
+                    Stroke::new(1.2, Color32::from_rgba_unmultiplied(col_hulu.r(), col_hulu.g(), col_hulu.b(), beam_alpha)),
+                );
+
+                // Right: Quantum Emitter Nozzle & Prism Waveguide
+                painter.circle_filled(emitter_pos, 10.0, Color32::from_rgb(15, 23, 42));
+                let emit_alpha = if is_active_audio && (conn_out_a || conn_out_b) { (180.0 + 75.0 * pulse) as u8 } else { 90 };
+                painter.circle_stroke(
+                    emitter_pos,
+                    9.5,
+                    Stroke::new(1.2, Color32::from_rgba_unmultiplied(col_hulu.r(), col_hulu.g(), col_hulu.b(), emit_alpha)),
+                );
+
+                let spin_spd = if is_active_audio { 4.5 } else { 1.2 };
+                let ang = t * spin_spd;
+                let r_orb = 4.2;
+                let orb_a = Pos2::new(emitter_pos.x + ang.cos() * r_orb, emitter_pos.y + ang.sin() * r_orb);
+                let orb_b = Pos2::new(emitter_pos.x - ang.cos() * r_orb, emitter_pos.y - ang.sin() * r_orb);
+
+                painter.circle_filled(orb_a, 2.0, col_a);
+                painter.circle_stroke(orb_a, 3.2, Stroke::new(0.8, Color32::from_rgba_unmultiplied(col_a.r(), col_a.g(), col_a.b(), 120)));
+                painter.circle_filled(orb_b, 2.0, col_b);
+                painter.circle_stroke(orb_b, 3.2, Stroke::new(0.8, Color32::from_rgba_unmultiplied(col_b.r(), col_b.g(), col_b.b(), 120)));
+                painter.circle_filled(emitter_pos, 1.8, Color32::WHITE);
+
+                if is_active_audio && (conn_out_a || conn_out_b) {
+                    for ring in 0..2 {
+                        let ring_r = 5.0 + ((t * 2.5 + ring as f32 * 0.5).fract()) * 16.0;
+                        let ring_alpha = ((1.0 - ring_r / 21.0) * 160.0) as u8;
+                        painter.circle_stroke(
+                            emitter_pos,
+                            ring_r,
+                            Stroke::new(1.2, Color32::from_rgba_unmultiplied(col_hulu.r(), col_hulu.g(), col_hulu.b(), ring_alpha)),
+                        );
+                    }
+                }
+
+                // Split Ratio Fader Slider (Precision Studio Fader)
+                let track_min_x = node_rect.min.x + 22.0;
+                let track_max_x = node_rect.max.x - 36.0;
+                let track_y = node_rect.min.y + 44.0;
+                let track_w = track_max_x - track_min_x;
+                let knob_x = track_min_x + active_split * track_w;
+                let cur_mix_col = lerp_rgb(col_a, col_b, active_split);
+
+                let track_rect = Rect::from_min_size(Pos2::new(track_min_x, track_y - 2.5), Vec2::new(track_w, 5.0));
+                painter.rect_filled(track_rect, 2.5, Color32::from_rgb(241, 245, 249));
+                painter.rect_stroke(track_rect, 2.5, Stroke::new(0.8, Color32::from_rgb(226, 232, 240)), egui::StrokeKind::Outside);
+
+                let cnx = track_min_x + track_w * 0.5;
+                painter.line_segment([Pos2::new(cnx, track_y - 4.5), Pos2::new(cnx, track_y + 4.5)],
+                    Stroke::new(1.0, Color32::from_rgb(148, 163, 184)));
+
+                if (knob_x - cnx).abs() > 1.0 {
+                    let (fs, fe) = if knob_x > cnx { (cnx, knob_x) } else { (knob_x, cnx) };
+                    let fc = if knob_x > cnx { col_b } else { col_a };
+                    painter.rect_filled(Rect::from_min_max(Pos2::new(fs, track_y - 2.0), Pos2::new(fe, track_y + 2.0)), 2.0,
+                        Color32::from_rgba_unmultiplied(fc.r(), fc.g(), fc.b(), 180));
+                }
+
+                let knob_pos2 = Pos2::new(knob_x, track_y);
+                painter.circle_filled(knob_pos2 + Vec2::new(0.0, 1.2), 5.2, Color32::from_black_alpha(25));
+                painter.circle_filled(knob_pos2, 5.2, Color32::WHITE);
+                painter.circle_stroke(knob_pos2, 5.2, Stroke::new(1.6, cur_mix_col));
+                painter.circle_filled(knob_pos2, 2.0, cur_mix_col);
+
+                painter.text(Pos2::new(track_min_x, track_y + 11.0), egui::Align2::LEFT_TOP,
+                    format!("{:.0}% A", pct_a * 100.0), egui::FontId::monospace(7.8), col_a);
+                painter.text(Pos2::new(track_max_x, track_y + 11.0), egui::Align2::RIGHT_TOP,
+                    format!("{:.0}% B", pct_b * 100.0), egui::FontId::monospace(7.8), col_b);
+
+                painter.text(Pos2::new(node_rect.center().x, node_rect.max.y - 6.0), egui::Align2::CENTER_BOTTOM,
+                    "BRANCH EMITTER", egui::FontId::monospace(7.2), Color32::from_rgb(148, 163, 184));
+
+                // =========================================================================
+                // 2. KOTAK MESIN SATELIT (OUTPUT POD A & B) & TRANSMISSION
+                // =========================================================================
+                for port in 0..2u8 {
+                    let sat_rect = if port == 0 { sat_a_rect } else { sat_b_rect };
+                    let is_out_connected = if port == 0 { conn_out_a } else { conn_out_b };
+                    let pod_col = if port == 0 { col_a } else { col_b };
+                    let pal = if port == 0 { &pal_a } else { &pal_b };
+                    let is_pod_dragged = if port == 0 { is_sat_a_dragged } else { is_sat_b_dragged };
+                    let is_pod_hovered = if port == 0 { is_sat_a_hovered } else { is_sat_b_hovered };
+                    let split_pct = if port == 0 { pct_a } else { pct_b };
+
+                    if is_pod_hovered && !is_canvas_blocked {
+                        let screen_sat_rect = ts.mul_rect(sat_rect);
+                        let sat_tip = ui.interact(screen_sat_rect, ui.scope_id().with(("sat_tip_spl", node.id, port)), egui::Sense::hover());
+                        sat_tip.show_tooltip_text(format!(
+                            "📡 Satelit Output {} // 🔀 SPLITTER #{}\n• Klik tahan & geser untuk memindah posisi\n• Tarik kabel dari port lingkaran kanan ke modul lain",
+                            if port == 0 { "A" } else { "B" }, theme.instance_num
+                        ));
+                    }
+
+                    let shadow_y = if is_pod_dragged { 4.0 } else if is_pod_hovered { 2.5 } else { 1.8 };
+                    painter.rect_filled(sat_rect.translate(Vec2::new(0.0, shadow_y)), 7.0,
+                        Color32::from_black_alpha(if is_pod_dragged { 32 } else if is_pod_hovered { 20 } else { 12 }));
+
+                    if is_family_active || is_pod_hovered {
+                        painter.rect_stroke(
+                            sat_rect.expand(1.5),
+                            8.0,
+                            Stroke::new(1.5, Color32::from_rgba_unmultiplied(pod_col.r(), pod_col.g(), pod_col.b(), if is_pod_dragged || is_pod_hovered { 180 } else { 80 })),
+                            egui::StrokeKind::Outside,
+                        );
+                    }
+
+                    painter.rect_filled(sat_rect, 7.0, Color32::WHITE);
+                    let pod_border_c = if is_pod_dragged || is_pod_hovered {
+                        pod_col
+                    } else if is_out_connected {
+                        Color32::from_rgba_unmultiplied(pod_col.r(), pod_col.g(), pod_col.b(), 180)
+                    } else {
+                        Color32::from_rgb(226, 232, 240)
+                    };
+                    painter.rect_stroke(sat_rect, 7.0, Stroke::new(if is_pod_dragged || is_pod_hovered { 1.6 } else { 1.2 }, pod_border_c), egui::StrokeKind::Outside);
+
+                    // Micro LED Status Indicator (Top Right)
+                    let sat_led = Pos2::new(sat_rect.max.x - 8.5, sat_rect.min.y + 7.5);
+                    if is_active_audio && is_out_connected && split_pct > 0.01 {
+                        let l_pulse = (t * 6.0 + port as f32 * 1.57).sin().abs();
+                        painter.circle_stroke(sat_led, 3.5, Stroke::new(1.0, Color32::from_rgba_unmultiplied(pod_col.r(), pod_col.g(), pod_col.b(), (100.0 + 120.0 * l_pulse) as u8)));
+                        painter.circle_filled(sat_led, 2.0, pod_col);
+                        painter.circle_filled(sat_led, 0.9, Color32::WHITE);
+                    } else if is_out_connected {
+                        painter.circle_filled(sat_led, 1.8, pod_col);
+                    } else {
+                        painter.circle_filled(sat_led, 1.8, Color32::from_rgb(203, 213, 225));
+                    }
+
+                    // Tactile Grip Dots (Top Left)
+                    for gx in [-3.5f32, 0.0, 3.5] {
+                        painter.line_segment(
+                            [Pos2::new(sat_rect.min.x + 10.0 + gx, sat_rect.min.y + 3.0),
+                             Pos2::new(sat_rect.min.x + 10.0 + gx, sat_rect.min.y + 5.5)],
+                            Stroke::new(0.8, Color32::from_rgb(226, 232, 240)),
+                        );
+                    }
+
+                    // Modern Badge Chip
+                    let badge_rect = Rect::from_center_size(Pos2::new(sat_rect.center().x - 2.0, sat_rect.center().y - 2.0), Vec2::new(34.0, 13.0));
+                    painter.rect_filled(badge_rect, 3.0, Color32::from_rgb(248, 250, 252));
                     painter.text(
-                        Pos2::new(p_out_b.x - 4.0, p_out_b.y + 7.0),
-                        egui::Align2::RIGHT_TOP,
-                        "WET (B)",
-                        egui::FontId::monospace(8.2),
-                        RIVER_COLOR_WET,
+                        badge_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        if port == 0 { "OUT A" } else { "OUT B" },
+                        egui::FontId::monospace(7.8),
+                        if is_out_connected { pod_col } else { Color32::from_rgb(100, 116, 139) },
                     );
 
-                    // 7. Readout text below river
                     painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 70.0),
-                        egui::Align2::CENTER_CENTER,
-                        "🌊 1 Hulu ➔ 2 Cabang (1:1 Bit-Identical)",
-                        egui::FontId::proportional(9.8),
-                        Color32::from_rgb(148, 163, 184),
+                        Pos2::new(sat_rect.center().x - 2.0, sat_rect.max.y - 4.5),
+                        egui::Align2::CENTER_BOTTOM,
+                        format!("#{}.{}", theme.instance_num, if port == 0 { "A" } else { "B" }),
+                        egui::FontId::monospace(6.8),
+                        if is_out_connected { Color32::from_rgba_unmultiplied(pod_col.r(), pod_col.g(), pod_col.b(), 180) } else { Color32::from_rgb(148, 163, 184) },
                     );
-                } else {
-                    painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 38.0),
-                        egui::Align2::CENTER_CENTER,
-                        "DILEWATI (Bypassed)",
-                        egui::FontId::proportional(12.0),
-                        Color32::from_rgb(148, 163, 184),
-                    );
-                    painter.text(
-                        Pos2::new(node_rect.center().x, node_rect.min.y + 56.0),
-                        egui::Align2::CENTER_CENTER,
-                        "Nonaktif di Bit-Perfect",
-                        egui::FontId::proportional(11.0),
-                        Color32::from_rgb(148, 163, 184),
-                    );
+
+                    // Right Cable Dock Pin (Chrome Ring + Illuminated Socket)
+                    let pin_pos = Pos2::new(sat_rect.max.x - 3.0, sat_rect.center().y);
+                    painter.circle_stroke(pin_pos, 4.5, Stroke::new(1.2, Color32::from_rgb(203, 213, 225)));
+                    if is_out_connected {
+                        painter.circle_filled(pin_pos, 3.0, pod_col);
+                        painter.circle_filled(pin_pos, 1.2, Color32::WHITE);
+                    } else {
+                        painter.circle_filled(pin_pos, 2.5, Color32::from_rgb(241, 245, 249));
+                    }
+
+                    // === LEFT APERTURE: "DOORWAY LIGHT SPILL" (Active ONLY if connected & split_pct > 0) ===
+                    let mouth_x = sat_rect.min.x;
+                    let mouth_cy = sat_rect.center().y;
+                    let has_flow = is_out_connected && is_active_audio && split_pct > 0.01;
+                    let base_alpha = if has_flow {
+                        ((160.0 + 80.0 * (t * 6.0 + port as f32 * 1.57).sin()) * split_pct).clamp(0.0, 255.0) as u8
+                    } else {
+                        0u8
+                    };
+
+                    if base_alpha > 0 {
+                        // Slit line
+                        painter.line_segment(
+                            [Pos2::new(mouth_x + 1.5, mouth_cy - 7.5), Pos2::new(mouth_x + 1.5, mouth_cy + 7.5)],
+                            Stroke::new(2.5, Color32::from_rgba_unmultiplied(pod_col.r(), pod_col.g(), pod_col.b(), base_alpha)));
+
+                        // Doorway light fan fanning LEFTWARD
+                        let scale_factor = 0.35 + 0.65 * split_pct;
+                        let fan_colors = [base_alpha, (base_alpha as u16 * 60 / 100) as u8,
+                            (base_alpha as u16 * 35 / 100) as u8, (base_alpha as u16 * 18 / 100) as u8];
+                        let fan_widths = [3.0f32 * scale_factor, 7.0 * scale_factor, 13.0 * scale_factor, 20.0 * scale_factor];
+                        let fan_depths = [4.0f32 * scale_factor, 9.0 * scale_factor, 16.0 * scale_factor, 24.0 * scale_factor];
+                        for fi in 0..4 {
+                            let fa = fan_colors[fi];
+                            let hw = fan_widths[fi];
+                            let depth = fan_depths[fi];
+                            let tri = vec![
+                                Pos2::new(mouth_x, mouth_cy - 2.0),
+                                Pos2::new(mouth_x, mouth_cy + 2.0),
+                                Pos2::new(mouth_x - depth, mouth_cy + hw),
+                                Pos2::new(mouth_x - depth, mouth_cy - hw),
+                            ];
+                            painter.add(egui::Shape::convex_polygon(
+                                tri,
+                                Color32::from_rgba_unmultiplied(pod_col.r(), pod_col.g(), pod_col.b(), fa),
+                                Stroke::NONE,
+                            ));
+                        }
+                        painter.circle_filled(Pos2::new(mouth_x + 1.0, mouth_cy), 2.0, Color32::WHITE);
+                    }
+
+                    // === TRANSMISSION DYNAMICS (Emitter -> Pod) ===
+                    // ONLY emit particles if this satellite out is connected!
+                    if is_out_connected && split_pct > 0.01 {
+                        let p_emitter = emitter_pos;
+                        let p_pod_entry = Pos2::new(mouth_x - 2.0, mouth_cy);
+                        let raw_dx = p_pod_entry.x - p_emitter.x;
+                        let raw_dy = (p_pod_entry.y - p_emitter.y).abs();
+                        let dist = p_emitter.distance(p_pod_entry);
+                        let is_direct = raw_dx > 10.0 && raw_dy <= raw_dx * 2.5 && dist <= 260.0;
+
+                        let bezier_eval_sp = |p0: Pos2, p3: Pos2, u: f32| -> Pos2 {
+                            let cp1 = Pos2::new(p0.x + raw_dx * 0.4, p0.y);
+                            let cp2 = Pos2::new(p3.x - raw_dx * 0.4, p3.y);
+                            let v = 1.0 - u;
+                            Pos2::new(
+                                v*v*v*p0.x + 3.0*v*v*u*cp1.x + 3.0*v*u*u*cp2.x + u*u*u*p3.x,
+                                v*v*v*p0.y + 3.0*v*v*u*cp1.y + 3.0*v*u*u*cp2.y + u*u*u*p3.y,
+                            )
+                        };
+
+                        if is_direct {
+                            if is_active_audio {
+                                let count = ((36.0 * split_pct).round() as usize).max(4);
+                                let phi = 0.6180339887f32;
+                                for i in 0..count {
+                                    let seed = i as f32 * phi;
+                                    let speed = 0.42 + (seed.fract() * 0.28);
+                                    let u = ((i as f32 / count as f32) + t * speed).fract();
+                                    let u_prev = (u - 0.045).max(0.0);
+
+                                    let spread = ((i as f32 * 1.91).sin()) * (2.0 + 4.5 * split_pct) * (0.3 + 0.7 * (u * (1.0 - u) * 4.0));
+                                    let wave = (u * 11.0 - t * 4.8 + seed * 6.28).sin() * 1.4;
+
+                                    let bp = bezier_eval_sp(p_emitter, p_pod_entry, u);
+                                    let bp_prv = bezier_eval_sp(p_emitter, p_pod_entry, u_prev);
+
+                                    let pos = Pos2::new(bp.x, bp.y + spread + wave);
+                                    let prv = Pos2::new(bp_prv.x, bp_prv.y + spread + wave);
+
+                                    // Particle transitions from Hulu color to branch color
+                                    let p_col_base = pal[i % 8];
+                                    let p_col = lerp_rgb(col_hulu, p_col_base, (u * 1.4).clamp(0.0, 1.0));
+                                    let r = (1.1 + (seed * 2.9).fract() * 1.2) * (0.7 + 0.5 * split_pct);
+
+                                    painter.line_segment([prv, pos],
+                                        Stroke::new(r * 0.9, Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), 90)));
+                                    painter.circle_filled(pos, r + 1.1, Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), 35));
+                                    painter.circle_filled(pos, r, p_col);
+                                }
+                            } else {
+                                let idle_count = ((6.0 * split_pct).round() as usize).max(2);
+                                for i in 0..idle_count {
+                                    let seed = i as f32 * 0.618;
+                                    let u = ((i as f32 / idle_count as f32) + t * 0.14).fract();
+                                    let bp = bezier_eval_sp(p_emitter, p_pod_entry, u);
+                                    let wave = (u * 8.0 - t * 2.0 + seed * 6.28).sin() * 1.5;
+                                    let p_col = pal[i % 8];
+                                    painter.circle_filled(Pos2::new(bp.x, bp.y + wave), 1.5,
+                                        Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), 90));
+                                }
+                            }
+                        } else {
+                            // =============================================================
+                            // WARP: BLACK HOLE (In-Portal at Emitter) -> WHITE HOLE (at Pod)
+                            // Spawns farther away from mouths (~65px)
+                            // =============================================================
+                            let p_bh = Pos2::new(p_emitter.x + 65.0, p_emitter.y + if port == 0 { -10.0 } else { 10.0 });
+                            let p_wh = Pos2::new(p_pod_entry.x - 65.0, p_pod_entry.y);
+
+                            // Subspace Einstein-Rosen bridge
+                            let link_alpha = if is_active_audio { 60 } else { 25 };
+                            for step in 0..10 {
+                                let u = step as f32 / 9.0;
+                                let lp = p_bh + (p_wh - p_bh) * u;
+                                let wave_off = (u * 6.0 + t * 3.0).sin() * 1.5;
+                                painter.circle_filled(Pos2::new(lp.x, lp.y + wave_off), 1.1,
+                                    Color32::from_rgba_unmultiplied(pod_col.r(), pod_col.g(), pod_col.b(), link_alpha));
+                            }
+
+                            // --- 1. BLACK HOLE (at Emitter side) ---
+                            painter.circle_filled(p_bh, 7.5, Color32::from_rgb(4, 6, 14));
+                            painter.circle_stroke(p_bh, 8.0, Stroke::new(1.8, Color32::from_rgb(255, 255, 255)));
+                            painter.circle_stroke(p_bh, 12.0 + 1.5 * pulse, Stroke::new(2.2,
+                                Color32::from_rgba_unmultiplied(col_hulu.r(), col_hulu.g(), col_hulu.b(), 180)));
+                            painter.circle_stroke(p_bh, 16.0 + 2.5 * pulse, Stroke::new(1.4,
+                                Color32::from_rgba_unmultiplied(col_hulu.r(), col_hulu.g(), col_hulu.b(), 90)));
+                            for k in 0..4 {
+                                let ang = t * 8.0 + k as f32 * 1.57;
+                                let r_orb = 11.5 + 2.0 * (k as f32 * 0.7).sin();
+                                painter.circle_filled(Pos2::new(p_bh.x + r_orb * ang.cos(), p_bh.y + r_orb * ang.sin()), 1.4, Color32::WHITE);
+                            }
+
+                            // --- 2. WHITE HOLE (at Pod side) ---
+                            painter.circle_filled(p_wh, 5.0, Color32::WHITE);
+                            painter.circle_stroke(p_wh, 7.5 + pulse * 1.5, Stroke::new(2.2,
+                                Color32::from_rgba_unmultiplied(255, 255, 255, 220)));
+                            painter.circle_filled(p_wh, 14.0, Color32::from_rgba_unmultiplied(pod_col.r(), pod_col.g(), pod_col.b(), 40));
+                            let wave_r = 6.0 + ((t * 2.8).fract()) * 18.0;
+                            painter.circle_stroke(p_wh, wave_r, Stroke::new(1.2,
+                                Color32::from_rgba_unmultiplied(pod_col.r(), pod_col.g(), pod_col.b(), ((1.0 - wave_r / 24.0) * 180.0) as u8)));
+
+                            // --- PARTICLES: Emitter -> Spiral into Black Hole ---
+                            if is_active_audio {
+                                let count = ((24.0 * split_pct).round() as usize).max(4);
+                                let phi = 0.6180339887f32;
+                                for i in 0..count {
+                                    let seed = i as f32 * phi;
+                                    let speed = 0.45 + (seed.fract() * 0.25);
+                                    let u = ((i as f32 / count as f32) + t * speed).fract();
+
+                                    let (pos, r, col) = if u < 0.65 {
+                                        let tau = u / 0.65;
+                                        let target_entry = Pos2::new(p_bh.x - 18.0, p_bh.y);
+                                        let pt = p_emitter + (target_entry - p_emitter) * tau;
+                                        let wave = (tau * 10.0 - t * 4.0 + seed * 6.28).sin() * 1.2;
+                                        (Pos2::new(pt.x, pt.y + wave), 1.5, col_hulu)
+                                    } else {
+                                        let tau = (u - 0.65) / 0.35;
+                                        let spiral_r = 18.0 * (1.0 - tau).powf(1.2);
+                                        let spiral_ang = std::f32::consts::PI + tau * 3.5 * std::f32::consts::PI + seed * 2.0;
+                                        let pt = Pos2::new(p_bh.x + spiral_r * spiral_ang.cos(), p_bh.y + spiral_r * spiral_ang.sin());
+                                        let heated_col = lerp_rgb(col_hulu, Color32::WHITE, tau);
+                                        (pt, 1.4 * (1.0 - 0.5 * tau), heated_col)
+                                    };
+                                    painter.circle_filled(pos, r + 0.8, Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 50));
+                                    painter.circle_filled(pos, r, col);
+                                }
+
+                                // --- PARTICLES: Spiral out of White Hole -> Satellite Pod ---
+                                for i in 0..count {
+                                    let seed = i as f32 * phi + 0.35;
+                                    let speed = 0.45 + (seed.fract() * 0.25);
+                                    let u = ((i as f32 / count as f32) + t * speed + 0.5).fract();
+
+                                    let (pos, r, col) = if u < 0.35 {
+                                        let tau = u / 0.35;
+                                        let spiral_r = 18.0 * tau.powf(0.85);
+                                        let spiral_ang = tau * 3.2 * std::f32::consts::PI + seed * 2.0;
+                                        let pt = Pos2::new(p_wh.x + spiral_r * spiral_ang.cos(), p_wh.y + spiral_r * spiral_ang.sin());
+                                        let cool_col = lerp_rgb(Color32::WHITE, pod_col, tau);
+                                        (pt, 1.2 + 0.3 * tau, cool_col)
+                                    } else {
+                                        let tau = (u - 0.35) / 0.65;
+                                        let exit_origin = Pos2::new(p_wh.x + 18.0, p_wh.y);
+                                        let pt = exit_origin + (p_pod_entry - exit_origin) * tau;
+                                        let wave = (tau * 10.0 - t * 4.0 + seed * 6.28).sin() * 1.2;
+                                        (Pos2::new(pt.x, pt.y + wave), 1.5, pod_col)
+                                    };
+                                    painter.circle_filled(pos, r + 0.8, Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 50));
+                                    painter.circle_filled(pos, r, col);
+                                }
+                            }
+                        }
+                    }
+
+                    ui.ctx().request_repaint();
                 }
             } else if node.node_type == NodeType::VolumeBooster {
                 let gain = (node.param_val).clamp(0.0, 24.0);
@@ -3092,7 +4125,8 @@ impl LunulaApp {
                     }
 
                     if !is_canvas_blocked && is_hover && is_hot {
-                        response.show_tooltip_text("⚠️ PORT INPUT OVERDRIVEN\nSinyal yang masuk ke modul ini melebihi 0 dBFS.");
+                        let pin_tip = ui.interact(Rect::from_center_size(ts.mul_pos(pin_pos), Vec2::splat(18.0)), ui.scope_id().with(("pin_overdriven_tip", node.id, pin_pos.x as i32, pin_pos.y as i32)), egui::Sense::hover());
+                        pin_tip.show_tooltip_text("⚠️ PORT INPUT OVERDRIVEN\nSinyal yang masuk ke modul ini melebihi 0 dBFS.");
                     }
 
                     if let Some(lbl) = label {
@@ -3111,8 +4145,10 @@ impl LunulaApp {
                 }
 
                 if node.node_type == NodeType::Mixer {
-                    let pin_a = Pos2::new(node_rect.min.x, node_rect.center().y - 14.0);
-                    let pin_b = Pos2::new(node_rect.min.x, node_rect.center().y + 14.0);
+                    let sat_a_world = self.get_satellite_pos(node.id, 0, node.pos, &node.node_type);
+                    let sat_b_world = self.get_satellite_pos(node.id, 1, node.pos, &node.node_type);
+                    let pin_a = Pos2::new(canvas_rect.min.x + self.patchbay_pan.x + sat_a_world.x, canvas_rect.min.y + self.patchbay_pan.y + sat_a_world.y + 17.0);
+                    let pin_b = Pos2::new(canvas_rect.min.x + self.patchbay_pan.x + sat_b_world.x, canvas_rect.min.y + self.patchbay_pan.y + sat_b_world.y + 17.0);
                     let is_hover_a = mouse_pos.map_or(false, |p| p.distance(pin_a) <= 18.0);
                     let is_hover_b = mouse_pos.map_or(false, |p| p.distance(pin_b) <= 18.0);
                     if is_hover_a || is_hover_b {
@@ -3193,8 +4229,10 @@ impl LunulaApp {
                 }
 
                 if node.node_type == NodeType::Splitter {
-                    let pin_a = Pos2::new(node_rect.max.x, node_rect.center().y - 14.0);
-                    let pin_b = Pos2::new(node_rect.max.x, node_rect.center().y + 14.0);
+                    let sat_a_world = self.get_satellite_pos(node.id, 0, node.pos, &node.node_type);
+                    let sat_b_world = self.get_satellite_pos(node.id, 1, node.pos, &node.node_type);
+                    let pin_a = Pos2::new(canvas_rect.min.x + self.patchbay_pan.x + sat_a_world.x + 52.0, canvas_rect.min.y + self.patchbay_pan.y + sat_a_world.y + 17.0);
+                    let pin_b = Pos2::new(canvas_rect.min.x + self.patchbay_pan.x + sat_b_world.x + 52.0, canvas_rect.min.y + self.patchbay_pan.y + sat_b_world.y + 17.0);
                     let is_hover_a = mouse_pos.map_or(false, |p| p.distance(pin_a) <= 18.0);
                     let is_hover_b = mouse_pos.map_or(false, |p| p.distance(pin_b) <= 18.0);
                     if is_hover_a || is_hover_b {
@@ -3243,11 +4281,7 @@ impl LunulaApp {
             self.current_tab = crate::models::AppTab::Equalizer;
         }
 
-        // 7. Interactive Bottom Status Pill
-        let banner_rect = Rect::from_min_size(
-            Pos2::new(canvas_rect.min.x + 12.0, canvas_rect.max.y - 32.0),
-            Vec2::new(canvas_rect.width() - 24.0, 26.0),
-        );
+        // 7. Interactive Bottom Status Pill Message & Colors
         let (pill_bg, pill_stroke, status_icon, status_msg, text_col) = if chain_eval.is_complete {
             if self.is_playing {
                 if is_fallback {
@@ -3388,8 +4422,61 @@ impl LunulaApp {
             )
         };
 
-        painter.rect_filled(banner_rect, 6.0, pill_bg);
-        painter.rect_stroke(banner_rect, 6.0, pill_stroke, egui::StrokeKind::Outside);
+        // Apply 2D TSTransform on all canvas world layer shapes (nodes, cables, satellites, particles)
+        ui.ctx().transform_layer_shapes(canvas_layer_id, ts);
+
+        // Dedicated Foreground HUD Painter (drawn on Order::Foreground so HUD is ALWAYS on top of nodes)
+        let hud_layer_id = egui::LayerId::new(egui::Order::Foreground, ui.scope_id().with("patchbay_canvas_hud"));
+        let mut hud_painter = ui.ctx().layer_painter(hud_layer_id);
+        hud_painter.set_clip_rect(canvas_rect);
+
+        // Floating Zoom Indicator Pill (bottom-left)
+        let zoom_pct = (self.patchbay_zoom * 100.0).round() as i32;
+        let pill_h = 26.0;
+        let pill_y = canvas_rect.max.y - 38.0;
+        let pill_w = 138.0;
+        let pill_rect = Rect::from_min_size(
+            Pos2::new(canvas_rect.min.x + 12.0, pill_y),
+            Vec2::new(pill_w, pill_h),
+        );
+        let pill_resp = ui.interact(pill_rect, ui.scope_id().with("patchbay_zoom_pill"), egui::Sense::click());
+        let is_pill_hover = pill_resp.hovered();
+        hud_painter.rect_filled(
+            pill_rect,
+            13.0,
+            if is_pill_hover { Color32::from_rgb(241, 245, 249) } else { Color32::from_rgba_unmultiplied(255, 255, 255, 235) },
+        );
+        hud_painter.rect_stroke(
+            pill_rect,
+            13.0,
+            Stroke::new(1.0, Color32::from_rgb(203, 213, 225)),
+            egui::StrokeKind::Outside,
+        );
+        let zoom_text = format!("🔍 {}% • Ctrl+Scroll", zoom_pct);
+        hud_painter.text(
+            pill_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            zoom_text,
+            egui::FontId::proportional(10.5),
+            Color32::from_rgb(71, 85, 105),
+        );
+        if pill_resp.clicked() {
+            self.patchbay_zoom = 1.0;
+        }
+        if is_pill_hover {
+            pill_resp.show_tooltip_text("Klik untuk reset zoom ke 100%\nGunakan Ctrl + Scroll untuk Zoom In / Out");
+        }
+
+        // Floating Status Banner / Flag (positioned to the right of the zoom pill with 8px gap)
+        let banner_start_x = pill_rect.max.x + 8.0;
+        let banner_width = (canvas_rect.max.x - 12.0 - banner_start_x).max(120.0);
+        let banner_rect = Rect::from_min_size(
+            Pos2::new(banner_start_x, pill_y),
+            Vec2::new(banner_width, pill_h),
+        );
+
+        hud_painter.rect_filled(banner_rect, 13.0, pill_bg);
+        hud_painter.rect_stroke(banner_rect, 13.0, pill_stroke, egui::StrokeKind::Outside);
 
         let show_fix_button = !static_report.is_chain_safe && !static_report.culprit_nodes.is_empty();
         let text_align_pos = if show_fix_button {
@@ -3403,11 +4490,11 @@ impl LunulaApp {
             egui::Align2::CENTER_CENTER
         };
 
-        painter.text(
+        hud_painter.text(
             text_align_pos,
             text_align,
             format!("{} {}", status_icon, status_msg),
-            egui::FontId::proportional(12.5),
+            egui::FontId::proportional(12.0),
             text_col,
         );
 
@@ -3424,8 +4511,8 @@ impl LunulaApp {
             } else {
                 Color32::from_rgb(239, 68, 68)
             };
-            painter.rect_filled(fix_btn_rect, 4.0, btn_bg);
-            painter.text(
+            hud_painter.rect_filled(fix_btn_rect, 4.0, btn_bg);
+            hud_painter.text(
                 fix_btn_rect.center(),
                 egui::Align2::CENTER_CENTER,
                 "🪄 Auto-Fix Semua",
@@ -3555,12 +4642,13 @@ impl LunulaApp {
                     ui.close();
                 }
                 ui.separator();
-                if ui.button("🔄 Reset Posisi Canvas").clicked() {
-                    self.patchbay_pan = Pos2::ZERO.to_vec2();
+                if ui.button("🔄 Reset Posisi & Zoom Canvas").clicked() {
+                    self.reset_patchbay_layout(canvas_rect.width(), canvas_rect.height());
                     ui.close();
                 }
             });
         }
+
 
         // Render floating beginner visual tutorial module in top-right of canvas
         self.render_patchbay_tutorial_card(ui, canvas_rect);
@@ -3571,4 +4659,844 @@ impl LunulaApp {
         // Render floating headroom guard & clipping detection settings popup
         self.render_clipping_settings_popup(ui, canvas_rect);
     }
+
+    // =========================================================================
+    // BESPOKE PASS FILTER REACTORS (LPF, HPF, BPF) - CUSTOM CHASSIS & ANIMATION
+    // =========================================================================
+    pub fn render_pass_filter_node(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        node: &crate::models::ModularNode,
+        node_rect: Rect,
+        node_width: f32,
+        param_change: &mut Option<(usize, f32)>,
+        switch_mode: &mut Option<crate::models::ChainMode>,
+        is_node_clicked: bool,
+        is_hovered: bool,
+        is_dragging: bool,
+        hover_anim: f32,
+        is_flowing: bool,
+        is_bypassed_effect: bool,
+        is_culprit_node: bool,
+        is_overdriven_victim: bool,
+        theme_color: Color32,
+    ) {
+        let t = ui.input(|i| i.time) as f32;
+
+        if is_bypassed_effect && is_node_clicked {
+            *switch_mode = Some(crate::models::ChainMode::DspActive);
+        }
+
+        let lerp_rgb = |c1: Color32, c2: Color32, k: f32| -> Color32 {
+            let k = k.clamp(0.0, 1.0);
+            Color32::from_rgb(
+                (c1.r() as f32 + (c2.r() as f32 - c1.r() as f32) * k) as u8,
+                (c1.g() as f32 + (c2.g() as f32 - c1.g() as f32) * k) as u8,
+                (c1.b() as f32 + (c2.b() as f32 - c1.b() as f32) * k) as u8,
+            )
+        };
+
+        match node.node_type {
+            NodeType::LowPassFilter => {
+                self.render_lpf_hydro_sieve(
+                    ui, painter, node, node_rect, node_width, param_change,
+                    is_hovered, is_dragging, hover_anim, is_flowing, is_bypassed_effect,
+                    is_culprit_node, is_overdriven_victim, theme_color, t, lerp_rgb,
+                );
+            }
+            NodeType::HighPassFilter => {
+                self.render_hpf_plasma_prism(
+                    ui, painter, node, node_rect, node_width, param_change,
+                    is_hovered, is_dragging, hover_anim, is_flowing, is_bypassed_effect,
+                    is_culprit_node, is_overdriven_victim, theme_color, t, lerp_rgb,
+                );
+            }
+            NodeType::BandPassFilter => {
+                self.render_bpf_cyclotron(
+                    ui, painter, node, node_rect, node_width, param_change,
+                    is_hovered, is_dragging, hover_anim, is_flowing, is_bypassed_effect,
+                    is_culprit_node, is_overdriven_victim, theme_color, t, lerp_rgb,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    // --- 1. LOW-PASS FILTER: HYDRO-TECTONIC SIEVE ---
+    fn render_lpf_hydro_sieve(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        node: &crate::models::ModularNode,
+        node_rect: Rect,
+        node_width: f32,
+        param_change: &mut Option<(usize, f32)>,
+        is_hovered: bool,
+        is_dragging: bool,
+        _hover_anim: f32,
+        is_flowing: bool,
+        is_bypassed_effect: bool,
+        is_culprit_node: bool,
+        is_overdriven_victim: bool,
+        _theme_color: Color32,
+        t: f32,
+        _lerp_rgb: impl Fn(Color32, Color32, f32) -> Color32,
+    ) {
+        let cutoff = if node.param_val > 50.0 { node.param_val } else { 800.0 };
+        let active_cutoff = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(cutoff);
+
+        // 1. Asymmetric Rolloff Polygon Chassis (High on left, slopes down on right)
+        let poly = vec![
+            Pos2::new(node_rect.min.x, node_rect.min.y + 8.0),
+            Pos2::new(node_rect.min.x + 8.0, node_rect.min.y),
+            Pos2::new(node_rect.min.x + 104.0, node_rect.min.y),
+            Pos2::new(node_rect.min.x + 142.0, node_rect.min.y + 8.0),
+            Pos2::new(node_rect.max.x - 16.0, node_rect.min.y + 18.0),
+            Pos2::new(node_rect.max.x, node_rect.min.y + 24.0),
+            Pos2::new(node_rect.max.x, node_rect.max.y - 8.0),
+            Pos2::new(node_rect.max.x - 8.0, node_rect.max.y),
+            Pos2::new(node_rect.min.x + 8.0, node_rect.max.y),
+            Pos2::new(node_rect.min.x, node_rect.max.y - 8.0),
+        ];
+
+        let bg = if is_dragging {
+            Color32::from_rgb(241, 245, 249)
+        } else if is_bypassed_effect {
+            Color32::from_rgba_premultiplied(248, 250, 252, 230)
+        } else if !is_flowing {
+            Color32::from_rgb(255, 248, 248)
+        } else {
+            Color32::WHITE
+        };
+
+        // Fill chassis body
+        painter.add(egui::Shape::convex_polygon(poly.clone(), bg, Stroke::NONE));
+
+        let border_col = if is_culprit_node {
+            Color32::from_rgb(239, 68, 68)
+        } else if is_overdriven_victim {
+            Color32::from_rgb(245, 158, 11)
+        } else if is_bypassed_effect {
+            Color32::from_rgb(203, 213, 225)
+        } else if is_flowing {
+            Color32::from_rgb(14, 165, 233)
+        } else {
+            Color32::from_rgb(239, 68, 68)
+        };
+
+        // Perimeter Stroke & Outer Aura
+        if is_flowing && self.is_playing && !is_bypassed_effect {
+            let aura_alpha = (50.0 + 30.0 * (self.visualizer_anim_phase * 4.0).sin()) as u8;
+            for w in poly.windows(2) {
+                painter.line_segment([w[0], w[1]], Stroke::new(3.0, Color32::from_rgba_unmultiplied(border_col.r(), border_col.g(), border_col.b(), aura_alpha / 2)));
+            }
+            painter.line_segment([poly[poly.len() - 1], poly[0]], Stroke::new(3.0, Color32::from_rgba_unmultiplied(border_col.r(), border_col.g(), border_col.b(), aura_alpha / 2)));
+
+            // Traveling laser beacons on chassis perimeter
+            let mut total_len = 0.0f32;
+            for i in 0..poly.len() {
+                total_len += poly[i].distance(poly[(i + 1) % poly.len()]);
+            }
+            let travel_dist = (self.visualizer_anim_phase * 130.0 + (node.id as f32) * 50.0) % total_len;
+            let eval_poly = |dist: f32| -> Pos2 {
+                let mut acc = 0.0f32;
+                let d = (dist % total_len + total_len) % total_len;
+                for i in 0..poly.len() {
+                    let next_i = (i + 1) % poly.len();
+                    let seg_len = poly[i].distance(poly[next_i]);
+                    if acc + seg_len >= d {
+                        let frac = if seg_len > 0.001 { (d - acc) / seg_len } else { 0.0 };
+                        return poly[i].lerp(poly[next_i], frac);
+                    }
+                    acc += seg_len;
+                }
+                poly[0]
+            };
+            let b1 = eval_poly(travel_dist);
+            let b2 = eval_poly(travel_dist + total_len * 0.5);
+            painter.circle_filled(b1, 3.8, border_col);
+            painter.circle_filled(b1, 1.8, Color32::WHITE);
+            painter.circle_filled(b2, 3.8, Color32::from_rgb(56, 189, 248));
+            painter.circle_filled(b2, 1.8, Color32::WHITE);
+
+            let stroke_w = 1.6 + 0.4 * (self.visualizer_anim_phase * 3.5).sin();
+            for w in poly.windows(2) {
+                painter.line_segment([w[0], w[1]], Stroke::new(stroke_w, border_col));
+            }
+            painter.line_segment([poly[poly.len() - 1], poly[0]], Stroke::new(stroke_w, border_col));
+        } else {
+            let stroke_w = if is_hovered { 1.8 } else { 1.2 };
+            for w in poly.windows(2) {
+                painter.line_segment([w[0], w[1]], Stroke::new(stroke_w, border_col));
+            }
+            painter.line_segment([poly[poly.len() - 1], poly[0]], Stroke::new(stroke_w, border_col));
+        }
+
+        // Corner Allen Bolts
+        for &(bx, by) in &[(node_rect.min.x + 6.0, node_rect.min.y + 6.0),
+                          (node_rect.min.x + 98.0, node_rect.min.y + 6.0),
+                          (node_rect.min.x + 6.0, node_rect.max.y - 6.0),
+                          (node_rect.max.x - 6.0, node_rect.max.y - 6.0)] {
+            painter.circle_filled(Pos2::new(bx, by), 1.2, Color32::from_rgb(203, 213, 225));
+        }
+
+        // 2. Top Header Pill: "🌊 LPF SIEVE"
+        let title_pill = Rect::from_min_size(Pos2::new(node_rect.min.x + 10.0, node_rect.min.y + 4.0), Vec2::new(88.0, 15.0));
+        painter.rect_filled(title_pill, 4.0, Color32::from_rgb(240, 249, 255));
+        painter.rect_stroke(title_pill, 4.0, Stroke::new(0.8, Color32::from_rgb(186, 230, 253)), egui::StrokeKind::Outside);
+        painter.text(
+            Pos2::new(title_pill.min.x + 4.0, title_pill.center().y),
+            egui::Align2::LEFT_CENTER,
+            "🌊 LPF SIEVE",
+            egui::FontId::proportional(8.5),
+            Color32::from_rgb(14, 116, 144),
+        );
+        painter.text(
+            Pos2::new(title_pill.max.x - 4.0, title_pill.center().y),
+            egui::Align2::RIGHT_CENTER,
+            format!("#{}", node.id),
+            egui::FontId::monospace(7.5),
+            Color32::from_rgb(100, 116, 139),
+        );
+
+        // Status LED
+        let led_pos = Pos2::new(node_rect.min.x + 106.0, node_rect.min.y + 11.0);
+        if is_flowing && self.is_playing && !is_bypassed_effect {
+            let led_pulse = (t * 5.0).sin().abs();
+            painter.circle_stroke(led_pos, 4.2, Stroke::new(1.0, Color32::from_rgba_unmultiplied(14, 165, 233, (60.0 + 90.0 * led_pulse) as u8)));
+            painter.circle_filled(led_pos, 2.2, Color32::from_rgb(14, 165, 233));
+            painter.circle_filled(led_pos, 1.0, Color32::WHITE);
+        } else if is_flowing && !is_bypassed_effect {
+            painter.circle_filled(led_pos, 2.0, Color32::from_rgb(56, 189, 248));
+        } else {
+            painter.circle_filled(led_pos, 2.0, Color32::from_rgb(203, 213, 225));
+        }
+
+        // 3. Treble Dissipation Vents in the sloped cutout (Top-Right)
+        let v_base_x = node_rect.min.x + 128.0;
+        let v_base_y = node_rect.min.y + 5.0;
+        for vi in 0..4 {
+            let vx = v_base_x + vi as f32 * 13.0;
+            let vy = v_base_y + vi as f32 * 4.2;
+            painter.line_segment(
+                [Pos2::new(vx, vy), Pos2::new(vx + 8.0, vy + 4.5)],
+                Stroke::new(1.2, Color32::from_rgb(203, 213, 225)),
+            );
+
+            // Animated steam/mist particles escaping when audio is active
+            if is_flowing && self.is_playing && !is_bypassed_effect {
+                let steam_t = (t * 2.5 + vi as f32 * 0.45).fract();
+                let steam_x = vx + 4.0 + (steam_t * 6.28).sin() * 2.0;
+                let steam_y = vy - steam_t * 9.0;
+                let steam_alpha = ((1.0 - steam_t) * 110.0) as u8;
+                painter.circle_filled(Pos2::new(steam_x, steam_y), 1.2 + steam_t * 1.5, Color32::from_rgba_unmultiplied(186, 230, 253, steam_alpha));
+            }
+        }
+
+        // 4. Hydro-Acoustic Bottom Reservoir & Animated Liquid Waves
+        let res_rect = Rect::from_min_max(
+            Pos2::new(node_rect.min.x + 2.0, node_rect.min.y + 44.0),
+            Pos2::new(node_rect.max.x - 2.0, node_rect.max.y - 2.0),
+        );
+        let wave_painter = painter.with_clip_rect(res_rect);
+
+        if is_flowing && self.is_playing && !is_bypassed_effect {
+            let norm_cutoff = ((active_cutoff / 100.0).log10() / 2.0).clamp(0.0, 1.0);
+            let water_depth = 0.55 - norm_cutoff * 0.22;
+            let base_y = node_rect.max.y - (node_rect.height() * water_depth);
+
+            // Back wave layer
+            let mut back_poly = Vec::new();
+            back_poly.push(Pos2::new(node_rect.min.x, node_rect.max.y));
+            let steps = 14;
+            for s in 0..=steps {
+                let fx = node_rect.min.x + (node_rect.width() * (s as f32 / steps as f32));
+                let wave_offset = ((fx * 0.08 + t * 3.2).sin()) * 1.8;
+                back_poly.push(Pos2::new(fx, base_y + wave_offset));
+            }
+            back_poly.push(Pos2::new(node_rect.max.x, node_rect.max.y));
+            wave_painter.add(egui::Shape::convex_polygon(back_poly, Color32::from_rgba_premultiplied(14, 165, 233, 40), Stroke::NONE));
+
+            // Front wave layer
+            let mut front_poly = Vec::new();
+            front_poly.push(Pos2::new(node_rect.min.x, node_rect.max.y));
+            for s in 0..=steps {
+                let fx = node_rect.min.x + (node_rect.width() * (s as f32 / steps as f32));
+                let wave_offset = (((fx * 0.09 - t * 4.0) + 1.8).sin()) * 1.6;
+                front_poly.push(Pos2::new(fx, base_y + wave_offset + 0.8));
+            }
+            front_poly.push(Pos2::new(node_rect.max.x, node_rect.max.y));
+            wave_painter.add(egui::Shape::convex_polygon(front_poly, Color32::from_rgba_premultiplied(6, 182, 212, 70), Stroke::NONE));
+
+            // Rising bubbles
+            for bi in 0..3 {
+                let b_seed = bi as f32 * 1.4;
+                let b_y = node_rect.max.y - (((t * (16.0 + bi as f32 * 4.0) + b_seed * 10.0)) % (node_rect.height() * 0.40));
+                let b_x = node_rect.min.x + 22.0 + bi as f32 * 45.0 + (t * 2.0 + b_seed).sin() * 3.0;
+                wave_painter.circle_stroke(Pos2::new(b_x, b_y), 1.5, Stroke::new(0.8, Color32::from_rgba_premultiplied(255, 255, 255, 180)));
+            }
+
+            ui.ctx().request_repaint();
+        }
+
+        // 5. Sluice Gate (Cutoff Sieve Barrier) & Slider Track
+        let slider_track_rect = Rect::from_min_size(
+            Pos2::new(node_rect.min.x + 24.0, node_rect.min.y + 36.0),
+            Vec2::new((node_width - 48.0).max(10.0), 5.0),
+        );
+        let fill_ratio = ((active_cutoff / 50.0).ln() / (400.0_f32).ln()).clamp(0.0, 1.0);
+        let thumb_x = slider_track_rect.min.x + slider_track_rect.width() * fill_ratio;
+        let cy = slider_track_rect.center().y;
+
+        if !is_bypassed_effect {
+            // Sieve Barrier Line (Glowing laser divider)
+            if is_flowing && self.is_playing {
+                painter.line_segment(
+                    [Pos2::new(thumb_x, node_rect.min.y + 24.0), Pos2::new(thumb_x, node_rect.max.y - 18.0)],
+                    Stroke::new(1.4, Color32::from_rgba_unmultiplied(14, 165, 233, 140)),
+                );
+                // Whirlpool ripple at water surface
+                let wp_r = 3.5 + (t * 4.5).sin().abs() * 2.5;
+                painter.circle_stroke(
+                    Pos2::new(thumb_x, node_rect.min.y + 46.0),
+                    wp_r,
+                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(56, 189, 248, 160)),
+                );
+            }
+
+            // Hydraulic Slider Track
+            painter.rect_filled(Rect::from_min_size(Pos2::new(slider_track_rect.min.x, cy - 2.0), Vec2::new(slider_track_rect.width(), 4.0)), 2.0, Color32::from_rgb(224, 242, 254));
+            painter.rect_filled(Rect::from_min_size(Pos2::new(slider_track_rect.min.x, cy - 2.0), Vec2::new(thumb_x - slider_track_rect.min.x, 4.0)), 2.0, Color32::from_rgb(14, 165, 233));
+
+            // Sluice Gate Knob (Hydraulic wheel)
+            painter.circle_filled(Pos2::new(thumb_x, cy + 1.0), 5.5, Color32::from_black_alpha(20));
+            painter.circle_filled(Pos2::new(thumb_x, cy), 5.2, Color32::WHITE);
+            painter.circle_stroke(Pos2::new(thumb_x, cy), 5.2, Stroke::new(1.8, Color32::from_rgb(2, 132, 199)));
+            painter.circle_filled(Pos2::new(thumb_x, cy), 2.0, Color32::from_rgb(14, 165, 233));
+
+            // 6. Dual Telemetry Badges at bottom
+            let readout = if active_cutoff >= 1000.0 {
+                format!("Cutoff {:.1}k", active_cutoff / 1000.0)
+            } else {
+                format!("Cutoff {:.0}Hz", active_cutoff)
+            };
+
+            let slope_str = if node.sub2.contains("48dB") { "48dB" } else if node.sub2.contains("24dB") { "24dB" } else { "12dB" };
+            let q_str = if let Some(idx) = node.sub2.find("Q ") {
+                node.sub2[idx + 2..].split_whitespace().next().unwrap_or("0.71")
+            } else {
+                "0.71"
+            };
+
+            let badge_y = node_rect.min.y + 63.0;
+            let badge_w = (node_width - 34.0) * 0.48;
+            let badge_h = 19.0;
+
+            // Left: Cutoff Readout
+            let b_left = Rect::from_center_size(Pos2::new(node_rect.center().x - badge_w * 0.52, badge_y), Vec2::new(badge_w, badge_h));
+            painter.rect_filled(b_left, 3.5, Color32::from_rgb(224, 242, 254));
+            painter.rect_stroke(b_left, 3.5, Stroke::new(1.0, Color32::from_rgb(2, 132, 199)), egui::StrokeKind::Outside);
+            painter.text(b_left.center(), egui::Align2::CENTER_CENTER, readout, egui::FontId::proportional(10.0), Color32::from_rgb(2, 132, 199));
+
+            // Right: Slope & Q Readout
+            let b_right = Rect::from_center_size(Pos2::new(node_rect.center().x + badge_w * 0.52, badge_y), Vec2::new(badge_w, badge_h));
+            painter.rect_filled(b_right, 3.5, Color32::from_rgb(15, 23, 42));
+            painter.rect_stroke(b_right, 3.5, Stroke::new(0.8, Color32::from_rgb(71, 85, 105)), egui::StrokeKind::Outside);
+            painter.text(b_right.center(), egui::Align2::CENTER_CENTER, format!("{} • Q{}", slope_str, q_str), egui::FontId::proportional(9.5), Color32::from_rgb(241, 245, 249));
+        } else {
+            // Dormant / Bypassed State
+            let b_rect = Rect::from_center_size(Pos2::new(node_rect.center().x, node_rect.min.y + 44.0), Vec2::new(154.0, 22.0));
+            painter.rect_filled(b_rect, 4.0, Color32::from_rgb(241, 245, 249));
+            painter.rect_stroke(b_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(203, 213, 225)), egui::StrokeKind::Outside);
+            painter.text(b_rect.center(), egui::Align2::CENTER_CENTER, "DILEWATI (Bit-Perfect)", egui::FontId::proportional(11.0), Color32::from_rgb(100, 116, 139));
+            painter.text(Pos2::new(node_rect.center().x, node_rect.min.y + 66.0), egui::Align2::CENTER_CENTER, "Passthrough 1:1 Stream", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
+        }
+    }
+
+    // --- 2. HIGH-PASS FILTER: AERO-PLASMA PRISM ---
+    fn render_hpf_plasma_prism(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        node: &crate::models::ModularNode,
+        node_rect: Rect,
+        node_width: f32,
+        param_change: &mut Option<(usize, f32)>,
+        is_hovered: bool,
+        is_dragging: bool,
+        _hover_anim: f32,
+        is_flowing: bool,
+        is_bypassed_effect: bool,
+        is_culprit_node: bool,
+        is_overdriven_victim: bool,
+        _theme_color: Color32,
+        t: f32,
+        _lerp_rgb: impl Fn(Color32, Color32, f32) -> Color32,
+    ) {
+        let cutoff = if node.param_val > 10.0 { node.param_val } else { 80.0 };
+        let active_cutoff = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(cutoff);
+
+        // 1. Inverse Wedge Polygon Chassis with 45° cut on bottom-left (Sub Drain)
+        let poly = vec![
+            Pos2::new(node_rect.min.x, node_rect.min.y + 8.0),
+            Pos2::new(node_rect.min.x + 8.0, node_rect.min.y),
+            Pos2::new(node_rect.max.x - 8.0, node_rect.min.y),
+            Pos2::new(node_rect.max.x, node_rect.min.y + 8.0),
+            Pos2::new(node_rect.max.x, node_rect.max.y - 8.0),
+            Pos2::new(node_rect.max.x - 8.0, node_rect.max.y),
+            Pos2::new(node_rect.min.x + 38.0, node_rect.max.y),
+            Pos2::new(node_rect.min.x, node_rect.max.y - 28.0),
+        ];
+
+        let bg = if is_dragging {
+            Color32::from_rgb(241, 245, 249)
+        } else if is_bypassed_effect {
+            Color32::from_rgba_premultiplied(248, 250, 252, 230)
+        } else if !is_flowing {
+            Color32::from_rgb(255, 248, 248)
+        } else {
+            Color32::WHITE
+        };
+
+        painter.add(egui::Shape::convex_polygon(poly.clone(), bg, Stroke::NONE));
+
+        let border_col = if is_culprit_node {
+            Color32::from_rgb(239, 68, 68)
+        } else if is_overdriven_victim {
+            Color32::from_rgb(245, 158, 11)
+        } else if is_bypassed_effect {
+            Color32::from_rgb(203, 213, 225)
+        } else if is_flowing {
+            Color32::from_rgb(56, 189, 248)
+        } else {
+            Color32::from_rgb(239, 68, 68)
+        };
+
+        // Perimeter Stroke & Outer Aura
+        if is_flowing && self.is_playing && !is_bypassed_effect {
+            let aura_alpha = (50.0 + 30.0 * (self.visualizer_anim_phase * 4.0).sin()) as u8;
+            for w in poly.windows(2) {
+                painter.line_segment([w[0], w[1]], Stroke::new(3.0, Color32::from_rgba_unmultiplied(border_col.r(), border_col.g(), border_col.b(), aura_alpha / 2)));
+            }
+            painter.line_segment([poly[poly.len() - 1], poly[0]], Stroke::new(3.0, Color32::from_rgba_unmultiplied(border_col.r(), border_col.g(), border_col.b(), aura_alpha / 2)));
+
+            // Traveling laser beacons on chassis perimeter
+            let mut total_len = 0.0f32;
+            for i in 0..poly.len() {
+                total_len += poly[i].distance(poly[(i + 1) % poly.len()]);
+            }
+            let travel_dist = (self.visualizer_anim_phase * 130.0 + (node.id as f32) * 50.0) % total_len;
+            let eval_poly = |dist: f32| -> Pos2 {
+                let mut acc = 0.0f32;
+                let d = (dist % total_len + total_len) % total_len;
+                for i in 0..poly.len() {
+                    let next_i = (i + 1) % poly.len();
+                    let seg_len = poly[i].distance(poly[next_i]);
+                    if acc + seg_len >= d {
+                        let frac = if seg_len > 0.001 { (d - acc) / seg_len } else { 0.0 };
+                        return poly[i].lerp(poly[next_i], frac);
+                    }
+                    acc += seg_len;
+                }
+                poly[0]
+            };
+            let b1 = eval_poly(travel_dist);
+            let b2 = eval_poly(travel_dist + total_len * 0.5);
+            painter.circle_filled(b1, 3.8, border_col);
+            painter.circle_filled(b1, 1.8, Color32::WHITE);
+            painter.circle_filled(b2, 3.8, Color32::from_rgb(147, 197, 253));
+            painter.circle_filled(b2, 1.8, Color32::WHITE);
+
+            let stroke_w = 1.6 + 0.4 * (self.visualizer_anim_phase * 3.5).sin();
+            for w in poly.windows(2) {
+                painter.line_segment([w[0], w[1]], Stroke::new(stroke_w, border_col));
+            }
+            painter.line_segment([poly[poly.len() - 1], poly[0]], Stroke::new(stroke_w, border_col));
+        } else {
+            let stroke_w = if is_hovered { 1.8 } else { 1.2 };
+            for w in poly.windows(2) {
+                painter.line_segment([w[0], w[1]], Stroke::new(stroke_w, border_col));
+            }
+            painter.line_segment([poly[poly.len() - 1], poly[0]], Stroke::new(stroke_w, border_col));
+        }
+
+        // Corner Bolts
+        for &(bx, by) in &[(node_rect.min.x + 6.0, node_rect.min.y + 6.0),
+                          (node_rect.max.x - 6.0, node_rect.min.y + 6.0),
+                          (node_rect.max.x - 6.0, node_rect.max.y - 6.0),
+                          (node_rect.min.x + 40.0, node_rect.max.y - 6.0)] {
+            painter.circle_filled(Pos2::new(bx, by), 1.2, Color32::from_rgb(203, 213, 225));
+        }
+
+        // 2. Header Badge Pill: "🏔️ HPF PRISM"
+        let title_pill = Rect::from_min_size(Pos2::new(node_rect.min.x + 10.0, node_rect.min.y + 4.0), Vec2::new(88.0, 15.0));
+        painter.rect_filled(title_pill, 4.0, Color32::from_rgb(240, 249, 255));
+        painter.rect_stroke(title_pill, 4.0, Stroke::new(0.8, Color32::from_rgb(186, 230, 253)), egui::StrokeKind::Outside);
+        painter.text(
+            Pos2::new(title_pill.min.x + 4.0, title_pill.center().y),
+            egui::Align2::LEFT_CENTER,
+            "🏔️ HPF PRISM",
+            egui::FontId::proportional(8.5),
+            Color32::from_rgb(3, 105, 161),
+        );
+        painter.text(
+            Pos2::new(title_pill.max.x - 4.0, title_pill.center().y),
+            egui::Align2::RIGHT_CENTER,
+            format!("#{}", node.id),
+            egui::FontId::monospace(7.5),
+            Color32::from_rgb(100, 116, 139),
+        );
+
+        // Status LED
+        let led_pos = Pos2::new(node_rect.max.x - 12.0, node_rect.min.y + 11.0);
+        if is_flowing && self.is_playing && !is_bypassed_effect {
+            let led_pulse = (t * 5.0).sin().abs();
+            painter.circle_stroke(led_pos, 4.2, Stroke::new(1.0, Color32::from_rgba_unmultiplied(56, 189, 248, (60.0 + 90.0 * led_pulse) as u8)));
+            painter.circle_filled(led_pos, 2.2, Color32::from_rgb(56, 189, 248));
+            painter.circle_filled(led_pos, 1.0, Color32::WHITE);
+        } else if is_flowing && !is_bypassed_effect {
+            painter.circle_filled(led_pos, 2.0, Color32::from_rgb(56, 189, 248));
+        } else {
+            painter.circle_filled(led_pos, 2.0, Color32::from_rgb(203, 213, 225));
+        }
+
+        // 3. Sub-Rumble Drain Void (Bottom-Left Cutaway Zone)
+        let drain_center = Pos2::new(node_rect.min.x + 18.0, node_rect.max.y - 12.0);
+        painter.circle_filled(drain_center, 8.5, Color32::from_rgb(15, 23, 42));
+        painter.circle_stroke(drain_center, 8.5, Stroke::new(1.0, Color32::from_rgb(51, 65, 85)));
+
+        if is_flowing && self.is_playing && !is_bypassed_effect {
+            // Dark amber/crimson motes spiraling into the drain
+            for pi in 0..4 {
+                let p_tau = (t * 2.2 + pi as f32 * 0.25).fract();
+                let spiral_r = 7.0 * (1.0 - p_tau);
+                let spiral_ang = t * 6.0 + pi as f32 * 1.57;
+                let pt = Pos2::new(drain_center.x + spiral_r * spiral_ang.cos(), drain_center.y + spiral_r * spiral_ang.sin());
+                painter.circle_filled(pt, 1.1, Color32::from_rgb(239, 68, 68));
+            }
+            painter.circle_filled(drain_center, 1.5, Color32::WHITE);
+        } else {
+            painter.circle_filled(drain_center, 1.5, Color32::from_rgb(71, 85, 105));
+        }
+
+        // 4. Plasma Prism Accelerator Spine & Interactive Slider
+        let slider_track_rect = Rect::from_min_size(
+            Pos2::new(node_rect.min.x + 24.0, node_rect.min.y + 36.0),
+            Vec2::new((node_width - 48.0).max(10.0), 5.0),
+        );
+        let fill_ratio = ((active_cutoff / 20.0).ln() / (1000.0_f32).ln()).clamp(0.0, 1.0);
+        let thumb_x = slider_track_rect.min.x + slider_track_rect.width() * fill_ratio;
+        let cy = slider_track_rect.center().y;
+
+        if !is_bypassed_effect {
+            // Prism Spine Refraction Grid (Above slider)
+            for gi in 0..7 {
+                let gx = node_rect.min.x + 36.0 + gi as f32 * 18.0;
+                painter.line_segment(
+                    [Pos2::new(gx, node_rect.min.y + 22.0), Pos2::new(gx + 4.0, node_rect.min.y + 30.0)],
+                    Stroke::new(0.8, Color32::from_rgb(224, 242, 254)),
+                );
+            }
+
+            // Electric plasma arcs along the passband (from thumb_x to output pin)
+            if is_flowing && self.is_playing {
+                let arc_end_x = node_rect.max.x - 4.0;
+                if thumb_x < arc_end_x {
+                    let segs = 6;
+                    let seg_w = (arc_end_x - thumb_x) / segs as f32;
+                    let mut prev_pt = Pos2::new(thumb_x, cy - 8.0);
+                    for s in 1..=segs {
+                        let cur_x = thumb_x + s as f32 * seg_w;
+                        let jitter = ((t * 22.0 + s as f32 * 3.1).sin()) * 2.5;
+                        let cur_pt = Pos2::new(cur_x, cy - 8.0 + jitter);
+                        painter.line_segment([prev_pt, cur_pt], Stroke::new(1.1, Color32::from_rgb(147, 197, 253)));
+                        prev_pt = cur_pt;
+                    }
+                }
+                ui.ctx().request_repaint();
+            }
+
+            // Precision Slider Track
+            painter.rect_filled(Rect::from_min_size(Pos2::new(slider_track_rect.min.x, cy - 2.0), Vec2::new(slider_track_rect.width(), 4.0)), 2.0, Color32::from_rgb(224, 242, 254));
+            painter.rect_filled(Rect::from_min_size(Pos2::new(slider_track_rect.min.x, cy - 2.0), Vec2::new(thumb_x - slider_track_rect.min.x, 4.0)), 2.0, Color32::from_rgb(56, 189, 248));
+
+            // Plasma Needle Thumb
+            painter.circle_filled(Pos2::new(thumb_x, cy + 1.0), 5.5, Color32::from_black_alpha(20));
+            painter.circle_filled(Pos2::new(thumb_x, cy), 5.2, Color32::WHITE);
+            painter.circle_stroke(Pos2::new(thumb_x, cy), 5.2, Stroke::new(1.8, Color32::from_rgb(2, 132, 199)));
+            painter.circle_filled(Pos2::new(thumb_x, cy), 2.0, Color32::from_rgb(56, 189, 248));
+
+            // Telemetry Badges
+            let readout = if active_cutoff >= 1000.0 {
+                format!("Cutoff {:.1}k", active_cutoff / 1000.0)
+            } else {
+                format!("Cutoff {:.0}Hz", active_cutoff)
+            };
+
+            let slope_str = if node.sub2.contains("48dB") { "48dB" } else if node.sub2.contains("24dB") { "24dB" } else { "12dB" };
+            let q_str = if let Some(idx) = node.sub2.find("Q ") {
+                node.sub2[idx + 2..].split_whitespace().next().unwrap_or("0.71")
+            } else {
+                "0.71"
+            };
+
+            let badge_y = node_rect.min.y + 63.0;
+            let badge_w = (node_width - 34.0) * 0.48;
+            let badge_h = 19.0;
+
+            // Left: Cutoff
+            let b_left = Rect::from_center_size(Pos2::new(node_rect.center().x - badge_w * 0.52, badge_y), Vec2::new(badge_w, badge_h));
+            painter.rect_filled(b_left, 3.5, Color32::from_rgb(224, 242, 254));
+            painter.rect_stroke(b_left, 3.5, Stroke::new(1.0, Color32::from_rgb(2, 132, 199)), egui::StrokeKind::Outside);
+            painter.text(b_left.center(), egui::Align2::CENTER_CENTER, readout, egui::FontId::proportional(10.0), Color32::from_rgb(2, 132, 199));
+
+            // Right: Slope & Q
+            let b_right = Rect::from_center_size(Pos2::new(node_rect.center().x + badge_w * 0.52, badge_y), Vec2::new(badge_w, badge_h));
+            painter.rect_filled(b_right, 3.5, Color32::from_rgb(15, 23, 42));
+            painter.rect_stroke(b_right, 3.5, Stroke::new(0.8, Color32::from_rgb(71, 85, 105)), egui::StrokeKind::Outside);
+            painter.text(b_right.center(), egui::Align2::CENTER_CENTER, format!("{} • Q{}", slope_str, q_str), egui::FontId::proportional(9.5), Color32::from_rgb(241, 245, 249));
+        } else {
+            let b_rect = Rect::from_center_size(Pos2::new(node_rect.center().x, node_rect.min.y + 44.0), Vec2::new(154.0, 22.0));
+            painter.rect_filled(b_rect, 4.0, Color32::from_rgb(241, 245, 249));
+            painter.rect_stroke(b_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(203, 213, 225)), egui::StrokeKind::Outside);
+            painter.text(b_rect.center(), egui::Align2::CENTER_CENTER, "DILEWATI (Bit-Perfect)", egui::FontId::proportional(11.0), Color32::from_rgb(100, 116, 139));
+            painter.text(Pos2::new(node_rect.center().x, node_rect.min.y + 66.0), egui::Align2::CENTER_CENTER, "Passthrough 1:1 Stream", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
+        }
+    }
+
+    // --- 3. BAND-PASS FILTER: CENTRIFUGAL CYCLOTRON ---
+    fn render_bpf_cyclotron(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        node: &crate::models::ModularNode,
+        node_rect: Rect,
+        node_width: f32,
+        param_change: &mut Option<(usize, f32)>,
+        is_hovered: bool,
+        is_dragging: bool,
+        _hover_anim: f32,
+        is_flowing: bool,
+        is_bypassed_effect: bool,
+        is_culprit_node: bool,
+        is_overdriven_victim: bool,
+        _theme_color: Color32,
+        t: f32,
+        _lerp_rgb: impl Fn(Color32, Color32, f32) -> Color32,
+    ) {
+        let freq = if node.param_val > 10.0 { node.param_val } else { 1000.0 };
+        let active_freq = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(freq);
+
+        // 1. Symmetrical Hexagonal / Bell-Prism Polygon Chassis
+        let poly = vec![
+            Pos2::new(node_rect.min.x + 16.0, node_rect.min.y + 5.0),
+            Pos2::new(node_rect.center().x, node_rect.min.y), // Crest of bell curve
+            Pos2::new(node_rect.max.x - 16.0, node_rect.min.y + 5.0),
+            Pos2::new(node_rect.max.x, node_rect.center().y), // Output pin apex
+            Pos2::new(node_rect.max.x - 16.0, node_rect.max.y - 5.0),
+            Pos2::new(node_rect.center().x, node_rect.max.y),
+            Pos2::new(node_rect.min.x + 16.0, node_rect.max.y - 5.0),
+            Pos2::new(node_rect.min.x, node_rect.center().y), // Input pin apex
+        ];
+
+        let bg = if is_dragging {
+            Color32::from_rgb(241, 245, 249)
+        } else if is_bypassed_effect {
+            Color32::from_rgba_premultiplied(248, 250, 252, 230)
+        } else if !is_flowing {
+            Color32::from_rgb(255, 248, 248)
+        } else {
+            Color32::WHITE
+        };
+
+        painter.add(egui::Shape::convex_polygon(poly.clone(), bg, Stroke::NONE));
+
+        let border_col = if is_culprit_node {
+            Color32::from_rgb(239, 68, 68)
+        } else if is_overdriven_victim {
+            Color32::from_rgb(245, 158, 11)
+        } else if is_bypassed_effect {
+            Color32::from_rgb(203, 213, 225)
+        } else if is_flowing {
+            Color32::from_rgb(245, 158, 11)
+        } else {
+            Color32::from_rgb(239, 68, 68)
+        };
+
+        // Perimeter Stroke & Outer Aura
+        if is_flowing && self.is_playing && !is_bypassed_effect {
+            let aura_alpha = (50.0 + 30.0 * (self.visualizer_anim_phase * 4.0).sin()) as u8;
+            for w in poly.windows(2) {
+                painter.line_segment([w[0], w[1]], Stroke::new(3.0, Color32::from_rgba_unmultiplied(border_col.r(), border_col.g(), border_col.b(), aura_alpha / 2)));
+            }
+            painter.line_segment([poly[poly.len() - 1], poly[0]], Stroke::new(3.0, Color32::from_rgba_unmultiplied(border_col.r(), border_col.g(), border_col.b(), aura_alpha / 2)));
+
+            // Traveling laser beacons on chassis perimeter
+            let mut total_len = 0.0f32;
+            for i in 0..poly.len() {
+                total_len += poly[i].distance(poly[(i + 1) % poly.len()]);
+            }
+            let travel_dist = (self.visualizer_anim_phase * 130.0 + (node.id as f32) * 50.0) % total_len;
+            let eval_poly = |dist: f32| -> Pos2 {
+                let mut acc = 0.0f32;
+                let d = (dist % total_len + total_len) % total_len;
+                for i in 0..poly.len() {
+                    let next_i = (i + 1) % poly.len();
+                    let seg_len = poly[i].distance(poly[next_i]);
+                    if acc + seg_len >= d {
+                        let frac = if seg_len > 0.001 { (d - acc) / seg_len } else { 0.0 };
+                        return poly[i].lerp(poly[next_i], frac);
+                    }
+                    acc += seg_len;
+                }
+                poly[0]
+            };
+            let b1 = eval_poly(travel_dist);
+            let b2 = eval_poly(travel_dist + total_len * 0.5);
+            painter.circle_filled(b1, 3.8, border_col);
+            painter.circle_filled(b1, 1.8, Color32::WHITE);
+            painter.circle_filled(b2, 3.8, Color32::from_rgb(251, 191, 36));
+            painter.circle_filled(b2, 1.8, Color32::WHITE);
+
+            let stroke_w = 1.6 + 0.4 * (self.visualizer_anim_phase * 3.5).sin();
+            for w in poly.windows(2) {
+                painter.line_segment([w[0], w[1]], Stroke::new(stroke_w, border_col));
+            }
+            painter.line_segment([poly[poly.len() - 1], poly[0]], Stroke::new(stroke_w, border_col));
+        } else {
+            let stroke_w = if is_hovered { 1.8 } else { 1.2 };
+            for w in poly.windows(2) {
+                painter.line_segment([w[0], w[1]], Stroke::new(stroke_w, border_col));
+            }
+            painter.line_segment([poly[poly.len() - 1], poly[0]], Stroke::new(stroke_w, border_col));
+        }
+
+        // Corner Bolts
+        for &(bx, by) in &[(node_rect.min.x + 18.0, node_rect.min.y + 8.0),
+                          (node_rect.max.x - 18.0, node_rect.min.y + 8.0),
+                          (node_rect.max.x - 18.0, node_rect.max.y - 8.0),
+                          (node_rect.min.x + 18.0, node_rect.max.y - 8.0)] {
+            painter.circle_filled(Pos2::new(bx, by), 1.2, Color32::from_rgb(203, 213, 225));
+        }
+
+        // 2. Header Badge Pill: "🎯 BPF CYCLO"
+        let title_pill = Rect::from_min_size(Pos2::new(node_rect.min.x + 18.0, node_rect.min.y + 5.0), Vec2::new(88.0, 14.0));
+        painter.rect_filled(title_pill, 4.0, Color32::from_rgb(254, 243, 199));
+        painter.rect_stroke(title_pill, 4.0, Stroke::new(0.8, Color32::from_rgb(253, 224, 71)), egui::StrokeKind::Outside);
+        painter.text(
+            Pos2::new(title_pill.min.x + 4.0, title_pill.center().y),
+            egui::Align2::LEFT_CENTER,
+            "🎯 BPF CYCLO",
+            egui::FontId::proportional(8.5),
+            Color32::from_rgb(180, 83, 9),
+        );
+        painter.text(
+            Pos2::new(title_pill.max.x - 4.0, title_pill.center().y),
+            egui::Align2::RIGHT_CENTER,
+            format!("#{}", node.id),
+            egui::FontId::monospace(7.5),
+            Color32::from_rgb(100, 116, 139),
+        );
+
+        // Status LED
+        let led_pos = Pos2::new(node_rect.max.x - 22.0, node_rect.min.y + 11.0);
+        if is_flowing && self.is_playing && !is_bypassed_effect {
+            let led_pulse = (t * 5.0).sin().abs();
+            painter.circle_stroke(led_pos, 4.2, Stroke::new(1.0, Color32::from_rgba_unmultiplied(245, 158, 11, (60.0 + 90.0 * led_pulse) as u8)));
+            painter.circle_filled(led_pos, 2.2, Color32::from_rgb(245, 158, 11));
+            painter.circle_filled(led_pos, 1.0, Color32::WHITE);
+        } else if is_flowing && !is_bypassed_effect {
+            painter.circle_filled(led_pos, 2.0, Color32::from_rgb(245, 158, 11));
+        } else {
+            painter.circle_filled(led_pos, 2.0, Color32::from_rgb(203, 213, 225));
+        }
+
+        // 3. Dual Ejection Exhaust Vents (Top-Left and Bottom-Left Flanks)
+        for vi in 0..2 {
+            let vx = node_rect.min.x + 24.0 + vi as f32 * 8.0;
+            painter.line_segment([Pos2::new(vx, node_rect.min.y + 20.0), Pos2::new(vx + 4.0, node_rect.min.y + 25.0)], Stroke::new(1.0, Color32::from_rgb(203, 213, 225)));
+            painter.line_segment([Pos2::new(vx, node_rect.max.y - 20.0), Pos2::new(vx + 4.0, node_rect.max.y - 25.0)], Stroke::new(1.0, Color32::from_rgb(203, 213, 225)));
+        }
+
+        // 4. Centrifugal Cyclotron Core & Interactive Slider
+        let slider_track_rect = Rect::from_min_size(
+            Pos2::new(node_rect.min.x + 24.0, node_rect.min.y + 36.0),
+            Vec2::new((node_width - 48.0).max(10.0), 5.0),
+        );
+        let fill_ratio = ((active_freq / 20.0).ln() / (1000.0_f32).ln()).clamp(0.0, 1.0);
+        let thumb_x = slider_track_rect.min.x + slider_track_rect.width() * fill_ratio;
+        let cy = slider_track_rect.center().y;
+
+        if !is_bypassed_effect {
+            // Cyclotron Magnetic Ring Core at thumb_x
+            let core_center = Pos2::new(thumb_x, cy);
+            painter.circle_filled(core_center, 9.5, Color32::from_rgb(15, 23, 42));
+            painter.circle_stroke(core_center, 9.5, Stroke::new(1.2, Color32::from_rgb(245, 158, 11)));
+
+            if is_flowing && self.is_playing {
+                // Dual counter-rotating plasma orbits
+                let r_orb = 5.2;
+                let ang1 = t * 5.2;
+                let ang2 = -t * 3.8;
+                let orb1 = Pos2::new(core_center.x + ang1.cos() * r_orb, core_center.y + ang1.sin() * r_orb);
+                let orb2 = Pos2::new(core_center.x + ang2.cos() * r_orb, core_center.y + ang2.sin() * r_orb);
+
+                painter.circle_filled(orb1, 1.8, Color32::from_rgb(251, 191, 36));
+                painter.circle_filled(orb2, 1.8, Color32::from_rgb(245, 158, 11));
+
+                // Pulsing central focus spark
+                let spark_pulse = (t * 6.0).sin().abs();
+                painter.circle_filled(core_center, 1.6 + spark_pulse * 0.8, Color32::WHITE);
+
+                ui.ctx().request_repaint();
+            } else {
+                painter.circle_filled(core_center, 1.8, Color32::from_rgb(245, 158, 11));
+            }
+
+            // Amber Slider Track
+            painter.rect_filled(Rect::from_min_size(Pos2::new(slider_track_rect.min.x, cy - 2.0), Vec2::new(slider_track_rect.width(), 4.0)), 2.0, Color32::from_rgb(254, 243, 199));
+            painter.rect_filled(Rect::from_min_size(Pos2::new(slider_track_rect.min.x, cy - 2.0), Vec2::new(thumb_x - slider_track_rect.min.x, 4.0)), 2.0, Color32::from_rgb(245, 158, 11));
+
+            // Outer dial ring around cyclotron
+            painter.circle_stroke(core_center, 11.0, Stroke::new(1.0, Color32::from_rgba_unmultiplied(245, 158, 11, 140)));
+
+            // Telemetry Badges
+            let readout = if active_freq >= 1000.0 {
+                format!("Center {:.1}k", active_freq / 1000.0)
+            } else {
+                format!("Center {:.0}Hz", active_freq)
+            };
+
+            let slope_str = if node.sub2.contains("48dB") { "48dB" } else if node.sub2.contains("24dB") { "24dB" } else { "12dB" };
+            let q_str = if let Some(idx) = node.sub2.find("Q ") {
+                node.sub2[idx + 2..].split_whitespace().next().unwrap_or("1.41")
+            } else {
+                "1.41"
+            };
+
+            let badge_y = node_rect.min.y + 63.0;
+            let badge_w = (node_width - 34.0) * 0.48;
+            let badge_h = 19.0;
+
+            // Left: Center Readout
+            let b_left = Rect::from_center_size(Pos2::new(node_rect.center().x - badge_w * 0.52, badge_y), Vec2::new(badge_w, badge_h));
+            painter.rect_filled(b_left, 3.5, Color32::from_rgb(254, 243, 199));
+            painter.rect_stroke(b_left, 3.5, Stroke::new(1.0, Color32::from_rgb(217, 119, 6)), egui::StrokeKind::Outside);
+            painter.text(b_left.center(), egui::Align2::CENTER_CENTER, readout, egui::FontId::proportional(10.0), Color32::from_rgb(217, 119, 6));
+
+            // Right: Bandwidth & Q
+            let b_right = Rect::from_center_size(Pos2::new(node_rect.center().x + badge_w * 0.52, badge_y), Vec2::new(badge_w, badge_h));
+            painter.rect_filled(b_right, 3.5, Color32::from_rgb(15, 23, 42));
+            painter.rect_stroke(b_right, 3.5, Stroke::new(0.8, Color32::from_rgb(71, 85, 105)), egui::StrokeKind::Outside);
+            painter.text(b_right.center(), egui::Align2::CENTER_CENTER, format!("{} • Q{}", slope_str, q_str), egui::FontId::proportional(9.5), Color32::from_rgb(241, 245, 249));
+        } else {
+            let b_rect = Rect::from_center_size(Pos2::new(node_rect.center().x, node_rect.min.y + 44.0), Vec2::new(154.0, 22.0));
+            painter.rect_filled(b_rect, 4.0, Color32::from_rgb(241, 245, 249));
+            painter.rect_stroke(b_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(203, 213, 225)), egui::StrokeKind::Outside);
+            painter.text(b_rect.center(), egui::Align2::CENTER_CENTER, "DILEWATI (Bit-Perfect)", egui::FontId::proportional(11.0), Color32::from_rgb(100, 116, 139));
+            painter.text(Pos2::new(node_rect.center().x, node_rect.min.y + 66.0), egui::Align2::CENTER_CENTER, "Passthrough 1:1 Stream", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
+        }
+    }
+
 }

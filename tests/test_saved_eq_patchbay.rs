@@ -399,7 +399,7 @@ fn test_saved_eq_floating_popup_master_banner_and_animations() {
     app.show_saved_eq_palette_popup = true;
     app.saved_eq_popup_anchor = Some(egui::pos2(1100.0, 300.0));
 
-    // Frame 1: Initial opening with animation
+    // Frame 1: Initial sizing pass of egui::Area (invisible to measure dimensions)
     let mut out1 = ctx.run_ui(
         egui::RawInput {
             screen_rect: screen,
@@ -412,11 +412,24 @@ fn test_saved_eq_floating_popup_master_banner_and_animations() {
     );
     out1.textures_delta.clear();
 
+    // Frame 2: Visible layout pass where all shapes are rendered
+    let mut out_vis = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: screen,
+            time: Some(0.02),
+            ..Default::default()
+        },
+        |ui| {
+            app.render_saved_eq_floating_popup(ui);
+        },
+    );
+    out_vis.textures_delta.clear();
+
     // Helper to find text position in shapes
     fn find_text_pos(shape: &egui::epaint::Shape, needle: &str) -> Option<egui::Pos2> {
         match shape {
             egui::epaint::Shape::Text(t) => {
-                if t.galley.job.text.contains(needle) {
+                if t.galley.job.text.contains(needle) || t.galley.text().contains(needle) {
                     Some(t.pos)
                 } else {
                     None
@@ -435,7 +448,7 @@ fn test_saved_eq_floating_popup_master_banner_and_animations() {
     }
 
     let mut banner_pos = egui::Pos2::ZERO;
-    for shape in &out1.shapes {
+    for shape in &out_vis.shapes {
         if let Some(pos) = find_text_pos(&shape.shape, "Buka Studio Equalizer Penuh") {
             banner_pos = pos;
             break;
@@ -443,7 +456,7 @@ fn test_saved_eq_floating_popup_master_banner_and_animations() {
     }
     assert_ne!(banner_pos, egui::Pos2::ZERO, "Master equalizer banner text must be rendered in popup!");
 
-    // Frame 2: Click the master equalizer banner
+    // Frame 3: Click the master equalizer banner
     let mut out2 = ctx.run_ui(
         egui::RawInput {
             screen_rect: screen,
@@ -475,3 +488,144 @@ fn test_saved_eq_floating_popup_master_banner_and_animations() {
     assert_eq!(app.current_tab, AppTab::Equalizer, "Clicking master banner must switch to Equalizer tab");
     assert!(!app.show_saved_eq_palette_popup, "Popup must close upon launching the full Equalizer tab");
 }
+
+#[test]
+fn test_canvas_ctrl_scroll_zoom_and_instance_color_themes() {
+    let ctx = egui::Context::default();
+    let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0)));
+
+    let mut app = LunulaApp::default();
+    app.current_tab = AppTab::SignalChain;
+
+    // 1. Verify multiple Splitter & Mixer instance themes
+    app.add_modular_filter(NodeType::Splitter); // Splitter #1
+    app.add_modular_filter(NodeType::Splitter); // Splitter #2
+    app.add_modular_filter(NodeType::Mixer);    // Mixer #1
+    app.add_modular_filter(NodeType::Mixer);    // Mixer #2
+
+    let theme_s0 = lunulaplayer::ui::patchbay::types::get_instance_color_theme(0);
+    let theme_s1 = lunulaplayer::ui::patchbay::types::get_instance_color_theme(1);
+    assert_eq!(theme_s0.instance_num, 1);
+    assert_eq!(theme_s1.instance_num, 2);
+    assert_ne!(theme_s0.col_a, theme_s1.col_a, "Different instances must have distinct color themes");
+
+    // 2. Initial zoom must be 1.0
+    assert_eq!(app.patchbay_zoom, 1.0);
+
+    // Initial render pass
+    let mut out0 = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: screen,
+            time: Some(0.0),
+            ..Default::default()
+        },
+        |ui| {
+            let canvas_size = egui::vec2(1000.0, 600.0);
+            app.render_modular_patchbay_canvas(ui, canvas_size);
+        },
+    );
+    out0.textures_delta.clear();
+
+    // 3. Simulate Ctrl + Scroll down (Zoom Out)
+    let center_pos = egui::pos2(500.0, 300.0);
+    let mut out1 = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: screen,
+            time: Some(0.05),
+            events: vec![
+                egui::Event::PointerMoved(center_pos),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -80.0),
+                    modifiers: egui::Modifiers { ctrl: true, ..Default::default() },
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
+                },
+            ],
+            ..Default::default()
+        },
+        |ui| {
+            let canvas_size = egui::vec2(1000.0, 600.0);
+            app.render_modular_patchbay_canvas(ui, canvas_size);
+        },
+    );
+    out1.textures_delta.clear();
+
+    assert!(app.patchbay_zoom < 1.0, "Ctrl + Scroll down must zoom out canvas: got zoom = {}", app.patchbay_zoom);
+
+    // 4. Reset layout resets zoom to 1.0
+    app.reset_patchbay_layout(1000.0, 600.0);
+    assert_eq!(app.patchbay_zoom, 1.0, "Reset patchbay layout must reset zoom to 1.0");
+}
+
+#[test]
+fn test_gate_and_satellite_mutual_tethers_and_hover() {
+    let ctx = egui::Context::default();
+    let screen = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0)));
+
+    let mut app = LunulaApp::default();
+    app.current_tab = AppTab::SignalChain;
+
+    // Spawn Mixer and Splitter
+    app.add_modular_filter(NodeType::Mixer);
+    app.add_modular_filter(NodeType::Splitter);
+
+    let mixer_id = app.nodes.iter().find(|n| n.node_type == NodeType::Mixer).unwrap().id;
+    let sat_a_pos = app.get_satellite_pos(mixer_id, 0, egui::pos2(200.0, 150.0), &NodeType::Mixer);
+
+    // Initial render pass
+    let mut out0 = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: screen,
+            time: Some(0.0),
+            ..Default::default()
+        },
+        |ui| {
+            let canvas_size = egui::vec2(1000.0, 600.0);
+            app.render_modular_patchbay_canvas(ui, canvas_size);
+        },
+    );
+    out0.textures_delta.clear();
+
+    // Verify text badges for modern gate and satellites
+    let mut found_mixer_header = false;
+    let mut found_splitter_header = false;
+    let mut found_in_a = false;
+    let mut found_out_a = false;
+    let mut found_subcode = false;
+
+    for shape in &out0.shapes {
+        if let egui::epaint::Shape::Text(t) = &shape.shape {
+            let txt = &t.galley.job.text;
+            if txt.contains("MIXER") { found_mixer_header = true; }
+            if txt.contains("SPLITTER") { found_splitter_header = true; }
+            if txt.contains("IN A") { found_in_a = true; }
+            if txt.contains("OUT A") { found_out_a = true; }
+            if txt.contains("#1.A") { found_subcode = true; }
+        }
+    }
+
+    assert!(found_mixer_header, "Mixer header must be rendered");
+    assert!(found_splitter_header, "Splitter header must be rendered");
+    assert!(found_in_a, "Satellite IN A badge must be rendered");
+    assert!(found_out_a, "Satellite OUT A badge must be rendered");
+    assert!(found_subcode, "Channel subcode #1.A must be rendered on satellite");
+
+    // Second render pass: hover over Satellite A of Mixer
+    let sat_a_center = egui::pos2(sat_a_pos.x + 26.0, sat_a_pos.y + 17.0);
+    let mut out_hover = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: screen,
+            time: Some(0.05),
+            events: vec![egui::Event::PointerMoved(sat_a_center)],
+            ..Default::default()
+        },
+        |ui| {
+            let canvas_size = egui::vec2(1000.0, 600.0);
+            app.render_modular_patchbay_canvas(ui, canvas_size);
+        },
+    );
+    out_hover.textures_delta.clear();
+}
+
+

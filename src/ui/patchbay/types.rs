@@ -47,6 +47,8 @@ pub fn render_routing_help_button(
 pub fn get_node_size(node_type: &NodeType) -> Vec2 {
     match node_type {
         NodeType::TubeWarmer => Vec2::new(228.0, 102.0),
+        NodeType::Splitter => Vec2::new(140.0, 78.0),
+        NodeType::Mixer => Vec2::new(140.0, 78.0),
         _ => Vec2::new(198.0, 84.0),
     }
 }
@@ -86,9 +88,26 @@ pub fn get_interactive_slider_bounds_and_val(node_type: &NodeType, world_rect: R
             Some((hit, val))
         }
         NodeType::Mixer => {
-            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 26.0, world_rect.min.y + 34.0), Vec2::new(node_width - 52.0, 32.0));
-            let track_min_x = world_rect.min.x + 30.0;
-            let track_w = (node_width - 60.0).max(10.0);
+            // Fader track: track_min_x = world_rect.min.x+36, track_max_x = world_rect.max.x-22
+            // track_y = world_rect.min.y+44. Hit area: y=[38..52], x=[32..max-18]
+            let hit = Rect::from_min_max(
+                Pos2::new(world_rect.min.x + 32.0, world_rect.min.y + 36.0),
+                Pos2::new(world_rect.max.x - 18.0, world_rect.min.y + 54.0),
+            );
+            let track_min_x = world_rect.min.x + 36.0;
+            let track_w = (node_width - 58.0).max(10.0);
+            let norm = ((pos_x - track_min_x) / track_w).clamp(0.0, 1.0);
+            Some((hit, norm))
+        }
+        NodeType::Splitter => {
+            // Fader track: track_min_x = world_rect.min.x+22, track_max_x = world_rect.max.x-36
+            // track_y = world_rect.min.y+44. Hit area: y=[38..52], x=[18..max-32]
+            let hit = Rect::from_min_max(
+                Pos2::new(world_rect.min.x + 18.0, world_rect.min.y + 36.0),
+                Pos2::new(world_rect.max.x - 32.0, world_rect.min.y + 54.0),
+            );
+            let track_min_x = world_rect.min.x + 22.0;
+            let track_w = (node_width - 58.0).max(10.0);
             let norm = ((pos_x - track_min_x) / track_w).clamp(0.0, 1.0);
             Some((hit, norm))
         }
@@ -328,7 +347,129 @@ mod tests {
         assert_eq!(pts.last().unwrap().x, 100.0);
         assert_eq!(pts.last().unwrap().y, 50.0);
     }
+
+    #[test]
+    fn test_instance_color_theme_cycling() {
+        let t0 = get_instance_color_theme(0);
+        assert_eq!(t0.instance_num, 1);
+        assert_eq!(t0.col_a, Color32::from_rgb(56, 189, 248));
+
+        let t1 = get_instance_color_theme(1);
+        assert_eq!(t1.instance_num, 2);
+        assert_eq!(t1.col_a, Color32::from_rgb(52, 211, 153));
+
+        let t5 = get_instance_color_theme(5);
+        assert_eq!(t5.instance_num, 6);
+        assert_eq!(t5.col_a, t0.col_a); // cycles back to palette 0
+    }
 }
+
+#[derive(Clone, Copy, Debug)]
+pub struct InstanceColorTheme {
+    pub instance_num: usize,
+    pub col_a: Color32,
+    pub col_b: Color32,
+    pub col_primary: Color32,
+    pub pal_a: [Color32; 8],
+    pub pal_b: [Color32; 8],
+}
+
+pub fn get_instance_color_theme(instance_idx: usize) -> InstanceColorTheme {
+    let instance_num = instance_idx + 1;
+    match instance_idx % 5 {
+        0 => InstanceColorTheme {
+            instance_num,
+            col_a: Color32::from_rgb(56, 189, 248),  // Cyan 400
+            col_b: Color32::from_rgb(251, 146, 60),  // Amber 400
+            col_primary: Color32::from_rgb(168, 85, 247), // Purple 500
+            pal_a: [
+                Color32::from_rgb(56, 189, 248), Color32::from_rgb(14, 165, 233),
+                Color32::from_rgb(99, 213, 255), Color32::from_rgb(34, 211, 238),
+                Color32::from_rgb(125, 211, 252), Color32::from_rgb(2, 132, 199),
+                Color32::from_rgb(186, 230, 253), Color32::from_rgb(224, 242, 254),
+            ],
+            pal_b: [
+                Color32::from_rgb(251, 146, 60), Color32::from_rgb(245, 158, 11),
+                Color32::from_rgb(252, 176, 90), Color32::from_rgb(234, 88, 12),
+                Color32::from_rgb(254, 215, 170), Color32::from_rgb(253, 186, 116),
+                Color32::from_rgb(251, 191, 36), Color32::from_rgb(217, 119, 6),
+            ],
+        },
+        1 => InstanceColorTheme {
+            instance_num,
+            col_a: Color32::from_rgb(52, 211, 153),  // Emerald 400
+            col_b: Color32::from_rgb(192, 132, 252), // Violet 400
+            col_primary: Color32::from_rgb(59, 130, 246), // Blue 500
+            pal_a: [
+                Color32::from_rgb(52, 211, 153), Color32::from_rgb(16, 185, 129),
+                Color32::from_rgb(110, 231, 183), Color32::from_rgb(5, 150, 105),
+                Color32::from_rgb(167, 243, 208), Color32::from_rgb(4, 120, 87),
+                Color32::from_rgb(209, 250, 229), Color32::from_rgb(236, 253, 245),
+            ],
+            pal_b: [
+                Color32::from_rgb(192, 132, 252), Color32::from_rgb(168, 85, 247),
+                Color32::from_rgb(216, 180, 254), Color32::from_rgb(147, 51, 234),
+                Color32::from_rgb(233, 213, 255), Color32::from_rgb(126, 34, 206),
+                Color32::from_rgb(243, 232, 255), Color32::from_rgb(250, 245, 255),
+            ],
+        },
+        2 => InstanceColorTheme {
+            instance_num,
+            col_a: Color32::from_rgb(14, 165, 233),  // Sky 500
+            col_b: Color32::from_rgb(251, 113, 133), // Rose 400
+            col_primary: Color32::from_rgb(245, 158, 11), // Amber 500
+            pal_a: [
+                Color32::from_rgb(14, 165, 233), Color32::from_rgb(2, 132, 199),
+                Color32::from_rgb(56, 189, 248), Color32::from_rgb(3, 105, 161),
+                Color32::from_rgb(125, 211, 252), Color32::from_rgb(7, 89, 133),
+                Color32::from_rgb(186, 230, 253), Color32::from_rgb(224, 242, 254),
+            ],
+            pal_b: [
+                Color32::from_rgb(251, 113, 133), Color32::from_rgb(244, 63, 94),
+                Color32::from_rgb(253, 164, 175), Color32::from_rgb(225, 29, 72),
+                Color32::from_rgb(254, 205, 211), Color32::from_rgb(190, 18, 60),
+                Color32::from_rgb(255, 228, 230), Color32::from_rgb(255, 241, 242),
+            ],
+        },
+        3 => InstanceColorTheme {
+            instance_num,
+            col_a: Color32::from_rgb(163, 230, 53),  // Lime 400
+            col_b: Color32::from_rgb(232, 121, 249), // Fuchsia 400
+            col_primary: Color32::from_rgb(99, 102, 241), // Indigo 500
+            pal_a: [
+                Color32::from_rgb(163, 230, 53), Color32::from_rgb(132, 204, 22),
+                Color32::from_rgb(190, 242, 100), Color32::from_rgb(101, 163, 13),
+                Color32::from_rgb(217, 249, 157), Color32::from_rgb(77, 124, 15),
+                Color32::from_rgb(236, 252, 203), Color32::from_rgb(247, 254, 231),
+            ],
+            pal_b: [
+                Color32::from_rgb(232, 121, 249), Color32::from_rgb(217, 70, 239),
+                Color32::from_rgb(240, 171, 252), Color32::from_rgb(192, 38, 211),
+                Color32::from_rgb(245, 208, 254), Color32::from_rgb(162, 28, 175),
+                Color32::from_rgb(250, 232, 255), Color32::from_rgb(253, 244, 255),
+            ],
+        },
+        _ => InstanceColorTheme {
+            instance_num,
+            col_a: Color32::from_rgb(45, 212, 191),  // Teal 400
+            col_b: Color32::from_rgb(249, 115, 22),  // Orange 500
+            col_primary: Color32::from_rgb(192, 38, 211), // Magenta / Fuchsia 600
+            pal_a: [
+                Color32::from_rgb(45, 212, 191), Color32::from_rgb(20, 184, 166),
+                Color32::from_rgb(94, 234, 212), Color32::from_rgb(13, 148, 136),
+                Color32::from_rgb(153, 246, 228), Color32::from_rgb(15, 118, 110),
+                Color32::from_rgb(204, 251, 241), Color32::from_rgb(240, 253, 250),
+            ],
+            pal_b: [
+                Color32::from_rgb(249, 115, 22), Color32::from_rgb(234, 88, 12),
+                Color32::from_rgb(251, 146, 60), Color32::from_rgb(194, 65, 12),
+                Color32::from_rgb(253, 186, 116), Color32::from_rgb(154, 52, 18),
+                Color32::from_rgb(254, 215, 170), Color32::from_rgb(255, 237, 213),
+            ],
+        },
+    }
+}
+
 
 
 

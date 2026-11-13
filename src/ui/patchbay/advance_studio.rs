@@ -967,8 +967,8 @@ impl LunulaApp {
             NodeType::Crossover => self.draw_crossover_inspector(ui, painter, rect, node_id, t),
             NodeType::SavedEqPreset(name) => self.draw_eq_preset_inspector(ui, painter, rect, name.as_str(), t),
             NodeType::Dsp => self.draw_main_dsp_inspector(ui, painter, rect, t),
-            NodeType::Mixer => self.draw_mixer_inspector(painter, rect, node_id, t),
-            NodeType::Splitter => self.draw_splitter_inspector(painter, rect, node_id, t),
+            NodeType::Mixer => self.draw_mixer_inspector(ui, painter, rect, node_id, t),
+            NodeType::Splitter => self.draw_splitter_inspector(ui, painter, rect, node_id, t),
             NodeType::OpticalLeveler => self.draw_optical_leveler_inspector(ui, painter, rect, node_id, t),
             NodeType::Compressor => self.draw_compressor_inspector(ui, painter, rect, node_id, t),
             NodeType::StereoWidener => self.draw_stereo_widener_inspector(painter, rect, node_id, t),
@@ -2489,311 +2489,585 @@ impl LunulaApp {
     }
 
     /// Circuit inspector for Splitter: River Bifurcation Telemetry Desk (Real live PCM waveform distribution buffer & null-test)
-    fn draw_splitter_inspector(&self, painter: &egui::Painter, rect: Rect, _node_id: usize, _t: f32) {
-        let avail_w = rect.width();
-        let c2_w = (avail_w * 0.32).clamp(260.0, 360.0).min(avail_w * 0.48);
-        let c1_w = (avail_w - c2_w - 20.0).max(180.0);
-        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(c1_w, rect.height() - 20.0));
-        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + c1_w + 15.0, rect.min.y + 10.0), Vec2::new(avail_w - c1_w - 25.0, rect.height() - 20.0));
-
-        painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
-        painter.rect_stroke(c1_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
-
-        painter.text(
-            c1_rect.min + Vec2::new(10.0, 10.0),
-            egui::Align2::LEFT_TOP,
-            "🌊 TELEMETRIC RIVER SPLITTER (1 HULU ➔ 2 CABANG ALIRAN)",
-            egui::FontId::proportional(10.5),
-            Color32::from_rgb(16, 185, 129),
-        );
-
-        let cy = c1_rect.min.y + c1_rect.height() * 0.48;
-        let x_in = c1_rect.min.x + 36.0;
-        let x_fork = c1_rect.min.x + (c1_w * 0.28).clamp(70.0, 150.0);
-        let x_end = c1_rect.max.x - 70.0;
-        let y_a = cy - 28.0;
-        let y_b = cy + 28.0;
-
-        let p_in = Pos2::new(x_in, cy);
-        let p_fork = Pos2::new(x_fork, cy);
-        let p_out_a = Pos2::new(x_end, y_a);
-        let p_out_b = Pos2::new(x_end, y_b);
-
-        let phase = self.visualizer_anim_phase;
-        let is_active = self.is_playing;
-        let flow_speed = if is_active { 3.5 } else { 0.8 };
-        let flow_t = phase * flow_speed;
-
-        // 1. Palung Dasar Sungai (Deep River Bed Channel & Tanggul)
-        let hulu_pts = [p_in, p_fork];
-        painter.line_segment(hulu_pts, Stroke::new(18.0, Color32::from_rgba_premultiplied(15, 23, 42, 230)));
-        painter.line_segment([Pos2::new(x_in, cy - 9.0), Pos2::new(x_fork, cy - 9.0)], Stroke::new(1.0, Color32::from_rgb(51, 65, 85)));
-        painter.line_segment([Pos2::new(x_in, cy + 9.0), Pos2::new(x_fork, cy + 9.0)], Stroke::new(1.0, Color32::from_rgb(51, 65, 85)));
-
-        let base_a = generate_river_bezier_points(p_fork, p_out_a, 27);
-        let base_b = generate_river_bezier_points(p_fork, p_out_b, 27);
-        painter.add(egui::Shape::line(base_a.clone(), Stroke::new(14.0, Color32::from_rgba_premultiplied(20, 24, 38, 220))));
-        painter.add(egui::Shape::line(base_b.clone(), Stroke::new(14.0, Color32::from_rgba_premultiplied(15, 25, 40, 220))));
-
-        // 2. Badan Air Sungai Berpendar Transparan (Translucent Water Body)
-        let hulu_col = blend_river_colors(RIVER_COLOR_DRY, RIVER_COLOR_WET, 0.5);
-        painter.line_segment(hulu_pts, Stroke::new(12.0, Color32::from_rgba_premultiplied(30, 80, 110, 110)));
-        painter.add(egui::Shape::line(base_a.clone(), Stroke::new(9.5, Color32::from_rgba_premultiplied(194, 65, 12, 100))));
-        painter.add(egui::Shape::line(base_b.clone(), Stroke::new(9.5, Color32::from_rgba_premultiplied(14, 116, 144, 100))));
-
-        // 3. Aliran Serat Fluida Laminer di Hulu (3 Multi-Strand Fluid Currents)
-        let hulu_steps = 24;
-        let mut hulu_s0 = Vec::with_capacity(hulu_steps); // Serat atas
-        let mut hulu_s1 = Vec::with_capacity(hulu_steps); // Serat tengah inti (dimodulasi getaran PCM)
-        let mut hulu_s2 = Vec::with_capacity(hulu_steps); // Serat bawah
-
-        for s in 0..hulu_steps {
-            let frac = s as f32 / (hulu_steps - 1) as f32;
-            let px = x_in + (x_fork - x_in) * frac;
-            let sample_idx = (frac * 47.0).round() as usize;
-            let sample = if is_active { self.live_pcm_waveform[sample_idx].clamp(-1.0, 1.0) } else { 0.0 };
-            let wave_pulse = (frac * 14.0 - flow_t * 5.0).sin();
-
-            // Inti tengah: merespons hentakan gelombang PCM musik secara langsung
-            let pcm_amp = if is_active { 8.5 } else { 0.0 };
-            let y_mid = cy + wave_pulse * (if is_active { 1.8 } else { 0.7 }) - sample * pcm_amp;
-            hulu_s1.push(Pos2::new(px, y_mid));
-
-            // Serat tepi atas dan bawah dengan fasa hidrodinamis berbeda
-            let y_top = cy - 3.8 + (frac * 14.0 - flow_t * 5.0 + 1.2).sin() * 1.4;
-            hulu_s0.push(Pos2::new(px, y_top));
-
-            let y_bot = cy + 3.8 + (frac * 14.0 - flow_t * 5.0 - 1.2).sin() * 1.4;
-            hulu_s2.push(Pos2::new(px, y_bot));
+    /// Resolves the upstream chromatic pigment profile (8-slot polychromatic particle palette + centroid color + lineage label)
+    /// by recursively traversing the active Patchbay signal graph and evaluating node intensities & 7-zone Biquad EQ curves.
+    fn resolve_stream_pigment_profile(
+        &self,
+        target_node_id: usize,
+        incoming_port_filter: Option<u8>,
+        depth: usize,
+    ) -> ([Color32; 8], Color32, String, bool) {
+        let dry_silver = Color32::from_rgb(226, 232, 240);
+        let default_pal = [dry_silver; 8];
+        if depth > 12 {
+            return (default_pal, dry_silver, "Dry PCM".to_string(), true);
         }
 
-        // Gambar serat arus hulu
-        painter.add(egui::Shape::line(hulu_s0, Stroke::new(1.2, Color32::from_rgba_premultiplied(148, 163, 184, 120))));
-        painter.add(egui::Shape::line(hulu_s1.clone(), Stroke::new(2.0, hulu_col)));
-        painter.add(egui::Shape::line(hulu_s2, Stroke::new(1.2, Color32::from_rgba_premultiplied(148, 163, 184, 120))));
-
-        // Kemilau riak air memanjang di hulu (Drifting Water Crest Glint)
-        let g_hulu = (flow_t * 0.35).fract();
-        let gh_idx = (g_hulu * (hulu_steps - 3) as f32).floor() as usize;
-        if gh_idx + 2 < hulu_s1.len() {
-            painter.line_segment([hulu_s1[gh_idx], hulu_s1[gh_idx + 1]], Stroke::new(3.0, Color32::from_rgba_premultiplied(255, 255, 255, 210)));
-            painter.line_segment([hulu_s1[gh_idx + 1], hulu_s1[gh_idx + 2]], Stroke::new(2.4, Color32::from_rgba_premultiplied(255, 255, 255, 140)));
-        }
-
-        // 4. Pulau Pemecah Arus Hydrodynamic di Titik Percabangan
-        let wedge_tip = Pos2::new(x_fork - 2.0, cy);
-        let wedge_top = Pos2::new(x_fork + 10.0, cy - 5.5);
-        let wedge_bot = Pos2::new(x_fork + 10.0, cy + 5.5);
-        painter.add(egui::Shape::convex_polygon(
-            vec![wedge_tip, wedge_top, wedge_bot],
-            Color32::from_rgb(30, 41, 59),
-            Stroke::new(1.2, Color32::from_rgb(71, 85, 105)),
-        ));
-
-        // 5. Aliran Serat Fluida di Cabang A (DRY - Oranye) & Cabang B (WET - Cyan)
-        let branch_steps = base_a.len();
-        let mut a_s0 = Vec::with_capacity(branch_steps); // Atas
-        let mut a_s1 = Vec::with_capacity(branch_steps); // Inti (PCM)
-        let mut a_s2 = Vec::with_capacity(branch_steps); // Bawah
-
-        let mut b_s0 = Vec::with_capacity(branch_steps); // Atas
-        let mut b_s1 = Vec::with_capacity(branch_steps); // Inti (PCM)
-        let mut b_s2 = Vec::with_capacity(branch_steps); // Bawah
-
-        for s in 0..branch_steps {
-            let frac = s as f32 / (branch_steps - 1) as f32;
-            let sample_idx = (frac * 47.0).round() as usize;
-            let sample = if is_active { self.live_pcm_waveform[sample_idx].clamp(-1.0, 1.0) } else { 0.0 };
-            let pcm_amp = if is_active { 10.5 } else { 0.0 };
-
-            let pa = base_a[s];
-            let pb = base_b[s];
-
-            let wave_a = (frac * 12.0 - flow_t * 6.0).sin();
-            let wave_b = (frac * 12.0 - flow_t * 6.0).sin();
-
-            // Cabang A (Dry - Warm Orange)
-            a_s1.push(Pos2::new(pa.x, pa.y + wave_a * 1.8 - sample * pcm_amp));
-            a_s0.push(Pos2::new(pa.x, pa.y - 3.2 + (frac * 12.0 - flow_t * 6.0 + 1.1).sin() * 1.3));
-            a_s2.push(Pos2::new(pa.x, pa.y + 3.2 + (frac * 12.0 - flow_t * 6.0 - 1.1).sin() * 1.3));
-
-            // Cabang B (Wet - Aqua Cyan)
-            b_s1.push(Pos2::new(pb.x, pb.y + wave_b * 1.8 - sample * pcm_amp));
-            b_s0.push(Pos2::new(pb.x, pb.y - 3.2 + (frac * 12.0 - flow_t * 6.0 + 1.1).sin() * 1.3));
-            b_s2.push(Pos2::new(pb.x, pb.y + 3.2 + (frac * 12.0 - flow_t * 6.0 - 1.1).sin() * 1.3));
-        }
-
-        // Gambar serat fluida Cabang A (Oranye)
-        painter.add(egui::Shape::line(a_s0, Stroke::new(1.1, Color32::from_rgba_premultiplied(254, 215, 170, 130))));
-        painter.add(egui::Shape::line(a_s1.clone(), Stroke::new(2.1, RIVER_COLOR_DRY)));
-        painter.add(egui::Shape::line(a_s2, Stroke::new(1.1, Color32::from_rgba_premultiplied(217, 119, 6, 120))));
-
-        // Gambar serat fluida Cabang B (Cyan)
-        painter.add(egui::Shape::line(b_s0, Stroke::new(1.1, Color32::from_rgba_premultiplied(186, 230, 253, 130))));
-        painter.add(egui::Shape::line(b_s1.clone(), Stroke::new(2.1, RIVER_COLOR_WET)));
-        painter.add(egui::Shape::line(b_s2, Stroke::new(1.1, Color32::from_rgba_premultiplied(3, 105, 161, 120))));
-
-        // Kemilau pantulan air memanjang di Cabang A & B
-        let g_ab = (flow_t * 0.38 + 0.25).fract();
-        let gab_idx = (g_ab * (branch_steps - 3) as f32).floor() as usize;
-        if gab_idx + 2 < a_s1.len() {
-            painter.line_segment([a_s1[gab_idx], a_s1[gab_idx + 1]], Stroke::new(3.2, Color32::from_rgba_premultiplied(255, 250, 235, 220)));
-            painter.line_segment([a_s1[gab_idx + 1], a_s1[gab_idx + 2]], Stroke::new(2.4, Color32::from_rgba_premultiplied(255, 240, 215, 140)));
-
-            painter.line_segment([b_s1[gab_idx], b_s1[gab_idx + 1]], Stroke::new(3.2, Color32::from_rgba_premultiplied(235, 250, 255, 220)));
-            painter.line_segment([b_s1[gab_idx + 1], b_s1[gab_idx + 2]], Stroke::new(2.4, Color32::from_rgba_premultiplied(215, 245, 255, 140)));
-        }
-
-        // 6. Label & Badges Aliran
-        // Hulu Label
-        painter.text(
-            Pos2::new(p_in.x - 8.0, p_in.y),
-            egui::Align2::RIGHT_CENTER,
-            "HULU (IN)\n100% Sinyal",
-            egui::FontId::monospace(8.5),
-            Color32::from_rgb(203, 213, 225),
-        );
-
-        // Branch A Label
-        painter.text(
-            Pos2::new(p_out_a.x + 8.0, p_out_a.y),
-            egui::Align2::LEFT_CENTER,
-            "OUT A (DRY)\n1.0x (0.00 dB)",
-            egui::FontId::monospace(9.0),
-            RIVER_COLOR_DRY,
-        );
-
-        // Branch B Label
-        painter.text(
-            Pos2::new(p_out_b.x + 8.0, p_out_b.y),
-            egui::Align2::LEFT_CENTER,
-            "OUT B (WET)\n1.0x (0.00 dB)",
-            egui::FontId::monospace(9.0),
-            RIVER_COLOR_WET,
-        );
-
-        // 7. Footer Status: Null-Test Verification
-        let null_text = if c1_rect.width() >= 400.0 {
-            "Null-Test (Out A - Out B): -∞ dBFS (Kloning Aliran Bit-Identical 64-bit f64)"
-        } else {
-            "Null-Test: Out A == Out B (1:1 Bit-Identical)"
+        let lerp_rgb = |c1: Color32, c2: Color32, k: f32| -> Color32 {
+            let t = k.clamp(0.0, 1.0);
+            let r = (c1.r() as f32 * (1.0 - t) + c2.r() as f32 * t).round() as u8;
+            let g = (c1.g() as f32 * (1.0 - t) + c2.g() as f32 * t).round() as u8;
+            let b = (c1.b() as f32 * (1.0 - t) + c2.b() as f32 * t).round() as u8;
+            Color32::from_rgb(r, g, b)
         };
-        painter.text(
-            Pos2::new(c1_rect.min.x + 10.0, c1_rect.max.y - 12.0),
-            egui::Align2::LEFT_BOTTOM,
-            null_text,
-            egui::FontId::monospace(9.0),
-            Color32::from_rgb(52, 211, 153),
-        );
 
-        // --- C2: Panel Spesifikasi & Topologi ---
-        painter.rect_filled(c2_rect, 6.0, Color32::from_rgb(12, 17, 29));
-        painter.rect_stroke(c2_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
+        let avg_palette = |pal: &[Color32; 8]| -> Color32 {
+            let mut r = 0u32;
+            let mut g = 0u32;
+            let mut b = 0u32;
+            for c in pal {
+                r += c.r() as u32;
+                g += c.g() as u32;
+                b += c.b() as u32;
+            }
+            Color32::from_rgb((r / 8) as u8, (g / 8) as u8, (b / 8) as u8)
+        };
 
-        painter.text(c2_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, "SPLITTER SPECIFICATIONS", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
+        // Find incoming cables to target_node_id
+        let all_incoming: Vec<&crate::models::CableConnection> = self
+            .connections
+            .iter()
+            .filter(|c| c.to_node == target_node_id)
+            .collect();
 
-        let specs = [
-            ("Topologi Aliran:", "Zero-Loss Distribution Buffer"),
-            ("Cabang A (Dry):", "0.000 dB (Unity 1.0x • Oranye)"),
-            ("Cabang B (Wet):", "0.000 dB (Unity 1.0x • Cyan)"),
-            ("Selisih Fasa A/B:", "0.000° (Fase Terkunci 1:1)"),
-            ("Korelasi Sinyal:", "r = +1.000 (Sempurna)"),
-            ("Tujuan DSP:", "Percabangan Paralel Dry/Wet"),
-        ];
+        let chosen_conn: Option<&crate::models::CableConnection> = if let Some(port) = incoming_port_filter {
+            // First try exact port match; if user wired multiple cables into port 0, fall back to index matching
+            all_incoming
+                .iter()
+                .find(|c| c.to_port == port)
+                .copied()
+                .or_else(|| all_incoming.get(port as usize).copied())
+        } else {
+            all_incoming.first().copied()
+        };
 
-        let start_y = c2_rect.min.y + 28.0;
-        for (i, (lbl, val)) in specs.iter().enumerate() {
-            let py = start_y + i as f32 * 17.0;
-            painter.text(Pos2::new(c2_rect.min.x + 10.0, py), egui::Align2::LEFT_TOP, *lbl, egui::FontId::proportional(9.0), Color32::from_rgb(148, 163, 184));
-            painter.text(Pos2::new(c2_rect.max.x - 10.0, py), egui::Align2::RIGHT_TOP, *val, egui::FontId::monospace(9.0), Color32::WHITE);
+        let Some(conn) = chosen_conn else {
+            // If target_node_id is itself Source or Buffer, return pure Dry Silver
+            if let Some(n) = self.nodes.iter().find(|n| n.id == target_node_id) {
+                if matches!(n.node_type, NodeType::Source | NodeType::Buffer) {
+                    return (default_pal, dry_silver, "Dry PCM (1:1)".to_string(), true);
+                }
+            }
+            let dim = Color32::from_rgb(100, 116, 139);
+            return ([dim; 8], dim, "Tanpa Kabel Input".to_string(), false);
+        };
+
+        let from_id = conn.from_node;
+        let from_port = conn.from_port;
+        let Some(up_node) = self.nodes.iter().find(|n| n.id == from_id) else {
+            return (default_pal, dry_silver, "Dry PCM".to_string(), true);
+        };
+
+        // Base case: Source or RAM Buffer produces pure crystal-silver PCM particles
+        if matches!(up_node.node_type, NodeType::Source | NodeType::Buffer | NodeType::Driver | NodeType::Dsp) {
+            return (default_pal, dry_silver, "Dry PCM (Jernih)".to_string(), true);
+        }
+
+        // Recursively get the pigment entering `up_node`
+        let (in_pal, in_primary, in_lbl, _in_conn) = self.resolve_stream_pigment_profile(from_id, None, depth + 1);
+
+        // Apply `up_node`'s own pigment transformation according to its type, parameters, and 7-zone Biquad curve
+        match &up_node.node_type {
+            NodeType::SavedEqPreset(preset_name) => {
+                let sample_rate = self.signal_path_report.as_ref().map_or(48000.0, |r| r.device_rate as f64);
+                let bands_opt = if &self.active_eq.name == preset_name {
+                    Some(&self.active_eq.bands)
+                } else {
+                    self.eq_presets.iter().find(|p| &p.name == preset_name).map(|p| &p.bands)
+                };
+
+                // 7 Acoustic Zones (matching Frequency Response tab)
+                let zone_defs: [(f64, f64, Color32, &str); 7] = [
+                    (20.0, 60.0, Color32::from_rgb(99, 102, 241), "Sub-Bass"),
+                    (60.0, 200.0, Color32::from_rgb(245, 158, 11), "Mid-Bass"),
+                    (200.0, 500.0, Color32::from_rgb(16, 185, 129), "Low-Mid"),
+                    (500.0, 2000.0, Color32::from_rgb(244, 63, 94), "Vocal-Mid"),
+                    (2000.0, 5000.0, Color32::from_rgb(6, 182, 212), "Upper-Mid"),
+                    (5000.0, 10000.0, Color32::from_rgb(234, 179, 8), "Treble"),
+                    (10000.0, 20000.0, Color32::from_rgb(45, 212, 191), "Air"),
+                ];
+
+                let mut zone_db = [0.0f32; 7];
+                if let Some(bands) = bands_opt {
+                    for (zi, &(f0, f1, _, _)) in zone_defs.iter().enumerate() {
+                        let mut sum_db = 0.0f64;
+                        let sample_pts = 5;
+                        for s in 0..sample_pts {
+                            let frac = s as f64 / (sample_pts - 1) as f64;
+                            let freq = (f0.ln() + frac * (f1.ln() - f0.ln())).exp();
+                            let mut f_db = 0.0f64;
+                            for b in bands {
+                                if !b.enabled { continue; }
+                                let c = match b.filter_type {
+                                    crate::models::FilterType::LowShelf => crate::audio::dsp::BiquadCoeffs::low_shelf(b.freq as f64, b.gain_db as f64, sample_rate, b.q as f64),
+                                    crate::models::FilterType::HighShelf => crate::audio::dsp::BiquadCoeffs::high_shelf(b.freq as f64, b.gain_db as f64, sample_rate, b.q as f64),
+                                    crate::models::FilterType::HighPass => crate::audio::dsp::BiquadCoeffs::high_pass(b.freq as f64, sample_rate, b.q as f64),
+                                    crate::models::FilterType::LowPass => crate::audio::dsp::BiquadCoeffs::low_pass(b.freq as f64, sample_rate, b.q as f64),
+                                    _ => crate::audio::dsp::BiquadCoeffs::peaking_eq(b.freq as f64, b.gain_db as f64, sample_rate, b.q as f64),
+                                };
+                                let stages = match b.filter_type {
+                                    crate::models::FilterType::HighPass | crate::models::FilterType::LowPass => b.slope.biquad_count(),
+                                    _ => 1,
+                                };
+                                f_db += c.magnitude_db(freq, sample_rate) * (stages as f64);
+                            }
+                            sum_db += f_db;
+                        }
+                        zone_db[zi] = (sum_db / sample_pts as f64) as f32;
+                    }
+                }
+
+                let max_abs_dev = zone_db.iter().fold(0.0f32, |acc, &v| acc.max(v.abs()));
+                if max_abs_dev < 0.25 {
+                    return (in_pal, in_primary, format!("EQ {} (Flat)", preset_name), true);
+                }
+
+                // Calculate prominence weights above the minimum zone so both boosts and relative tilts are captured
+                let min_db = zone_db.iter().copied().fold(f32::INFINITY, f32::min);
+                let mean_db = zone_db.iter().sum::<f32>() / 7.0;
+                let baseline = mean_db.min(0.0).max(min_db);
+
+                let mut weights = [0.0f32; 7];
+                let mut weight_sum = 0.0f32;
+                for zi in 0..7 {
+                    let w = (zone_db[zi] - baseline).max(0.0);
+                    weights[zi] = w * w; // Square to emphasize dominant peaks (e.g. Bass + Treble in V-shape)
+                    weight_sum += weights[zi];
+                }
+
+                if weight_sum < 1e-4 {
+                    return (in_pal, in_primary, format!("EQ {}", preset_name), true);
+                }
+
+                // Intensity scales with maximum dB deviation (1.5 dB = subtle tint, >= 7.5 dB = vivid 100% pigment)
+                let intensity = (max_abs_dev / 7.5).clamp(0.32, 1.0);
+
+                // Find top 2 dominant zones for label & polychromatic 8-slot distribution
+                let mut sorted_zones: Vec<(usize, f32)> = (0..7).map(|i| (i, weights[i])).collect();
+                sorted_zones.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+                let mut out_pal = [dry_silver; 8];
+                let mut slot_idx = 0usize;
+                for &(zi, w) in sorted_zones.iter().take(4) {
+                    if w <= 0.001 || slot_idx >= 8 { continue; }
+                    let share = ((w / weight_sum) * 8.0).round().max(1.0) as usize;
+                    let z_col = zone_defs[zi].2;
+                    for _ in 0..share {
+                        if slot_idx < 8 {
+                            out_pal[slot_idx] = lerp_rgb(in_pal[slot_idx], z_col, intensity);
+                            slot_idx += 1;
+                        }
+                    }
+                }
+                let top_col = zone_defs[sorted_zones[0].0].2;
+                while slot_idx < 8 {
+                    out_pal[slot_idx] = lerp_rgb(in_pal[slot_idx], top_col, intensity);
+                    slot_idx += 1;
+                }
+
+                let dom1_name = zone_defs[sorted_zones[0].0].3;
+                let dom1_db = zone_db[sorted_zones[0].0];
+                let label = if sorted_zones[1].1 > weight_sum * 0.22 {
+                    let dom2_name = zone_defs[sorted_zones[1].0].3;
+                    format!("EQ: {} + {}", dom1_name, dom2_name)
+                } else {
+                    format!("EQ: {} ({:+.1}dB)", dom1_name, dom1_db)
+                };
+
+                let centroid = avg_palette(&out_pal);
+                (out_pal, centroid, label, true)
+            }
+            NodeType::TubeWarmer => {
+                let drive = up_node.param_val.clamp(0.0, 100.0);
+                let intensity = (drive / 100.0).clamp(0.15, 1.0);
+                // Transitions from warm amber at low drive to glowing crimson-orange at high drive
+                let tube_col = lerp_rgb(Color32::from_rgb(251, 146, 60), Color32::from_rgb(239, 68, 68), (drive / 100.0).powf(1.2));
+                let mut out_pal = [dry_silver; 8];
+                for i in 0..8 {
+                    out_pal[i] = lerp_rgb(in_pal[i], tube_col, intensity);
+                }
+                (out_pal, avg_palette(&out_pal), format!("Tube Warmth ({:.0}%)", drive), true)
+            }
+            NodeType::AnalogPreamp => {
+                let trim = up_node.param_val.clamp(-24.0, 12.0);
+                let (target_col, intensity) = if trim >= 0.0 {
+                    (Color32::from_rgb(245, 158, 11), (trim / 12.0).clamp(0.25, 1.0))
+                } else {
+                    (Color32::from_rgb(148, 163, 184), ((-trim) / 24.0).clamp(0.20, 0.85))
+                };
+                let mut out_pal = [dry_silver; 8];
+                for i in 0..8 {
+                    out_pal[i] = lerp_rgb(in_pal[i], target_col, intensity);
+                }
+                (out_pal, avg_palette(&out_pal), format!("Preamp ({:+.1}dB)", trim), true)
+            }
+            NodeType::LowPassFilter => {
+                let fc = up_node.param_val.clamp(50.0, 20000.0);
+                let norm = ((fc.ln() - 50.0f32.ln()) / (20000.0f32.ln() - 50.0f32.ln())).clamp(0.0, 1.0);
+                let intensity = (1.0 - norm * 0.75).clamp(0.30, 1.0);
+                let lpf_col = lerp_rgb(Color32::from_rgb(99, 102, 241), Color32::from_rgb(56, 189, 248), norm);
+                let mut out_pal = [dry_silver; 8];
+                for i in 0..8 {
+                    out_pal[i] = lerp_rgb(in_pal[i], lpf_col, intensity);
+                }
+                (out_pal, avg_palette(&out_pal), format!("LPF ({:.0}Hz)", fc), true)
+            }
+            NodeType::HighPassFilter => {
+                let fc = up_node.param_val.clamp(20.0, 20000.0);
+                let norm = ((fc.ln() - 20.0f32.ln()) / (20000.0f32.ln() - 20.0f32.ln())).clamp(0.0, 1.0);
+                let intensity = (0.35 + norm * 0.65).clamp(0.35, 1.0);
+                let hpf_col = lerp_rgb(Color32::from_rgb(56, 189, 248), Color32::from_rgb(45, 212, 191), norm);
+                let mut out_pal = [dry_silver; 8];
+                for i in 0..8 {
+                    out_pal[i] = lerp_rgb(in_pal[i], hpf_col, intensity);
+                }
+                (out_pal, avg_palette(&out_pal), format!("HPF ({:.0}Hz)", fc), true)
+            }
+            NodeType::BandPassFilter => {
+                let fc = up_node.param_val.clamp(20.0, 20000.0);
+                let (bpf_col, z_lbl) = if fc < 60.0 {
+                    (Color32::from_rgb(99, 102, 241), "Sub-Bass")
+                } else if fc < 200.0 {
+                    (Color32::from_rgb(245, 158, 11), "Mid-Bass")
+                } else if fc < 500.0 {
+                    (Color32::from_rgb(16, 185, 129), "Low-Mid")
+                } else if fc < 2000.0 {
+                    (Color32::from_rgb(244, 63, 94), "Vocal-Mid")
+                } else if fc < 5000.0 {
+                    (Color32::from_rgb(6, 182, 212), "Upper-Mid")
+                } else if fc < 10000.0 {
+                    (Color32::from_rgb(234, 179, 8), "Treble")
+                } else {
+                    (Color32::from_rgb(45, 212, 191), "Air")
+                };
+                let mut out_pal = [dry_silver; 8];
+                for i in 0..8 {
+                    out_pal[i] = lerp_rgb(in_pal[i], bpf_col, 0.85);
+                }
+                (out_pal, avg_palette(&out_pal), format!("BPF {} ({:.0}Hz)", z_lbl, fc), true)
+            }
+            NodeType::Crossover => {
+                let xover = if up_node.param_val > 20.0 { up_node.param_val } else { 500.0 };
+                if from_port == 0 {
+                    // Low-Band output: Indigo + Amber Bass pigments
+                    let c1 = Color32::from_rgb(99, 102, 241);
+                    let c2 = Color32::from_rgb(245, 158, 11);
+                    let mut out_pal = [c1; 8];
+                    for i in 0..8 {
+                        out_pal[i] = if i % 2 == 0 { c1 } else { c2 };
+                    }
+                    (out_pal, avg_palette(&out_pal), format!("X-Over Low (<{:.0}Hz)", xover), true)
+                } else {
+                    // High-Band output: Cyan + Ice Mint Treble pigments
+                    let c1 = Color32::from_rgb(6, 182, 212);
+                    let c2 = Color32::from_rgb(45, 212, 191);
+                    let mut out_pal = [c1; 8];
+                    for i in 0..8 {
+                        out_pal[i] = if i % 2 == 0 { c1 } else { c2 };
+                    }
+                    (out_pal, avg_palette(&out_pal), format!("X-Over High (>{:.0}Hz)", xover), true)
+                }
+            }
+            NodeType::StereoWidener | NodeType::StereoMatrix => {
+                let w = up_node.param_val.clamp(0.0, 100.0);
+                let intensity = (w / 100.0).clamp(0.25, 1.0);
+                let sp_col = Color32::from_rgb(168, 85, 247);
+                let mut out_pal = [dry_silver; 8];
+                for i in 0..8 {
+                    out_pal[i] = lerp_rgb(in_pal[i], sp_col, intensity);
+                }
+                (out_pal, avg_palette(&out_pal), format!("Spatial ({:.0}%)", w), true)
+            }
+            NodeType::DynamicLoudness => {
+                let depth_pct = up_node.param_val.clamp(0.0, 100.0);
+                let intensity = (depth_pct / 100.0).clamp(0.20, 1.0);
+                let bass_c = Color32::from_rgb(245, 158, 11);
+                let treb_c = Color32::from_rgb(56, 189, 248);
+                let mut out_pal = [dry_silver; 8];
+                for i in 0..8 {
+                    let target = if i % 2 == 0 { bass_c } else { treb_c };
+                    out_pal[i] = lerp_rgb(in_pal[i], target, intensity);
+                }
+                (out_pal, avg_palette(&out_pal), format!("Loudness ({:.0}%)", depth_pct), true)
+            }
+            NodeType::OpticalLeveler | NodeType::Compressor => {
+                let col = Color32::from_rgb(234, 179, 8);
+                let mut out_pal = [dry_silver; 8];
+                for i in 0..8 {
+                    out_pal[i] = lerp_rgb(in_pal[i], col, 0.75);
+                }
+                (out_pal, avg_palette(&out_pal), "Dynamics / Opto".to_string(), true)
+            }
+            NodeType::VolumeBooster => {
+                let boost = up_node.param_val.clamp(0.0, 24.0);
+                let intensity = (boost / 18.0).clamp(0.25, 1.0);
+                let col = Color32::from_rgb(244, 63, 94);
+                let mut out_pal = [dry_silver; 8];
+                for i in 0..8 {
+                    out_pal[i] = lerp_rgb(in_pal[i], col, intensity);
+                }
+                (out_pal, avg_palette(&out_pal), format!("Booster (+{:.1}dB)", boost), true)
+            }
+            NodeType::Mixer => {
+                let mix = up_node.param_val.clamp(0.0, 1.0);
+                let (pal_a, col_a, _, conn_a) = self.resolve_stream_pigment_profile(from_id, Some(0), depth + 1);
+                let (pal_b, col_b, _, conn_b) = self.resolve_stream_pigment_profile(from_id, Some(1), depth + 1);
+                let mut out_pal = [dry_silver; 8];
+                let a_slots = ((1.0 - mix) * 8.0).round() as usize;
+                for i in 0..8 {
+                    if conn_a && conn_b {
+                        out_pal[i] = if i < a_slots { pal_a[i] } else { pal_b[i] };
+                    } else if conn_a {
+                        out_pal[i] = pal_a[i];
+                    } else if conn_b {
+                        out_pal[i] = pal_b[i];
+                    }
+                }
+                let mixed_c = lerp_rgb(col_a, col_b, mix);
+                (out_pal, mixed_c, format!("Mixed ({:.0}/{:.0})", (1.0 - mix) * 100.0, mix * 100.0), conn_a || conn_b)
+            }
+            _ => (in_pal, in_primary, in_lbl, true),
         }
     }
 
-    /// Circuit inspector for Summing Mixer: Real live PCM waveforms, node mix ratio & live phase correlation
-    fn draw_mixer_inspector(&self, painter: &egui::Painter, rect: Rect, node_id: usize, _t: f32) {
+    /// Context-aware Double-Slit Particle Splitter Inspector:
+    /// Inherits upstream particle pigment palette & intensity (including 7-zone Biquad EQ polychromatic particles)
+    fn draw_splitter_inspector(&self, ui: &mut egui::Ui, painter: &egui::Painter, rect: Rect, node_id: usize, t: f32) {
+        if !self.advance_studio_state.freeze_analyzer {
+            ui.ctx().request_repaint();
+        }
         let avail_w = rect.width();
-        let c2_w = (avail_w * 0.32).clamp(260.0, 360.0).min(avail_w * 0.48);
+        let c2_w = (avail_w * 0.33).clamp(260.0, 360.0).min(avail_w * 0.48);
         let c1_w = (avail_w - c2_w - 20.0).max(180.0);
         let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(c1_w, rect.height() - 20.0));
         let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + c1_w + 15.0, rect.min.y + 10.0), Vec2::new(avail_w - c1_w - 25.0, rect.height() - 20.0));
 
-        let mix = self.nodes.iter().find(|n| n.id == node_id).map(|n| n.param_val).unwrap_or(0.5).clamp(0.0, 1.0);
-        let weight_a = 1.0 - mix;
-        let weight_b = mix;
+        // Resolve real upstream pigment entering this Splitter node
+        let (in_pal, in_primary, in_lineage, is_in_connected) = self.resolve_stream_pigment_profile(node_id, None, 0);
 
-        painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
+        // Check what downstream nodes are connected to Out Port 0 (Slit A) and Out Port 1 (Slit B)
+        let out_conns: Vec<&crate::models::CableConnection> = self
+            .connections
+            .iter()
+            .filter(|c| c.from_node == node_id)
+            .collect();
+        let out_a_target = out_conns
+            .iter()
+            .find(|c| c.from_port == 0)
+            .or_else(|| out_conns.first())
+            .and_then(|c| self.nodes.iter().find(|n| n.id == c.to_node))
+            .map(|n| n.title.as_str())
+            .unwrap_or("Out Pin A");
+        let out_b_target = out_conns
+            .iter()
+            .find(|c| c.from_port == 1)
+            .or_else(|| out_conns.get(1))
+            .and_then(|c| self.nodes.iter().find(|n| n.id == c.to_node))
+            .map(|n| n.title.as_str())
+            .unwrap_or("Out Pin B");
+
+        painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(8, 12, 21));
         painter.rect_stroke(c1_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
 
-        painter.text(c1_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, format!("🎛️ PHASE-ALIGNED SUMMING BUS (A: {:.0}% • B: {:.0}%)", weight_a * 100.0, weight_b * 100.0), egui::FontId::proportional(10.5), Color32::from_rgb(13, 148, 136));
+        painter.text(
+            c1_rect.min + Vec2::new(12.0, 8.0),
+            egui::Align2::LEFT_TOP,
+            format!("🔀 DOUBLE-SLIT PARTICLE SPLITTER • HULU: {}", in_lineage.to_uppercase()),
+            egui::FontId::proportional(10.5),
+            in_primary,
+        );
 
-        let g_left = c1_rect.min.x + 55.0;
-        let g_right = c1_rect.max.x - 20.0;
-        let g_w = (g_right - g_left).max(20.0);
+        let cy = c1_rect.min.y + c1_rect.height() * 0.50;
+        let x_in = c1_rect.min.x + 62.0;
+        let x_slit = c1_rect.min.x + (c1_w * 0.40).clamp(115.0, 220.0);
+        let x_end = c1_rect.max.x - 74.0;
 
-        let w1_y = c1_rect.min.y + 36.0;
-        let w2_y = c1_rect.min.y + 64.0;
-        let w3_y = c1_rect.min.y + 92.0;
+        let slit_offset_y = (c1_rect.height() * 0.13).clamp(11.0, 18.0);
+        let out_offset_y = (c1_rect.height() * 0.25).clamp(22.0, 36.0);
+        let y_slit_a = cy - slit_offset_y;
+        let y_slit_b = cy + slit_offset_y;
+        let y_out_a = cy - out_offset_y;
+        let y_out_b = cy + out_offset_y;
 
-        let steps = 48;
+        let flow_t = if t.abs() > 0.001 { t } else { ui.input(|i| i.time) as f32 };
 
-        painter.text(Pos2::new(c1_rect.min.x + 10.0, w1_y), egui::Align2::LEFT_CENTER, "BUS A", egui::FontId::monospace(8.5), Color32::from_rgb(56, 189, 248));
-        let mut pts_a = Vec::with_capacity(steps);
-        for s in 0..steps {
-            let frac = s as f32 / (steps - 1) as f32;
-            let px = g_left + g_w * frac;
-            let sa = if self.is_playing { self.live_pcm_waveform[s].clamp(-1.0, 1.0) * weight_a } else { 0.0 };
-            pts_a.push(Pos2::new(px, w1_y - sa * 11.0));
+        // 1. Subtle Riverbed Channels
+        painter.line_segment(
+            [Pos2::new(x_in, cy), Pos2::new(x_slit - 4.0, cy)],
+            Stroke::new(22.0, Color32::from_rgba_unmultiplied(15, 23, 42, 180)),
+        );
+        painter.line_segment(
+            [Pos2::new(x_in, cy - 11.0), Pos2::new(x_slit - 4.0, cy - 11.0)],
+            Stroke::new(0.8, Color32::from_rgba_unmultiplied(71, 85, 105, 90)),
+        );
+        painter.line_segment(
+            [Pos2::new(x_in, cy + 11.0), Pos2::new(x_slit - 4.0, cy + 11.0)],
+            Stroke::new(0.8, Color32::from_rgba_unmultiplied(71, 85, 105, 90)),
+        );
+
+        let path_a = generate_river_bezier_points(Pos2::new(x_slit + 4.0, y_slit_a), Pos2::new(x_end, y_out_a), 32);
+        let path_b = generate_river_bezier_points(Pos2::new(x_slit + 4.0, y_slit_b), Pos2::new(x_end, y_out_b), 32);
+        painter.add(egui::Shape::line(path_a, Stroke::new(14.0, Color32::from_rgba_unmultiplied(15, 23, 42, 180))));
+        painter.add(egui::Shape::line(path_b, Stroke::new(14.0, Color32::from_rgba_unmultiplied(15, 23, 42, 180))));
+
+        let eval_bezier = |p0: Pos2, p3: Pos2, u: f32| -> Pos2 {
+            let dx = (p3.x - p0.x).abs().max(10.0) * 0.5;
+            let p1 = Pos2::new(p0.x + dx, p0.y);
+            let p2 = Pos2::new(p3.x - dx, p3.y);
+            let v = 1.0 - u;
+            let x = v * v * v * p0.x + 3.0 * v * v * u * p1.x + 3.0 * v * u * u * p2.x + u * u * u * p3.x;
+            let y = v * v * v * p0.y + 3.0 * v * v * u * p1.y + 3.0 * v * u * u * p2.y + u * u * u * p3.y;
+            Pos2::new(x, y)
+        };
+
+        // 2. Upstream Micro-Particle River (carries upstream polychromatic palette!)
+        if is_in_connected {
+            let up_particles = 56usize;
+            for i in 0..up_particles {
+                let p_col = in_pal[i % 8];
+                let seed = i as f32 * 0.6180339887;
+                let speed = 0.55 + (seed.fract() * 0.25);
+                let u = ((i as f32 / up_particles as f32) + flow_t * speed).fract();
+                let u_prev = (u - 0.045).max(0.0);
+
+                let lane_spread = ((i as f32 * 1.37).sin()) * 7.5;
+                let split_pull = if u > 0.60 {
+                    let k = ((u - 0.60) / 0.40).powi(2);
+                    let target_y = if i % 2 == 0 { y_slit_a } else { y_slit_b };
+                    (target_y - (cy + lane_spread)) * k
+                } else {
+                    0.0
+                };
+                let ripple = (u * 12.0 - flow_t * 5.0 + seed * 6.28).sin() * 1.4 * (1.0 - u * 0.5);
+
+                let px = x_in + u * (x_slit - 3.0 - x_in);
+                let py = cy + lane_spread + split_pull + ripple;
+                let px_prev = x_in + u_prev * (x_slit - 3.0 - x_in);
+                let py_prev = cy + lane_spread + split_pull * 0.75 + ripple;
+
+                let r = 1.35 + (seed * 3.1).fract() * 1.1;
+                painter.line_segment(
+                    [Pos2::new(px_prev, py_prev), Pos2::new(px, py)],
+                    Stroke::new(r * 0.85, Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), 105)),
+                );
+                painter.circle_filled(Pos2::new(px, py), r + 1.2, Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), 42));
+                painter.circle_filled(Pos2::new(px, py), r, p_col);
+            }
         }
-        for pair in pts_a.windows(2) {
-            painter.line_segment([pair[0], pair[1]], Stroke::new(1.5, Color32::from_rgb(56, 189, 248)));
+
+        // 3. Double-Slit Barrier Wall at x_slit
+        let wall_top = c1_rect.min.y + 26.0;
+        let wall_bot = c1_rect.max.y - 22.0;
+        let slit_half_gap = 4.5f32;
+        let wall_w = 6.0f32;
+
+        let w_top_rect = Rect::from_min_max(Pos2::new(x_slit - wall_w * 0.5, wall_top), Pos2::new(x_slit + wall_w * 0.5, y_slit_a - slit_half_gap));
+        let w_mid_rect = Rect::from_min_max(Pos2::new(x_slit - wall_w * 0.5, y_slit_a + slit_half_gap), Pos2::new(x_slit + wall_w * 0.5, y_slit_b - slit_half_gap));
+        let w_bot_rect = Rect::from_min_max(Pos2::new(x_slit - wall_w * 0.5, y_slit_b + slit_half_gap), Pos2::new(x_slit + wall_w * 0.5, wall_bot));
+
+        for w_rect in [w_top_rect, w_mid_rect, w_bot_rect] {
+            painter.rect_filled(w_rect, 2.0, Color32::from_rgb(30, 41, 59));
+            painter.rect_stroke(w_rect, 2.0, Stroke::new(1.0, Color32::from_rgb(100, 116, 139)), egui::StrokeKind::Inside);
         }
 
-        painter.text(Pos2::new(c1_rect.min.x + 10.0, w2_y), egui::Align2::LEFT_CENTER, "BUS B", egui::FontId::monospace(8.5), Color32::from_rgb(251, 146, 60));
-        let mut pts_b = Vec::with_capacity(steps);
-        for s in 0..steps {
-            let frac = s as f32 / (steps - 1) as f32;
-            let px = g_left + g_w * frac;
-            let sb = if self.is_playing { self.live_pcm_waveform[s].clamp(-1.0, 1.0) * weight_b } else { 0.0 };
-            pts_b.push(Pos2::new(px, w2_y - sb * 11.0));
-        }
-        for pair in pts_b.windows(2) {
-            painter.line_segment([pair[0], pair[1]], Stroke::new(1.5, Color32::from_rgb(251, 146, 60)));
-        }
-
-        painter.text(Pos2::new(c1_rect.min.x + 10.0, w3_y), egui::Align2::LEFT_CENTER, "A + B", egui::FontId::monospace(8.5), Color32::from_rgb(52, 211, 153));
-        let mut pts_sum = Vec::with_capacity(steps);
-        for s in 0..steps {
-            let frac = s as f32 / (steps - 1) as f32;
-            let px = g_left + g_w * frac;
-            let s_sum = if self.is_playing { self.live_pcm_waveform[s].clamp(-1.0, 1.0) * (weight_a + weight_b) } else { 0.0 };
-            pts_sum.push(Pos2::new(px, w3_y - s_sum * 11.0));
-        }
-        for pair in pts_sum.windows(2) {
-            painter.line_segment([pair[0], pair[1]], Stroke::new(2.2, Color32::from_rgb(52, 211, 153)));
+        for &sy in &[y_slit_a, y_slit_b] {
+            painter.circle_filled(Pos2::new(x_slit, sy), 5.0, Color32::from_rgba_unmultiplied(in_primary.r(), in_primary.g(), in_primary.b(), 70));
+            painter.line_segment(
+                [Pos2::new(x_slit, sy - slit_half_gap), Pos2::new(x_slit, sy + slit_half_gap)],
+                Stroke::new(2.2, Color32::from_rgba_unmultiplied(255, 255, 255, 210)),
+            );
+            if is_in_connected {
+                for ring in 0..3 {
+                    let rad = 5.0 + ((flow_t * 2.2 + ring as f32 * 0.33).fract()) * 14.0;
+                    let alpha = ((1.0 - (rad - 5.0) / 14.0) * 110.0).clamp(0.0, 110.0) as u8;
+                    let mut arc_pts = Vec::with_capacity(11);
+                    for a_idx in 0..=10 {
+                        let ang = -1.1 + (a_idx as f32 / 10.0) * 2.2;
+                        arc_pts.push(Pos2::new(x_slit + 3.0 + ang.cos() * rad, sy + ang.sin() * rad));
+                    }
+                    painter.add(egui::Shape::line(arc_pts, Stroke::new(1.0, Color32::from_rgba_unmultiplied(in_primary.r(), in_primary.g(), in_primary.b(), alpha))));
+                }
+            }
         }
 
-        let corr = if self.is_playing { self.live_phase_correlation.clamp(-1.0, 1.0) } else { 1.0 };
-        let meter_y = c1_rect.max.y - 14.0;
-        painter.text(Pos2::new(c1_rect.min.x + 10.0, meter_y), egui::Align2::LEFT_CENTER, "Korelasi Fasa:", egui::FontId::proportional(9.0), Color32::from_rgb(148, 163, 184));
-        let bar_x = c1_rect.min.x + 85.0;
-        let bar_w = (c1_rect.width() - 190.0).clamp(40.0, 120.0);
-        painter.rect_filled(Rect::from_min_size(Pos2::new(bar_x, meter_y - 4.0), Vec2::new(bar_w, 8.0)), 2.0, Color32::from_rgb(30, 41, 59));
-        let dot_frac = ((corr + 1.0) * 0.5).clamp(0.05, 0.95);
-        painter.circle_filled(Pos2::new(bar_x + bar_w * dot_frac, meter_y), 4.5, Color32::from_rgb(52, 211, 153));
-        painter.text(Pos2::new(bar_x + bar_w + 8.0, meter_y), egui::Align2::LEFT_CENTER, format!("{:+.2}", corr), egui::FontId::monospace(9.0), Color32::from_rgb(52, 211, 153));
+        painter.text(
+            Pos2::new(x_slit, wall_top - 3.0),
+            egui::Align2::CENTER_BOTTOM,
+            "DOUBLE-SLIT (1->2)",
+            egui::FontId::monospace(7.5),
+            Color32::from_rgb(148, 163, 184),
+        );
 
+        // 4. Downstream Twin Particle Rivers (1:1 Bit-Identical Clone of Upstream Polychromatic Stream!)
+        if is_in_connected {
+            let branch_particles = 48usize;
+            let p0_a = Pos2::new(x_slit + 3.0, y_slit_a);
+            let p3_a = Pos2::new(x_end, y_out_a);
+            let p0_b = Pos2::new(x_slit + 3.0, y_slit_b);
+            let p3_b = Pos2::new(x_end, y_out_b);
+
+            for i in 0..branch_particles {
+                let p_col = in_pal[i % 8];
+                let seed = i as f32 * 0.6180339887;
+                let speed = 0.52 + (seed.fract() * 0.24);
+                let u = ((i as f32 / branch_particles as f32) + flow_t * speed).fract();
+                let u_prev = (u - 0.045).max(0.0);
+
+                let lane_offset = ((i as f32 * 1.73).sin()) * 4.2 * (0.3 + 0.7 * u);
+                let wave = (u * 14.0 - flow_t * 5.2 + seed * 6.28).sin() * 1.5;
+                let r = 1.25 + (seed * 2.7).fract() * 1.05;
+
+                // Stream A (Top Slit -> Out A)
+                let base_pa = eval_bezier(p0_a, p3_a, u);
+                let prev_pa = eval_bezier(p0_a, p3_a, u_prev);
+                let pa = Pos2::new(base_pa.x, base_pa.y + lane_offset + wave);
+                let pa_prev = Pos2::new(prev_pa.x, prev_pa.y + lane_offset + wave);
+
+                painter.line_segment([pa_prev, pa], Stroke::new(r * 0.85, Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), 105)));
+                painter.circle_filled(pa, r + 1.1, Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), 40));
+                painter.circle_filled(pa, r, p_col);
+
+                // Stream B (Bottom Slit -> Out B)
+                let base_pb = eval_bezier(p0_b, p3_b, u);
+                let prev_pb = eval_bezier(p0_b, p3_b, u_prev);
+                let pb = Pos2::new(base_pb.x, base_pb.y + lane_offset + wave);
+                let pb_prev = Pos2::new(prev_pb.x, prev_pb.y + lane_offset + wave);
+
+                painter.line_segment([pb_prev, pb], Stroke::new(r * 0.85, Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), 105)));
+                painter.circle_filled(pb, r + 1.1, Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), 40));
+                painter.circle_filled(pb, r, p_col);
+            }
+        }
+
+        // Labels
+        painter.text(Pos2::new(x_in - 6.0, cy), egui::Align2::RIGHT_CENTER, format!("HULU
+{}", in_lineage), egui::FontId::monospace(8.0), in_primary);
+        painter.text(Pos2::new(x_end + 6.0, y_out_a), egui::Align2::LEFT_CENTER, format!("SLIT A (100%)
+-> {}", out_a_target.chars().take(12).collect::<String>()), egui::FontId::monospace(8.0), in_primary);
+        painter.text(Pos2::new(x_end + 6.0, y_out_b), egui::Align2::LEFT_CENTER, format!("SLIT B (100%)
+-> {}", out_b_target.chars().take(12).collect::<String>()), egui::FontId::monospace(8.0), in_primary);
+
+        painter.text(
+            Pos2::new(c1_rect.min.x + 12.0, c1_rect.max.y - 8.0),
+            egui::Align2::LEFT_BOTTOM,
+            "Double-Slit Bit-Identical Cloning: Out A == Out B (Zero Insertion Loss • Pewarnaan Dinamis Hulu)",
+            egui::FontId::monospace(8.5),
+            Color32::from_rgb(52, 211, 153),
+        );
+
+        // Right Panel (c2_rect)
         painter.rect_filled(c2_rect, 6.0, Color32::from_rgb(12, 17, 29));
         painter.rect_stroke(c2_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
 
-        painter.text(c2_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, "SUMMING BUS ARCHITECTURE", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
+        painter.text(c2_rect.min + Vec2::new(10.0, 10.0), egui::Align2::LEFT_TOP, "SPLITTER LINEAGE & SPECS", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
 
-        let in_count = self.connections.iter().filter(|c| c.to_node == node_id).count();
         let specs = [
-            ("Arsitektur:", "64-bit f64 Accumulator Bus".to_string()),
-            ("Rasio Crossfade:", format!("Bus A {:.0}% • Bus B {:.0}%", weight_a * 100.0, weight_b * 100.0)),
-            ("Cabang Masuk:", format!("{} Input Wire(s)", in_count)),
-            ("Normalisasi Bus:", if in_count > 1 { format!("1/{} Auto-Headroom", in_count) } else { "Unity (1.0x)".to_string() }),
-            ("Latency Tambahan:", "0 Samples (Zero-Delay)".to_string()),
+            ("Topologi Aliran:", "Double-Slit Particle Divider".to_string()),
+            (" Karakter Hulu:", in_lineage),
+            ("Celah Atas (Out A):", format!("1.0x -> {}", out_a_target)),
+            ("Celah Bawah (Out B):", format!("1.0x -> {}", out_b_target)),
+            ("Selisih Fasa A/B:", "0.000° (Fase Terkunci 1:1)".to_string()),
+            ("Korelasi Sinyal:", "r = +1.000 (Bit-Identical)".to_string()),
         ];
 
         let start_y = c2_rect.min.y + 28.0;
@@ -2801,6 +3075,516 @@ impl LunulaApp {
             let py = start_y + i as f32 * 17.0;
             painter.text(Pos2::new(c2_rect.min.x + 10.0, py), egui::Align2::LEFT_TOP, *lbl, egui::FontId::proportional(9.0), Color32::from_rgb(148, 163, 184));
             painter.text(Pos2::new(c2_rect.max.x - 10.0, py), egui::Align2::RIGHT_TOP, val, egui::FontId::monospace(9.0), Color32::WHITE);
+        }
+    }
+
+    /// Context-Aware Dual-Slit Mixing Chamber Inspector (Option C: 2->1 Slit):
+    /// Dynamically inherits particle colors & 7-zone Biquad EQ polychromatic distributions from upstream branches A & B!
+    fn draw_mixer_inspector(&mut self, ui: &mut egui::Ui, painter: &egui::Painter, rect: Rect, node_id: usize, _t: f32) {
+        if !self.advance_studio_state.freeze_analyzer {
+            ui.ctx().request_repaint();
+        }
+        let time_s = ui.input(|i| i.time) as f32;
+
+        let avail_w = rect.width();
+        let c2_w = (avail_w * 0.34).clamp(270.0, 370.0).min(avail_w * 0.48);
+        let c1_w = (avail_w - c2_w - 20.0).max(180.0);
+        let c1_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(c1_w, rect.height() - 20.0));
+        let c2_rect = Rect::from_min_size(Pos2::new(rect.min.x + c1_w + 15.0, rect.min.y + 10.0), Vec2::new(avail_w - c1_w - 25.0, rect.height() - 20.0));
+
+        let current_mix = self.nodes.iter().find(|n| n.id == node_id).map(|n| n.param_val).unwrap_or(0.5).clamp(0.0, 1.0);
+        let weight_a = 1.0 - current_mix;
+        let weight_b = current_mix;
+
+        // Resolve real upstream pigment profiles for Branch A (Port 0) and Branch B (Port 1)
+        let (mut pal_a, mut col_a, mut lbl_a, conn_a) = self.resolve_stream_pigment_profile(node_id, Some(0), 0);
+        let (mut pal_b, mut col_b, mut lbl_b, conn_b) = self.resolve_stream_pigment_profile(node_id, Some(1), 0);
+
+        let active_a = conn_a;
+        let active_b = conn_b;
+
+        let lerp_rgb = |c1: Color32, c2: Color32, k: f32| -> Color32 {
+            let t = k.clamp(0.0, 1.0);
+            let r = (c1.r() as f32 * (1.0 - t) + c2.r() as f32 * t).round() as u8;
+            let g = (c1.g() as f32 * (1.0 - t) + c2.g() as f32 * t).round() as u8;
+            let b = (c1.b() as f32 * (1.0 - t) + c2.b() as f32 * t).round() as u8;
+            Color32::from_rgb(r, g, b)
+        };
+
+        if !active_a && !active_b {
+            let dim = Color32::from_rgb(100, 116, 139);
+            pal_a = [dim; 8];
+            col_a = dim;
+            lbl_a = "Pin A (Belum Terpasang)".to_string();
+            pal_b = [dim; 8];
+            col_b = dim;
+            lbl_b = "Pin B (Belum Terpasang)".to_string();
+        } else if active_a && !active_b {
+            let dim = Color32::from_rgb(100, 116, 139);
+            pal_b = [dim; 8];
+            col_b = dim;
+            lbl_b = "Pin B (Kosong)".to_string();
+        } else if !active_a && active_b {
+            let dim = Color32::from_rgb(100, 116, 139);
+            pal_a = [dim; 8];
+            col_a = dim;
+            lbl_a = "Pin A (Kosong)".to_string();
+        } else if pal_a == pal_b {
+            // Both branches come from identical dry source: give B a subtle warm silver-gold tint so user can still distinguish A vs B
+            let tint_b = Color32::from_rgb(253, 224, 71);
+            for i in 0..8 {
+                let c = pal_b[i];
+                pal_b[i] = Color32::from_rgb(
+                    ((c.r() as u16 * 3 + tint_b.r() as u16) / 4) as u8,
+                    ((c.g() as u16 * 3 + tint_b.g() as u16) / 4) as u8,
+                    ((c.b() as u16 * 3 + tint_b.b() as u16) / 4) as u8,
+                );
+            }
+            col_b = pal_b[0];
+        }
+
+        // Centroid color of the mixed stream
+        let col_mixed = if active_a && active_b {
+            lerp_rgb(col_a, col_b, current_mix)
+        } else if active_a {
+            col_a
+        } else if active_b {
+            col_b
+        } else {
+            Color32::from_rgb(100, 116, 139)
+        };
+
+        painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(8, 12, 21));
+        painter.rect_stroke(c1_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
+
+        let title_header = if active_a && active_b {
+            format!("🎛️ DUAL-SLIT MIXING CHAMBER (A: {} [{:.0}%] + B: {} [{:.0}%])", lbl_a, weight_a * 100.0, lbl_b, weight_b * 100.0)
+        } else if active_a {
+            format!("🎛️ DUAL-SLIT MIXING CHAMBER (HANYA PIN A: {} [100%])", lbl_a.to_uppercase())
+        } else if active_b {
+            format!("🎛️ DUAL-SLIT MIXING CHAMBER (HANYA PIN B: {} [100%])", lbl_b.to_uppercase())
+        } else {
+            "🎛️ DUAL-SLIT MIXING CHAMBER • STANDBY (BELUM TERHUBUNG)".to_string()
+        };
+
+        painter.text(
+            c1_rect.min + Vec2::new(12.0, 8.0),
+            egui::Align2::LEFT_TOP,
+            title_header,
+            egui::FontId::proportional(10.0),
+            col_mixed,
+        );
+
+        let r_left = c1_rect.min.x + 68.0;
+        let r_right = c1_rect.max.x - 66.0;
+        let r_top = c1_rect.min.y + 28.0;
+        let r_bot = c1_rect.max.y - 22.0;
+        let r_w = (r_right - r_left).max(120.0);
+        let r_h = (r_bot - r_top).max(50.0);
+        let cy = r_top + r_h * 0.50;
+
+        let x_ch_left = r_left + r_w * 0.36;
+        let x_ch_right = r_left + r_w * 0.58;
+        let ch_half_h = (r_h * 0.34).clamp(18.0, 32.0);
+        let chamber_rect = Rect::from_min_max(
+            Pos2::new(x_ch_left, cy - ch_half_h),
+            Pos2::new(x_ch_right, cy + ch_half_h),
+        );
+
+        let y_in_a = cy - (r_h * 0.32).clamp(18.0, 34.0);
+        let y_in_b = cy + (r_h * 0.32).clamp(18.0, 34.0);
+        let y_slit_a = cy - (ch_half_h * 0.48);
+        let y_slit_b = cy + (ch_half_h * 0.48);
+
+        let eval_bezier = |p0: Pos2, p3: Pos2, u: f32| -> Pos2 {
+            let dx = (p3.x - p0.x).abs().max(10.0) * 0.5;
+            let p1 = Pos2::new(p0.x + dx, p0.y);
+            let p2 = Pos2::new(p3.x - dx, p3.y);
+            let v = 1.0 - u;
+            let x = v * v * v * p0.x + 3.0 * v * v * u * p1.x + 3.0 * v * u * u * p2.x + u * u * u * p3.x;
+            let y = v * v * v * p0.y + 3.0 * v * v * u * p1.y + 3.0 * v * u * u * p2.y + u * u * u * p3.y;
+            Pos2::new(x, y)
+        };
+
+        // 1. Riverbed Channels & Chamber Backdrop
+        let bed_a = generate_river_bezier_points(Pos2::new(r_left, y_in_a), Pos2::new(x_ch_left - 3.0, y_slit_a), 24);
+        let bed_b = generate_river_bezier_points(Pos2::new(r_left, y_in_b), Pos2::new(x_ch_left - 3.0, y_slit_b), 24);
+        painter.add(egui::Shape::line(bed_a, Stroke::new(13.0, Color32::from_rgba_unmultiplied(15, 23, 42, 180))));
+        painter.add(egui::Shape::line(bed_b, Stroke::new(13.0, Color32::from_rgba_unmultiplied(15, 23, 42, 180))));
+
+        painter.rect_filled(chamber_rect, 4.0, Color32::from_rgba_unmultiplied(15, 23, 42, 220));
+        painter.rect_filled(
+            chamber_rect.shrink(2.0),
+            3.0,
+            Color32::from_rgba_unmultiplied(col_mixed.r(), col_mixed.g(), col_mixed.b(), 18),
+        );
+
+        painter.line_segment(
+            [Pos2::new(x_ch_right + 3.0, cy), Pos2::new(r_right, cy)],
+            Stroke::new(20.0, Color32::from_rgba_unmultiplied(15, 23, 42, 190)),
+        );
+        for d in 0..14 {
+            if d % 2 == 0 {
+                let x0 = x_ch_right + 4.0 + (d as f32 / 14.0) * (r_right - x_ch_right - 4.0);
+                let x1 = x_ch_right + 4.0 + ((d + 1) as f32 / 14.0) * (r_right - x_ch_right - 4.0);
+                painter.line_segment([Pos2::new(x0, cy - 11.5), Pos2::new(x1, cy - 11.5)], Stroke::new(0.8, Color32::from_rgba_unmultiplied(100, 116, 139, 80)));
+                painter.line_segment([Pos2::new(x0, cy + 11.5), Pos2::new(x1, cy + 11.5)], Stroke::new(0.8, Color32::from_rgba_unmultiplied(100, 116, 139, 80)));
+            }
+        }
+
+        // 2. Upstream Polychromatic Particle Streams A & B
+        let max_up_particles = 54usize;
+        let count_a = if active_a { ((max_up_particles as f32 * (if active_b { weight_a } else { 1.0 })).round() as usize).max(3) } else { 0 };
+        let count_b = if active_b { ((max_up_particles as f32 * (if active_a { weight_b } else { 1.0 })).round() as usize).max(3) } else { 0 };
+
+        let p0_a = Pos2::new(r_left, y_in_a);
+        let p3_a = Pos2::new(x_ch_left - 3.0, y_slit_a);
+        for i in 0..count_a {
+            let p_col = pal_a[i % 8];
+            let seed = i as f32 * 0.6180339887;
+            let speed = 0.48 + (seed.fract() * 0.25);
+            let u = ((i as f32 / count_a.max(1) as f32) + time_s * speed).fract();
+            let u_prev = (u - 0.05).max(0.0);
+
+            let spread = ((i as f32 * 1.91).sin()) * (1.5 + 3.5 * weight_a) * (1.0 - 0.4 * u);
+            let wave = (u * 12.0 - time_s * 5.0 + seed * 6.28).sin() * 1.3;
+            let r = 1.25 + (seed * 2.9).fract() * 1.1;
+
+            let b_cur = eval_bezier(p0_a, p3_a, u);
+            let b_prv = eval_bezier(p0_a, p3_a, u_prev);
+            let pos = Pos2::new(b_cur.x, b_cur.y + spread + wave);
+            let prv = Pos2::new(b_prv.x, b_prv.y + spread + wave);
+
+            painter.line_segment([prv, pos], Stroke::new(r * 0.85, Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), 105)));
+            painter.circle_filled(pos, r + 1.0, Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), 38));
+            painter.circle_filled(pos, r, p_col);
+        }
+
+        let p0_b = Pos2::new(r_left, y_in_b);
+        let p3_b = Pos2::new(x_ch_left - 3.0, y_slit_b);
+        for i in 0..count_b {
+            let p_col = pal_b[i % 8];
+            let seed = i as f32 * 0.6180339887 + 0.31;
+            let speed = 0.48 + (seed.fract() * 0.25);
+            let u = ((i as f32 / count_b.max(1) as f32) + time_s * speed).fract();
+            let u_prev = (u - 0.05).max(0.0);
+
+            let spread = ((i as f32 * 1.91).cos()) * (1.5 + 3.5 * weight_b) * (1.0 - 0.4 * u);
+            let wave = (u * 12.0 - time_s * 5.0 + seed * 6.28).sin() * 1.3;
+            let r = 1.25 + (seed * 2.9).fract() * 1.1;
+
+            let b_cur = eval_bezier(p0_b, p3_b, u);
+            let b_prv = eval_bezier(p0_b, p3_b, u_prev);
+            let pos = Pos2::new(b_cur.x, b_cur.y + spread + wave);
+            let prv = Pos2::new(b_prv.x, b_prv.y + spread + wave);
+
+            painter.line_segment([prv, pos], Stroke::new(r * 0.85, Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), 105)));
+            painter.circle_filled(pos, r + 1.0, Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), 38));
+            painter.circle_filled(pos, r, p_col);
+        }
+
+        // 3. Inside Mixing Chamber: Helical Collision & Multi-Pigment Fusion
+        if !active_a && !active_b {
+            painter.text(
+                chamber_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "⚡ BILIK SUMMING STANDBY\nHubungkan kabel input ke Pin A atau Pin B",
+                egui::FontId::monospace(9.5),
+                Color32::from_rgb(148, 163, 184),
+            );
+        } else {
+            let chamber_particles = 56usize;
+            let ch_w = (x_ch_right - x_ch_left).max(20.0);
+            for i in 0..chamber_particles {
+                let seed = i as f32 * 0.6180339887;
+                let from_a = if active_a && active_b {
+                    (seed.fract()) < weight_a
+                } else {
+                    active_a
+                };
+
+                let start_y = if from_a { y_slit_a } else { y_slit_b };
+                let src_col = if from_a { pal_a[i % 8] } else { pal_b[i % 8] };
+                let partner_col = if from_a { pal_b[i % 8] } else { pal_a[i % 8] };
+                let fused_col = if active_a && active_b {
+                    lerp_rgb(src_col, partner_col, if from_a { current_mix * 0.65 } else { (1.0 - current_mix) * 0.65 })
+                } else {
+                    src_col
+                };
+
+                let speed = 0.62 + ((i as f32 * 0.37).fract() * 0.28);
+                let u = ((i as f32 / chamber_particles as f32) + time_s * speed).fract();
+
+                let env = (1.0 - u).powf(0.75);
+                let swirl = if active_a && active_b {
+                    (u * 10.0 - time_s * 6.5 + seed * 6.28).sin() * (ch_half_h * 0.55) * u * (1.0 - u) * 2.2
+                } else {
+                    (u * 8.0 - time_s * 5.0 + seed * 6.28).sin() * (ch_half_h * 0.2) * (1.0 - u)
+                };
+                let px = x_ch_left + 3.0 + u * (ch_w - 6.0);
+                let py = (start_y * env + cy * (1.0 - env) + swirl).clamp(chamber_rect.min.y + 3.0, chamber_rect.max.y - 3.0);
+
+                let p_col = if active_a && active_b {
+                    lerp_rgb(src_col, fused_col, (u * 1.25).clamp(0.0, 1.0))
+                } else {
+                    src_col
+                };
+                let r = 1.3 + (seed * 2.3).fract() * 1.1;
+
+                painter.circle_filled(Pos2::new(px, py), r + 1.2, Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), 42));
+                painter.circle_filled(Pos2::new(px, py), r, p_col);
+            }
+        }
+
+        // 4. Mixing Chamber Walls (2->1 Slit)
+        let wall_w = 5.5f32;
+        let wall_top = cy - ch_half_h - 6.0;
+        let wall_bot = cy + ch_half_h + 6.0;
+        let gap_a = (2.0 + 3.5 * weight_a).clamp(1.8, 5.5);
+        let gap_b = (2.0 + 3.5 * weight_b).clamp(1.8, 5.5);
+        let gap_out = 5.0f32;
+
+        painter.line_segment(
+            [Pos2::new(x_ch_left, chamber_rect.min.y), Pos2::new(x_ch_right, chamber_rect.min.y)],
+            Stroke::new(2.0, Color32::from_rgb(71, 85, 105)),
+        );
+        painter.line_segment(
+            [Pos2::new(x_ch_left, chamber_rect.max.y), Pos2::new(x_ch_right, chamber_rect.max.y)],
+            Stroke::new(2.0, Color32::from_rgb(71, 85, 105)),
+        );
+
+        let lw_top = Rect::from_min_max(Pos2::new(x_ch_left - wall_w * 0.5, wall_top), Pos2::new(x_ch_left + wall_w * 0.5, y_slit_a - gap_a));
+        let lw_mid = Rect::from_min_max(Pos2::new(x_ch_left - wall_w * 0.5, y_slit_a + gap_a), Pos2::new(x_ch_left + wall_w * 0.5, y_slit_b - gap_b));
+        let lw_bot = Rect::from_min_max(Pos2::new(x_ch_left - wall_w * 0.5, y_slit_b + gap_b), Pos2::new(x_ch_left + wall_w * 0.5, wall_bot));
+
+        let rw_top = Rect::from_min_max(Pos2::new(x_ch_right - wall_w * 0.5, wall_top), Pos2::new(x_ch_right + wall_w * 0.5, cy - gap_out));
+        let rw_bot = Rect::from_min_max(Pos2::new(x_ch_right - wall_w * 0.5, cy + gap_out), Pos2::new(x_ch_right + wall_w * 0.5, wall_bot));
+
+        for w_rect in [lw_top, lw_mid, lw_bot, rw_top, rw_bot] {
+            painter.rect_filled(w_rect, 1.5, Color32::from_rgb(30, 41, 59));
+            painter.rect_stroke(w_rect, 1.5, Stroke::new(1.0, Color32::from_rgb(100, 116, 139)), egui::StrokeKind::Inside);
+        }
+
+        if weight_a > 0.01 && active_a {
+            painter.circle_filled(Pos2::new(x_ch_left, y_slit_a), 4.5, Color32::from_rgba_unmultiplied(col_a.r(), col_a.g(), col_a.b(), 80));
+        }
+        if weight_b > 0.01 && active_b {
+            painter.circle_filled(Pos2::new(x_ch_left, y_slit_b), 4.5, Color32::from_rgba_unmultiplied(col_b.r(), col_b.g(), col_b.b(), 80));
+        }
+        if active_a || active_b {
+            painter.circle_filled(Pos2::new(x_ch_right, cy), 5.5, Color32::from_rgba_unmultiplied(col_mixed.r(), col_mixed.g(), col_mixed.b(), 95));
+            painter.line_segment(
+                [Pos2::new(x_ch_right, cy - gap_out), Pos2::new(x_ch_right, cy + gap_out)],
+                Stroke::new(2.2, Color32::from_rgba_unmultiplied(255, 255, 255, 210)),
+            );
+
+            for ring in 0..3 {
+                let rad = 5.0 + ((time_s * 2.2 + ring as f32 * 0.33).fract()) * 14.0;
+                let alpha = ((1.0 - (rad - 5.0) / 14.0) * 110.0).clamp(0.0, 110.0) as u8;
+                let mut arc_pts = Vec::with_capacity(11);
+                for a_idx in 0..=10 {
+                    let ang = -1.1 + (a_idx as f32 / 10.0) * 2.2;
+                    arc_pts.push(Pos2::new(x_ch_right + 3.0 + ang.cos() * rad, cy + ang.sin() * rad));
+                }
+                painter.add(egui::Shape::line(arc_pts, Stroke::new(1.0, Color32::from_rgba_unmultiplied(col_mixed.r(), col_mixed.g(), col_mixed.b(), alpha))));
+            }
+        }
+
+        painter.text(
+            Pos2::new((x_ch_left + x_ch_right) * 0.5, wall_top - 2.0),
+            egui::Align2::CENTER_BOTTOM,
+            "MIXING CHAMBER (2->1 SLIT)",
+            egui::FontId::monospace(7.5),
+            Color32::from_rgb(148, 163, 184),
+        );
+
+        // 5. Downstream Unified Polychromatic Particle River (x_ch_right -> r_right)
+        let down_particles = if active_a || active_b { 68usize } else { 0usize };
+        let down_len = (r_right - (x_ch_right + 3.0)).max(20.0);
+        for i in 0..down_particles {
+            let seed = i as f32 * 0.6180339887;
+            let speed = 0.54 + (seed.fract() * 0.24);
+            let u = ((i as f32 / down_particles as f32) + time_s * speed).fract();
+            let u_prev = (u - 0.048).max(0.0);
+
+            let lane_y = ((i as f32 * 1.67).sin()) * 6.8 * (0.25 + 0.75 * u);
+            let wave_y = (u * 14.0 - time_s * 5.4 + seed * 6.28).sin() * 1.6;
+            let px = x_ch_right + 3.0 + u * down_len;
+            let py = cy + lane_y + wave_y;
+            let px_prev = x_ch_right + 3.0 + u_prev * down_len;
+            let py_prev = cy + lane_y * 0.9 + wave_y;
+
+            // Each particle blends its polychromatic slot from A and B according to slider dominance
+            let slot_a = pal_a[i % 8];
+            let slot_b = pal_b[(i + 3) % 8];
+            let p_col = if active_a && active_b {
+                // Keep subtle polychromatic sparkle while weighted by current_mix
+                let bias = if (seed.fract()) < weight_a {
+                    (current_mix * 0.65).clamp(0.0, 1.0)
+                } else {
+                    (0.35 + current_mix * 0.65).clamp(0.0, 1.0)
+                };
+                lerp_rgb(slot_a, slot_b, bias)
+            } else if active_a {
+                slot_a
+            } else {
+                slot_b
+            };
+            let r = 1.3 + (seed * 3.1).fract() * 1.15;
+
+            painter.line_segment(
+                [Pos2::new(px_prev, py_prev), Pos2::new(px, py)],
+                Stroke::new(r * 0.85, Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), 105)),
+            );
+            painter.circle_filled(Pos2::new(px, py), r + 1.2, Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), 42));
+            painter.circle_filled(Pos2::new(px, py), r, p_col);
+        }
+
+        // Labels for Hulu A, Hulu B, and Hilir A+B
+        let text_hulu_a = if active_a {
+            format!("HULU A ({:.0}%)\n{}", weight_a * 100.0, lbl_a.chars().take(12).collect::<String>())
+        } else {
+            "HULU A\n[Belum Terpasang]".to_string()
+        };
+        let text_hulu_b = if active_b {
+            format!("HULU B ({:.0}%)\n{}", weight_b * 100.0, lbl_b.chars().take(12).collect::<String>())
+        } else {
+            "HULU B\n[Belum Terpasang]".to_string()
+        };
+        let text_hilir = if active_a || active_b {
+            "HILIR\n(A + B)"
+        } else {
+            "HILIR\n[Mati]"
+        };
+
+        painter.text(
+            Pos2::new(r_left - 6.0, y_in_a),
+            egui::Align2::RIGHT_CENTER,
+            text_hulu_a,
+            egui::FontId::monospace(8.0),
+            col_a,
+        );
+        painter.text(
+            Pos2::new(r_left - 6.0, y_in_b),
+            egui::Align2::RIGHT_CENTER,
+            text_hulu_b,
+            egui::FontId::monospace(8.0),
+            col_b,
+        );
+        painter.text(
+            Pos2::new(r_right + 6.0, cy),
+            egui::Align2::LEFT_CENTER,
+            text_hilir,
+            egui::FontId::monospace(8.5),
+            col_mixed,
+        );
+
+        // Right Panel (c2_rect): High-Contrast Dark UI Controls & Lineage Info
+        painter.rect_filled(c2_rect, 6.0, Color32::from_rgb(12, 17, 29));
+        painter.rect_stroke(c2_rect, 6.0, Stroke::new(1.0, Color32::from_rgb(30, 41, 59)), egui::StrokeKind::Inside);
+
+        painter.text(
+            c2_rect.min + Vec2::new(12.0, 10.0),
+            egui::Align2::LEFT_TOP,
+            "🌊 KONTROL RUANG CAMPUR (2->1 SLIT)",
+            egui::FontId::proportional(10.0),
+            Color32::from_rgb(199, 210, 254),
+        );
+
+        let dom_label = if !active_a && !active_b {
+            "Standby (Kabel Belum Terpasang)".to_string()
+        } else if active_a && !active_b {
+            format!("Tunggal Pin A (100%): {}", lbl_a)
+        } else if !active_a && active_b {
+            format!("Tunggal Pin B (100%): {}", lbl_b)
+        } else if weight_a > 0.60 {
+            format!("Dominan A: {}", lbl_a)
+        } else if weight_b > 0.60 {
+            format!("Dominan B: {}", lbl_b)
+        } else {
+            format!("50:50 ({} + {})", lbl_a.chars().take(10).collect::<String>(), lbl_b.chars().take(10).collect::<String>())
+        };
+        painter.text(
+            c2_rect.min + Vec2::new(12.0, 26.0),
+            egui::Align2::LEFT_TOP,
+            format!("Hilir: {}", dom_label),
+            egui::FontId::monospace(8.8),
+            col_mixed,
+        );
+
+        let controls_rect = Rect::from_min_max(
+            Pos2::new(c2_rect.min.x + 12.0, c2_rect.min.y + 44.0),
+            Pos2::new(c2_rect.max.x - 12.0, c2_rect.max.y - 8.0),
+        );
+        let mut new_mix = current_mix;
+
+        let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(controls_rect));
+        child_ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(format!("Slit A: {:.0}%", weight_a * 100.0)).strong().size(10.0).color(col_a));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(egui::RichText::new(format!("Slit B: {:.0}%", weight_b * 100.0)).strong().size(10.0).color(col_b));
+            });
+        });
+
+        child_ui.add_space(2.0);
+
+        // Full-width dark-styled slider
+        let full_slider_w = (child_ui.available_width() - 4.0).max(80.0);
+        child_ui.spacing_mut().slider_width = full_slider_w;
+        child_ui.visuals_mut().widgets.inactive.bg_fill = Color32::from_rgb(30, 41, 59);
+        child_ui.visuals_mut().widgets.hovered.bg_fill = Color32::from_rgb(51, 65, 85);
+        child_ui.visuals_mut().widgets.active.bg_fill = col_mixed;
+        let slider = egui::Slider::new(&mut new_mix, 0.0..=1.0).show_value(false);
+        child_ui.add_sized(Vec2::new(full_slider_w, 18.0), slider);
+
+        child_ui.add_space(4.0);
+
+        // High-contrast custom dark pill buttons for quick ratio presets
+        let presets = [
+            ("100% A", 0.0f32),
+            ("75% A", 0.25),
+            ("50:50", 0.50),
+            ("75% B", 0.75),
+            ("100% B", 1.0),
+        ];
+        let btn_gap = 5.0f32;
+        let btn_w = ((full_slider_w - btn_gap * 4.0) / 5.0).max(36.0);
+        child_ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = btn_gap;
+            for (lbl, val) in presets {
+                let is_sel = (new_mix - val).abs() < 0.02;
+                let (bg, border, fg) = if is_sel {
+                    (
+                        Color32::from_rgb(30, 58, 138),
+                        col_mixed,
+                        Color32::WHITE,
+                    )
+                } else {
+                    (
+                        Color32::from_rgb(24, 32, 47),
+                        Color32::from_rgb(51, 65, 85),
+                        Color32::from_rgb(226, 232, 240),
+                    )
+                };
+                let btn = egui::Button::new(egui::RichText::new(lbl).size(9.0).strong().color(fg))
+                    .fill(bg)
+                    .stroke(Stroke::new(if is_sel { 1.4 } else { 1.0 }, border))
+                    .corner_radius(4.0);
+                if ui.add_sized([btn_w, 22.0], btn).clicked() {
+                    new_mix = val;
+                }
+            }
+        });
+
+        if (new_mix - current_mix).abs() > 0.005 {
+            if let Some(n) = self.nodes.iter_mut().find(|n| n.id == node_id) {
+                n.param_val = new_mix;
+                n.sub1 = format!("Mix: {:.0}% A • {:.0}% B", (1.0 - new_mix) * 100.0, new_mix * 100.0);
+            }
+            if let Some(ref engine) = self.audio_engine {
+                engine.set_node_param(node_id as u32, 0, new_mix);
+            }
+            self.invalidate_chain_cache();
         }
     }
 

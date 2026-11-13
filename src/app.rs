@@ -19,7 +19,10 @@ pub struct LunulaApp {
     pub connections: Vec<CableConnection>,
     pub next_node_id: usize,
     pub dragging_node: Option<usize>,
+    pub satellite_positions: std::collections::HashMap<(usize, u8), Pos2>,
+    pub dragging_satellite: Option<(usize, u8)>,
     pub patchbay_pan: Vec2,
+    pub patchbay_zoom: f32,
     pub is_panning_canvas: bool,
 
     // Cable patch dragging state
@@ -32,6 +35,7 @@ pub struct LunulaApp {
     pub advance_studio_state: crate::ui::patchbay::AdvanceStudioState,
     pub patchbay_filter_search: String,
     pub patchbay_category_idx: usize,
+    pub design_showcase_mode: usize,
 
     // Playback state
     pub is_playing: bool,
@@ -378,7 +382,10 @@ impl LunulaApp {
             connections: initial_connections,
             next_node_id: 6,
             dragging_node: None,
+            satellite_positions: std::collections::HashMap::new(),
+            dragging_satellite: None,
             patchbay_pan: Vec2::ZERO,
+            patchbay_zoom: 1.0,
             is_panning_canvas: false,
             connecting_from_node: None,
             connecting_from_port: 0,
@@ -388,6 +395,7 @@ impl LunulaApp {
             advance_studio_state: crate::ui::patchbay::AdvanceStudioState::default(),
             patchbay_filter_search: String::new(),
             patchbay_category_idx: 0,
+            design_showcase_mode: 0,
 
             is_playing: false,
             current_time: 0.0,
@@ -1849,6 +1857,30 @@ impl LunulaApp {
         report
     }
 
+    /// Resolves canvas world coordinates of free-floating satellite portals (Kotak Mesin Satelit)
+    pub fn get_satellite_pos(&self, node_id: usize, port: u8, node_pos: Pos2, node_type: &NodeType) -> Pos2 {
+        if let Some(&pos) = self.satellite_positions.get(&(node_id, port)) {
+            return pos;
+        }
+        match node_type {
+            NodeType::Mixer => {
+                if port == 0 {
+                    Pos2::new(node_pos.x - 90.0, node_pos.y - 10.0)
+                } else {
+                    Pos2::new(node_pos.x - 90.0, node_pos.y + 54.0)
+                }
+            }
+            NodeType::Splitter => {
+                if port == 0 {
+                    Pos2::new(node_pos.x + 155.0, node_pos.y - 10.0)
+                } else {
+                    Pos2::new(node_pos.x + 155.0, node_pos.y + 54.0)
+                }
+            }
+            _ => node_pos,
+        }
+    }
+
     /// Updates a node's parameter, subtitle text formatting, invalidates signal cache,
     /// and dispatches the new parameter to the running DSP audio engine.
     pub fn update_node_parameter(&mut self, node_id: usize, new_val: f32) {
@@ -1880,6 +1912,11 @@ impl LunulaApp {
                     let a_pct = (1.0 - new_val) * 100.0;
                     let b_pct = new_val * 100.0;
                     n.sub1 = format!("Mix: {:.0}% A • {:.0}% B", a_pct, b_pct);
+                }
+                NodeType::Splitter => {
+                    let a_pct = (1.0 - new_val) * 100.0;
+                    let b_pct = new_val * 100.0;
+                    n.sub1 = format!("Split: {:.0}% A • {:.0}% B", a_pct, b_pct);
                 }
                 NodeType::TubeWarmer => {
                     n.sub1 = format!("Warmth {:.0}%", new_val);
@@ -5455,7 +5492,7 @@ mod tests {
     fn test_true_64bit_f64_dsp_bus_precision_and_modular_exclusive_rejected_fallback() {
         use crate::audio::types::{HardwareStreamBadge, SignalPathReport, GraphEdge, GraphNode, SignalChainGraph};
         use crate::audio::dsp::DspPipeline;
-        use crate::audio::{VolumeAttenuatorEffect, VolumeBoosterEffect};
+        use crate::audio::VolumeAttenuatorEffect;
 
         // 1. Mathematical proof of True 64-bit (f64) inter-node DSP bus:
         // We attenuate a full-scale signal by -180 dB (6x -30 dB VolumeAttenuator nodes in series, factor 10^-9)
@@ -5534,3 +5571,4 @@ mod tests {
         assert_eq!(node4.sub2, "Fallback Adapted by Rubato Sinc • 44.1k ➔ 48.0k");
     }
 }
+
