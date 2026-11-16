@@ -12,7 +12,10 @@ target_test/
 **/*.rs.bk
 *.profraw
 *.profdata
+*.coverage
 cobertura.xml
+lcov.info
+coverage/
 
 # ------------------------------------------------------------------------------
 # 2. Distribution, Binaries & Installer Output
@@ -28,6 +31,11 @@ Output/
 *.pdb
 *.msi
 *.cab
+*.lib
+*.exp
+*.ilk
+*.iss.bak
+_isxdl.dll
 
 # ------------------------------------------------------------------------------
 # 3. Local Runtime State, Presets & Logs
@@ -44,6 +52,7 @@ app_state.json
 *~
 *.dmp
 *.dump
+*.crash
 
 # ------------------------------------------------------------------------------
 # 4. Local Test Audio & Media Files (Prevent pushing large media)
@@ -71,10 +80,13 @@ app_state.json
 *.iml
 .vscode/*
 !.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
 *.code-workspace
 .history/
 *.sublime-project
 *.sublime-workspace
+.fleet/
 
 # ------------------------------------------------------------------------------
 # 6. Operating System Artifacts (Windows, macOS, Linux)
@@ -104,9 +116,11 @@ $RECYCLE.BIN/
 *.pem
 *.key
 *.pfx
+*.p12
 
 # ------------------------------------------------------------------------------
 # 8. Local Scratch & Experiment Binaries
 # ------------------------------------------------------------------------------
 /src/bin/
 src/bin/
+

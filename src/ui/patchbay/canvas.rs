@@ -1385,7 +1385,11 @@ impl LunulaApp {
             let is_culprit_node = node_rep.map_or(false, |r| r.is_culprit) && self.chain_mode == ChainMode::DspActive;
             let is_overdriven_victim = node_rep.map_or(false, |r| matches!(r.status, NodeSafetyStatus::OverdrivenDownstream)) && self.chain_mode == ChainMode::DspActive;
 
-            if is_active {
+            let is_portal_chassis = node.node_type == NodeType::Splitter || node.node_type == NodeType::Mixer;
+            let is_pass_filter = matches!(node.node_type, NodeType::LowPassFilter | NodeType::HighPassFilter | NodeType::BandPassFilter);
+            let is_custom_chassis = is_portal_chassis || is_pass_filter;
+
+            if is_active && !is_custom_chassis {
                 painter.rect_stroke(node_rect.expand(1.5), 10.0, Stroke::new(1.5, Color32::from_rgb(129, 140, 248)), egui::StrokeKind::Outside);
             }
 
@@ -1505,12 +1509,14 @@ impl LunulaApp {
             });
             }
 
-            // Dynamic Soft Shadow (expands & deepens when hovered / lifted)
-            painter.rect_filled(
-                node_rect.translate(Vec2::new(0.0, 2.5 + hover_anim * 2.5)),
-                10.0,
-                Color32::from_black_alpha((14.0 + hover_anim * 14.0) as u8),
-            );
+            // Dynamic Soft Shadow (only for standard rectangular modules; custom chassis draw their own contour shadow)
+            if !is_custom_chassis {
+                painter.rect_filled(
+                    node_rect.translate(Vec2::new(0.0, 2.5 + hover_anim * 2.5)),
+                    10.0,
+                    Color32::from_black_alpha((14.0 + hover_anim * 14.0) as u8),
+                );
+            }
 
             let theme_color = if is_fallback {
                 Color32::from_rgb(245, 158, 11)
@@ -1587,9 +1593,7 @@ impl LunulaApp {
                 Color32::WHITE
             };
 
-            let is_portal_chassis = node.node_type == NodeType::Splitter || node.node_type == NodeType::Mixer;
-            let is_pass_filter = matches!(node.node_type, NodeType::LowPassFilter | NodeType::HighPassFilter | NodeType::BandPassFilter);
-            let is_custom_chassis = is_portal_chassis || is_pass_filter;
+
 
             if !is_custom_chassis {
                 painter.rect_filled(node_rect, 10.0, bg);
@@ -1714,6 +1718,7 @@ impl LunulaApp {
                     &mut param_change,
                     &mut switch_mode,
                     is_node_clicked,
+                    is_active,
                     is_hovered,
                     is_dragging,
                     hover_anim,
@@ -4014,7 +4019,7 @@ impl LunulaApp {
                     egui::FontId::proportional(11.0),
                     sub2_col,
                 );
-            } else {
+            } else if !is_pass_filter {
                 // Sublabels: Dynamic based on bypassed vs flowing vs broken
                 let (sub1_txt, sub1_col, sub2_txt, sub2_col) = if is_bypassed_effect {
                     if node.node_type == NodeType::Dsp {
@@ -4057,18 +4062,20 @@ impl LunulaApp {
                 );
             }
 
-            // Status Indicator Dot (Top-Right)
-            let status_dot_pos = Pos2::new(node_rect.max.x - 8.0, node_rect.min.y + 8.0);
-            if is_bypassed_effect {
-                painter.circle_filled(status_dot_pos, 3.0, Color32::from_rgb(203, 213, 225));
-            } else if is_flowing {
-                if self.is_playing {
-                    painter.circle_filled(status_dot_pos, 3.5, theme_color);
+            // Status Indicator Dot (Top-Right, only for standard chassis)
+            if !is_custom_chassis {
+                let status_dot_pos = Pos2::new(node_rect.max.x - 8.0, node_rect.min.y + 8.0);
+                if is_bypassed_effect {
+                    painter.circle_filled(status_dot_pos, 3.0, Color32::from_rgb(203, 213, 225));
+                } else if is_flowing {
+                    if self.is_playing {
+                        painter.circle_filled(status_dot_pos, 3.5, theme_color);
+                    } else {
+                        painter.circle_filled(status_dot_pos, 3.0, theme_color);
+                    }
                 } else {
-                    painter.circle_filled(status_dot_pos, 3.0, theme_color);
+                    painter.circle_filled(status_dot_pos, 4.0, Color32::from_rgb(239, 68, 68));
                 }
-            } else {
-                painter.circle_filled(status_dot_pos, 4.0, Color32::from_rgb(239, 68, 68));
             }
 
             let pulse = (self.visualizer_anim_phase * 6.5).sin() * 0.5 + 0.5;
@@ -4673,6 +4680,7 @@ impl LunulaApp {
         param_change: &mut Option<(usize, f32)>,
         switch_mode: &mut Option<crate::models::ChainMode>,
         is_node_clicked: bool,
+        is_selected: bool,
         is_hovered: bool,
         is_dragging: bool,
         hover_anim: f32,
@@ -4699,23 +4707,23 @@ impl LunulaApp {
 
         match node.node_type {
             NodeType::LowPassFilter => {
-                self.render_lpf_hydro_sieve(
+                self.render_lpf_open_funnel(
                     ui, painter, node, node_rect, node_width, param_change,
-                    is_hovered, is_dragging, hover_anim, is_flowing, is_bypassed_effect,
+                    is_selected, is_hovered, is_dragging, hover_anim, is_flowing, is_bypassed_effect,
                     is_culprit_node, is_overdriven_victim, theme_color, t, lerp_rgb,
                 );
             }
             NodeType::HighPassFilter => {
-                self.render_hpf_plasma_prism(
+                self.render_hpf_open_splitter_weir(
                     ui, painter, node, node_rect, node_width, param_change,
-                    is_hovered, is_dragging, hover_anim, is_flowing, is_bypassed_effect,
+                    is_selected, is_hovered, is_dragging, hover_anim, is_flowing, is_bypassed_effect,
                     is_culprit_node, is_overdriven_victim, theme_color, t, lerp_rgb,
                 );
             }
             NodeType::BandPassFilter => {
-                self.render_bpf_cyclotron(
+                self.render_bpf_open_optical_resonator(
                     ui, painter, node, node_rect, node_width, param_change,
-                    is_hovered, is_dragging, hover_anim, is_flowing, is_bypassed_effect,
+                    is_selected, is_hovered, is_dragging, hover_anim, is_flowing, is_bypassed_effect,
                     is_culprit_node, is_overdriven_victim, theme_color, t, lerp_rgb,
                 );
             }
@@ -4723,8 +4731,180 @@ impl LunulaApp {
         }
     }
 
-    // --- 1. LOW-PASS FILTER: HYDRO-TECTONIC SIEVE ---
-    fn render_lpf_hydro_sieve(
+    // Helper: Draw Left Intake Terminal Pod & Right Output Terminal Pod on the Open Canvas (Bright Silver/Titanium Daylight Palette)
+    fn draw_open_io_terminals(
+        &self,
+        painter: &egui::Painter,
+        node_rect: Rect,
+        in_accent: Color32,
+        out_accent: Color32,
+        is_selected: bool,
+        is_hovered: bool,
+        is_flowing: bool,
+        t: f32,
+    ) -> (Pos2, Pos2) {
+        let cy = node_rect.center().y;
+        let in_center = Pos2::new(node_rect.min.x + 12.0, cy);
+        let out_center = Pos2::new(node_rect.max.x - 12.0, cy);
+
+        for &(c_pos, col, is_in) in &[(in_center, in_accent, true), (out_center, out_accent, false)] {
+            let pod_rect = Rect::from_center_size(c_pos, Vec2::new(22.0, 42.0));
+            // Ambient soft drop shadow
+            painter.rect_filled(pod_rect.translate(Vec2::new(0.0, 2.0)), 6.0, Color32::from_black_alpha(10));
+            // Bright Silver / Titanium Daylight Body
+            painter.rect_filled(pod_rect, 6.0, Color32::from_rgb(248, 250, 252));
+            let stroke_w = if is_selected || is_hovered { 1.8 } else { 1.2 };
+            let border_col = if is_selected || is_hovered { col } else { Color32::from_rgb(203, 213, 225) };
+            painter.rect_stroke(pod_rect, 6.0, Stroke::new(stroke_w, border_col), egui::StrokeKind::Outside);
+
+            let nozzle_x = if is_in { pod_rect.max.x - 2.0 } else { pod_rect.min.x + 2.0 };
+            let pulse = (t * 5.0).sin().abs();
+            let alpha = if is_flowing && self.is_playing { (170.0 + 85.0 * pulse) as u8 } else { 100 };
+            painter.line_segment(
+                [Pos2::new(nozzle_x, cy - 13.0), Pos2::new(nozzle_x, cy + 13.0)],
+                Stroke::new(2.5, Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), alpha)),
+            );
+            // High-contrast slate text on titanium daylight pod
+            painter.text(
+                Pos2::new(c_pos.x, c_pos.y - 12.0),
+                egui::Align2::CENTER_CENTER,
+                if is_in { "IN" } else { "OUT" },
+                egui::FontId::monospace(7.0),
+                Color32::from_rgb(71, 85, 105),
+            );
+        }
+
+        (Pos2::new(in_center.x + 11.0, cy), Pos2::new(out_center.x - 11.0, cy))
+    }
+
+    // Helper: Draw Floating Drag-Handle Crown Pill at Top of Open Apparatus (Silver/Titanium Daylight Palette)
+    fn draw_floating_crown_handle(
+        &self,
+        painter: &egui::Painter,
+        node_rect: Rect,
+        title: &str,
+        node_id: usize,
+        readout: &str,
+        accent: Color32,
+        _bg_dark: Color32,
+        is_selected: bool,
+        is_hovered: bool,
+        is_flowing: bool,
+    ) {
+        let pill_rect = Rect::from_center_size(
+            Pos2::new(node_rect.center().x, node_rect.min.y + 11.0),
+            Vec2::new(172.0, 20.0),
+        );
+        // Soft drop shadow
+        painter.rect_filled(pill_rect.translate(Vec2::new(0.0, 1.5)), 10.0, Color32::from_black_alpha(12));
+        // Silver / Titanium terang daylight body
+        painter.rect_filled(pill_rect, 10.0, Color32::from_rgb(248, 250, 252));
+        let border_c = if !is_flowing {
+            Color32::from_rgb(239, 68, 68)
+        } else if is_selected || is_hovered {
+            accent
+        } else {
+            Color32::from_rgb(203, 213, 225)
+        };
+        painter.rect_stroke(pill_rect, 10.0, Stroke::new(if is_selected { 1.8 } else { 1.2 }, border_c), egui::StrokeKind::Outside);
+
+        for gx in [0.0f32, 3.0] {
+            for gy in [-2.5f32, 2.5] {
+                painter.circle_filled(Pos2::new(pill_rect.min.x + 8.0 + gx, pill_rect.center().y + gy), 0.9, Color32::from_rgb(148, 163, 184));
+            }
+        }
+
+        painter.text(
+            Pos2::new(pill_rect.min.x + 16.0, pill_rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            format!("{} #{}", title, node_id),
+            egui::FontId::proportional(9.0),
+            Color32::from_rgb(15, 23, 42),
+        );
+        painter.text(
+            Pos2::new(pill_rect.max.x - 8.0, pill_rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            readout,
+            egui::FontId::monospace(8.8),
+            accent,
+        );
+    }
+
+    // Helper: Draw Bottom Spec Console + Dedicated Multi-Pole Slope Stage Indicator Pill (Silver/Titanium Daylight Palette)
+    fn draw_bottom_slope_and_spec_console(
+        &self,
+        painter: &egui::Painter,
+        node_rect: Rect,
+        stages: usize,
+        slope_db: i32,
+        q_val: f32,
+        mode_tag: &str,
+        accent: Color32,
+        _text_light: Color32,
+        is_flowing: bool,
+    ) {
+        let bot_y = node_rect.max.y - 8.0;
+
+        // Left Pill: Dedicated Visual Multi-Stage Slope Indicator (1x / 2x / 4x Biquad Baffle Bars + dB/oct)
+        let slope_pill = Rect::from_center_size(Pos2::new(node_rect.center().x - 42.0, bot_y), Vec2::new(84.0, 16.0));
+        painter.rect_filled(slope_pill.translate(Vec2::new(0.0, 1.2)), 8.0, Color32::from_black_alpha(10));
+        painter.rect_filled(slope_pill, 8.0, Color32::from_rgb(248, 250, 252));
+        painter.rect_stroke(slope_pill, 8.0, Stroke::new(1.1, Color32::from_rgb(203, 213, 225)), egui::StrokeKind::Outside);
+
+        // Draw 4 mini stage LED bars inside the left of slope_pill (1 lit for 12dB, 2 lit for 24dB, 4 lit for 48dB)
+        for s_idx in 0..4usize {
+            let bx = slope_pill.min.x + 7.0 + s_idx as f32 * 4.2;
+            let bar_r = Rect::from_min_size(Pos2::new(bx, bot_y - 4.0), Vec2::new(2.6, 8.0));
+            let is_lit = s_idx < stages;
+            painter.rect_filled(
+                bar_r,
+                1.0,
+                if is_lit { accent } else { Color32::from_rgb(203, 213, 225) },
+            );
+        }
+
+        painter.text(
+            Pos2::new(slope_pill.max.x - 6.0, bot_y),
+            egui::Align2::RIGHT_CENTER,
+            format!("{}dB ({}x)", slope_db, stages),
+            egui::FontId::monospace(7.8),
+            Color32::from_rgb(30, 41, 59),
+        );
+
+        // Right Pill: Q Resonance & Status
+        let spec_pill = Rect::from_center_size(Pos2::new(node_rect.center().x + 44.0, bot_y), Vec2::new(82.0, 16.0));
+        painter.rect_filled(spec_pill.translate(Vec2::new(0.0, 1.2)), 8.0, Color32::from_black_alpha(10));
+        painter.rect_filled(spec_pill, 8.0, Color32::from_rgb(248, 250, 252));
+        let right_border = if !is_flowing { Color32::from_rgb(239, 68, 68) } else { Color32::from_rgb(203, 213, 225) };
+        painter.rect_stroke(spec_pill, 8.0, Stroke::new(1.0, right_border), egui::StrokeKind::Outside);
+
+        let right_txt = if !is_flowing {
+            "⚠️ OFFLINE".to_string()
+        } else {
+            format!("Q{:.2}•{}", q_val, mode_tag)
+        };
+        painter.text(
+            spec_pill.center(),
+            egui::Align2::CENTER_CENTER,
+            right_txt,
+            egui::FontId::monospace(7.8),
+            if !is_flowing { Color32::from_rgb(220, 38, 38) } else { Color32::from_rgb(51, 65, 85) },
+        );
+    }
+
+    // =========================================================================
+    // 1. LOW-PASS FILTER: TOP-CURTAIN ACOUSTIC SIEVE (Frosted Daylight Mint & Water Wave)
+    // - Daylight Frosted Glass Theme:
+    //   * Ruang Saluran Akustik: Mint-Putih Cerah (#F0FDF4) dengan aksen zamrud tegas (#059669).
+    //   * Animasi Air: Gelombang air cair (water wave) mengalir tenang di saluran bawah membawa resonansi bass.
+    //   * Gradien Ukuran Partikel Berdasarkan Frekuensi: r = 3.2 - 2.1 * f_rank
+    //     - Sub-Bass / Bass: besar & bulat (r ≈ 2.8 – 3.3 px), tenang & berbobot.
+    //     - Midrange: sedang (r ≈ 1.8 – 2.2 px).
+    //     - Treble / Udara: kecil/mikro (r ≈ 1.0 – 1.3 px), cepat & ringan.
+    //   * Intensitas partikel bergantung energi sinyal bass, mid, treble dari FFT.
+    //   * Bilah slope & I/O terminal: silver/titanium terang daylight.
+    // =========================================================================
+    fn render_lpf_open_funnel(
         &self,
         ui: &mut egui::Ui,
         painter: &egui::Painter,
@@ -4732,8 +4912,9 @@ impl LunulaApp {
         node_rect: Rect,
         node_width: f32,
         param_change: &mut Option<(usize, f32)>,
+        is_selected: bool,
         is_hovered: bool,
-        is_dragging: bool,
+        _is_dragging: bool,
         _hover_anim: f32,
         is_flowing: bool,
         is_bypassed_effect: bool,
@@ -4741,281 +4922,354 @@ impl LunulaApp {
         is_overdriven_victim: bool,
         _theme_color: Color32,
         t: f32,
-        _lerp_rgb: impl Fn(Color32, Color32, f32) -> Color32,
+        lerp_rgb: impl Fn(Color32, Color32, f32) -> Color32,
     ) {
         let cutoff = if node.param_val > 50.0 { node.param_val } else { 800.0 };
         let active_cutoff = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(cutoff);
-
-        // 1. Asymmetric Rolloff Polygon Chassis (High on left, slopes down on right)
-        let poly = vec![
-            Pos2::new(node_rect.min.x, node_rect.min.y + 8.0),
-            Pos2::new(node_rect.min.x + 8.0, node_rect.min.y),
-            Pos2::new(node_rect.min.x + 104.0, node_rect.min.y),
-            Pos2::new(node_rect.min.x + 142.0, node_rect.min.y + 8.0),
-            Pos2::new(node_rect.max.x - 16.0, node_rect.min.y + 18.0),
-            Pos2::new(node_rect.max.x, node_rect.min.y + 24.0),
-            Pos2::new(node_rect.max.x, node_rect.max.y - 8.0),
-            Pos2::new(node_rect.max.x - 8.0, node_rect.max.y),
-            Pos2::new(node_rect.min.x + 8.0, node_rect.max.y),
-            Pos2::new(node_rect.min.x, node_rect.max.y - 8.0),
-        ];
-
-        let bg = if is_dragging {
-            Color32::from_rgb(241, 245, 249)
-        } else if is_bypassed_effect {
-            Color32::from_rgba_premultiplied(248, 250, 252, 230)
-        } else if !is_flowing {
-            Color32::from_rgb(255, 248, 248)
+        let norm_cutoff = ((active_cutoff / 50.0).ln() / (400.0_f32).ln()).clamp(0.0, 1.0);
+        let q_val = if let Some(idx) = node.sub2.find("Q ") {
+            node.sub2[idx + 2..].split_whitespace().next().and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.71)
         } else {
-            Color32::WHITE
+            0.71
+        };
+        let (slope_db, stages) = if node.sub2.contains("48dB") {
+            (48, 4usize)
+        } else if node.sub2.contains("24dB") {
+            (24, 2usize)
+        } else {
+            (12, 1usize)
+        };
+        let is_active_audio = is_flowing && self.is_playing && !is_bypassed_effect;
+
+        // Extract live physical band energies from real-time FFT spectrum (for particle & water intensity)
+        let live_bass = if self.is_playing {
+            self.spectrum_bars[0..10].iter().cloned().fold(0.0f32, f32::max).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let live_mid = if self.is_playing {
+            self.spectrum_bars[10..28].iter().cloned().fold(0.0f32, f32::max).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let live_treble = if self.is_playing {
+            self.spectrum_bars[28..48].iter().cloned().fold(0.0f32, f32::max).clamp(0.0, 1.0)
+        } else {
+            0.0
         };
 
-        // Fill chassis body
-        painter.add(egui::Shape::convex_polygon(poly.clone(), bg, Stroke::NONE));
-
-        let border_col = if is_culprit_node {
+        // LPF Accent: Zamrud Tegas (#059669)
+        let accent = if is_culprit_node {
             Color32::from_rgb(239, 68, 68)
         } else if is_overdriven_victim {
             Color32::from_rgb(245, 158, 11)
-        } else if is_bypassed_effect {
-            Color32::from_rgb(203, 213, 225)
-        } else if is_flowing {
-            Color32::from_rgb(14, 165, 233)
         } else {
-            Color32::from_rgb(239, 68, 68)
+            Color32::from_rgb(5, 150, 105) // #059669 Zamrud Tegas
         };
 
-        // Perimeter Stroke & Outer Aura
-        if is_flowing && self.is_playing && !is_bypassed_effect {
-            let aura_alpha = (50.0 + 30.0 * (self.visualizer_anim_phase * 4.0).sin()) as u8;
-            for w in poly.windows(2) {
-                painter.line_segment([w[0], w[1]], Stroke::new(3.0, Color32::from_rgba_unmultiplied(border_col.r(), border_col.g(), border_col.b(), aura_alpha / 2)));
-            }
-            painter.line_segment([poly[poly.len() - 1], poly[0]], Stroke::new(3.0, Color32::from_rgba_unmultiplied(border_col.r(), border_col.g(), border_col.b(), aura_alpha / 2)));
-
-            // Traveling laser beacons on chassis perimeter
-            let mut total_len = 0.0f32;
-            for i in 0..poly.len() {
-                total_len += poly[i].distance(poly[(i + 1) % poly.len()]);
-            }
-            let travel_dist = (self.visualizer_anim_phase * 130.0 + (node.id as f32) * 50.0) % total_len;
-            let eval_poly = |dist: f32| -> Pos2 {
-                let mut acc = 0.0f32;
-                let d = (dist % total_len + total_len) % total_len;
-                for i in 0..poly.len() {
-                    let next_i = (i + 1) % poly.len();
-                    let seg_len = poly[i].distance(poly[next_i]);
-                    if acc + seg_len >= d {
-                        let frac = if seg_len > 0.001 { (d - acc) / seg_len } else { 0.0 };
-                        return poly[i].lerp(poly[next_i], frac);
-                    }
-                    acc += seg_len;
-                }
-                poly[0]
-            };
-            let b1 = eval_poly(travel_dist);
-            let b2 = eval_poly(travel_dist + total_len * 0.5);
-            painter.circle_filled(b1, 3.8, border_col);
-            painter.circle_filled(b1, 1.8, Color32::WHITE);
-            painter.circle_filled(b2, 3.8, Color32::from_rgb(56, 189, 248));
-            painter.circle_filled(b2, 1.8, Color32::WHITE);
-
-            let stroke_w = 1.6 + 0.4 * (self.visualizer_anim_phase * 3.5).sin();
-            for w in poly.windows(2) {
-                painter.line_segment([w[0], w[1]], Stroke::new(stroke_w, border_col));
-            }
-            painter.line_segment([poly[poly.len() - 1], poly[0]], Stroke::new(stroke_w, border_col));
+        let readout = if active_cutoff >= 1000.0 {
+            format!("fc {:.2}kHz", active_cutoff / 1000.0)
         } else {
-            let stroke_w = if is_hovered { 1.8 } else { 1.2 };
-            for w in poly.windows(2) {
-                painter.line_segment([w[0], w[1]], Stroke::new(stroke_w, border_col));
-            }
-            painter.line_segment([poly[poly.len() - 1], poly[0]], Stroke::new(stroke_w, border_col));
-        }
+            format!("fc {:.0}Hz", active_cutoff)
+        };
 
-        // Corner Allen Bolts
-        for &(bx, by) in &[(node_rect.min.x + 6.0, node_rect.min.y + 6.0),
-                          (node_rect.min.x + 98.0, node_rect.min.y + 6.0),
-                          (node_rect.min.x + 6.0, node_rect.max.y - 6.0),
-                          (node_rect.max.x - 6.0, node_rect.max.y - 6.0)] {
-            painter.circle_filled(Pos2::new(bx, by), 1.2, Color32::from_rgb(203, 213, 225));
-        }
-
-        // 2. Top Header Pill: "🌊 LPF SIEVE"
-        let title_pill = Rect::from_min_size(Pos2::new(node_rect.min.x + 10.0, node_rect.min.y + 4.0), Vec2::new(88.0, 15.0));
-        painter.rect_filled(title_pill, 4.0, Color32::from_rgb(240, 249, 255));
-        painter.rect_stroke(title_pill, 4.0, Stroke::new(0.8, Color32::from_rgb(186, 230, 253)), egui::StrokeKind::Outside);
-        painter.text(
-            Pos2::new(title_pill.min.x + 4.0, title_pill.center().y),
-            egui::Align2::LEFT_CENTER,
-            "🌊 LPF SIEVE",
-            egui::FontId::proportional(8.5),
-            Color32::from_rgb(14, 116, 144),
-        );
-        painter.text(
-            Pos2::new(title_pill.max.x - 4.0, title_pill.center().y),
-            egui::Align2::RIGHT_CENTER,
-            format!("#{}", node.id),
-            egui::FontId::monospace(7.5),
-            Color32::from_rgb(100, 116, 139),
+        // 1. Floating Top Drag Handle Crown (Bright Silver / Titanium daylight pill)
+        self.draw_floating_crown_handle(
+            painter, node_rect, "🌊 LOW-PASS", node.id, &readout,
+            accent, Color32::from_rgb(248, 250, 252),
+            is_selected, is_hovered, is_flowing,
         );
 
-        // Status LED
-        let led_pos = Pos2::new(node_rect.min.x + 106.0, node_rect.min.y + 11.0);
-        if is_flowing && self.is_playing && !is_bypassed_effect {
-            let led_pulse = (t * 5.0).sin().abs();
-            painter.circle_stroke(led_pos, 4.2, Stroke::new(1.0, Color32::from_rgba_unmultiplied(14, 165, 233, (60.0 + 90.0 * led_pulse) as u8)));
-            painter.circle_filled(led_pos, 2.2, Color32::from_rgb(14, 165, 233));
-            painter.circle_filled(led_pos, 1.0, Color32::WHITE);
-        } else if is_flowing && !is_bypassed_effect {
-            painter.circle_filled(led_pos, 2.0, Color32::from_rgb(56, 189, 248));
-        } else {
-            painter.circle_filled(led_pos, 2.0, Color32::from_rgb(203, 213, 225));
+        // 2. Left & Right Open I/O Terminal Pods (Bright Silver / Titanium)
+        let (p_in, p_out) = self.draw_open_io_terminals(
+            painter, node_rect,
+            Color32::from_rgb(2, 132, 199),
+            accent,
+            is_selected, is_hovered, is_flowing, t,
+        );
+
+        // 3. Sculpted Low-Pass Roll-Off Acoustic Conduit
+        let track_min_x = node_rect.min.x + 32.0;
+        let track_w = (node_width - 64.0).max(10.0);
+        let gate_x = track_min_x + norm_cutoff * track_w;
+
+        let funnel_left = p_in.x;
+        let funnel_right = p_out.x;
+        let y_bot = node_rect.max.y - 22.0;      // Flat sub-bass floor
+        let y_top_wide = node_rect.min.y + 26.0; // Full-spectrum ceiling on left
+        let total_h = (y_bot - y_top_wide).max(36.0);
+
+        let open_fraction = 0.28 + 0.60 * norm_cutoff;
+        let y_curtain_tip = y_bot - total_h * open_fraction;
+        let q_boost = ((q_val - 0.71).max(0.0) / 3.0).clamp(0.0, 1.0);
+
+        let transition_span = match stages {
+            4 => 14.0,
+            2 => 26.0,
+            _ => 42.0,
+        };
+
+        let eval_lpf_roof = |x: f32| -> f32 {
+            if x <= gate_x {
+                let dist = ((gate_x - x) / 20.0).clamp(0.0, 1.0);
+                let q_bump = (1.0 - dist * dist) * q_boost * 6.5;
+                y_top_wide - q_bump
+            } else {
+                let u = ((x - gate_x) / transition_span).clamp(0.0, 1.0);
+                let s = u * u * (3.0 - 2.0 * u);
+                let start_y = y_top_wide - q_boost * 6.5;
+                start_y + s * (y_curtain_tip - start_y)
+            }
+        };
+
+        let strips = 30usize;
+        let mut roof_pts = Vec::with_capacity(strips + 1);
+        for s in 0..=strips {
+            let u = s as f32 / strips as f32;
+            let x = funnel_left + u * (funnel_right - funnel_left);
+            roof_pts.push(Pos2::new(x, eval_lpf_roof(x)));
         }
 
-        // 3. Treble Dissipation Vents in the sloped cutout (Top-Right)
-        let v_base_x = node_rect.min.x + 128.0;
-        let v_base_y = node_rect.min.y + 5.0;
-        for vi in 0..4 {
-            let vx = v_base_x + vi as f32 * 13.0;
-            let vy = v_base_y + vi as f32 * 4.2;
+        // Soft ambient drop shadow under frosted daylight glass
+        for s in 0..strips {
+            let p0 = roof_pts[s];
+            let p1 = roof_pts[s + 1];
+            let quad = vec![
+                Pos2::new(p0.x, p0.y + 2.0),
+                Pos2::new(p1.x, p1.y + 2.0),
+                Pos2::new(p1.x, y_bot + 2.0),
+                Pos2::new(p0.x, y_bot + 2.0),
+            ];
+            painter.add(egui::Shape::convex_polygon(quad, Color32::from_black_alpha(8), Stroke::NONE));
+        }
+
+        // Daylight Frosted Glass Conduit Fill: Mint-Putih Cerah (#F0FDF4 / rgb(240, 253, 244))
+        for s in 0..strips {
+            let p0 = roof_pts[s];
+            let p1 = roof_pts[s + 1];
+            let quad = vec![p0, p1, Pos2::new(p1.x, y_bot), Pos2::new(p0.x, y_bot)];
+            painter.add(egui::Shape::convex_polygon(quad, Color32::from_rgb(240, 253, 244), Stroke::NONE));
+        }
+
+        // Subtle horizontal frequency strata guide lines (soft mint/slate)
+        for frac in [0.33f32, 0.66] {
+            let gy = y_top_wide + total_h * frac;
             painter.line_segment(
-                [Pos2::new(vx, vy), Pos2::new(vx + 8.0, vy + 4.5)],
-                Stroke::new(1.2, Color32::from_rgb(203, 213, 225)),
+                [Pos2::new(funnel_left + 2.0, gy), Pos2::new(gate_x, gy)],
+                Stroke::new(0.6, Color32::from_rgba_unmultiplied(5, 150, 105, 45)),
             );
-
-            // Animated steam/mist particles escaping when audio is active
-            if is_flowing && self.is_playing && !is_bypassed_effect {
-                let steam_t = (t * 2.5 + vi as f32 * 0.45).fract();
-                let steam_x = vx + 4.0 + (steam_t * 6.28).sin() * 2.0;
-                let steam_y = vy - steam_t * 9.0;
-                let steam_alpha = ((1.0 - steam_t) * 110.0) as u8;
-                painter.circle_filled(Pos2::new(steam_x, steam_y), 1.2 + steam_t * 1.5, Color32::from_rgba_unmultiplied(186, 230, 253, steam_alpha));
-            }
         }
 
-        // 4. Hydro-Acoustic Bottom Reservoir & Animated Liquid Waves
-        let res_rect = Rect::from_min_max(
-            Pos2::new(node_rect.min.x + 2.0, node_rect.min.y + 44.0),
-            Pos2::new(node_rect.max.x - 2.0, node_rect.max.y - 2.0),
-        );
-        let wave_painter = painter.with_clip_rect(res_rect);
+        // Animated Water Wave (LPF: passes fluid water/bass acoustics with undulating liquid surface)
+        let water_base_h = total_h * 0.40;
+        let wave_amp = if is_active_audio { 1.8 + live_bass * 3.2 } else if is_flowing { 1.2 } else { 0.5 };
+        let wave_speed = if is_active_audio { 3.4 } else { 1.2 };
 
-        if is_flowing && self.is_playing && !is_bypassed_effect {
-            let norm_cutoff = ((active_cutoff / 100.0).log10() / 2.0).clamp(0.0, 1.0);
-            let water_depth = 0.55 - norm_cutoff * 0.22;
-            let base_y = node_rect.max.y - (node_rect.height() * water_depth);
-
-            // Back wave layer
-            let mut back_poly = Vec::new();
-            back_poly.push(Pos2::new(node_rect.min.x, node_rect.max.y));
-            let steps = 14;
-            for s in 0..=steps {
-                let fx = node_rect.min.x + (node_rect.width() * (s as f32 / steps as f32));
-                let wave_offset = ((fx * 0.08 + t * 3.2).sin()) * 1.8;
-                back_poly.push(Pos2::new(fx, base_y + wave_offset));
-            }
-            back_poly.push(Pos2::new(node_rect.max.x, node_rect.max.y));
-            wave_painter.add(egui::Shape::convex_polygon(back_poly, Color32::from_rgba_premultiplied(14, 165, 233, 40), Stroke::NONE));
-
-            // Front wave layer
-            let mut front_poly = Vec::new();
-            front_poly.push(Pos2::new(node_rect.min.x, node_rect.max.y));
-            for s in 0..=steps {
-                let fx = node_rect.min.x + (node_rect.width() * (s as f32 / steps as f32));
-                let wave_offset = (((fx * 0.09 - t * 4.0) + 1.8).sin()) * 1.6;
-                front_poly.push(Pos2::new(fx, base_y + wave_offset + 0.8));
-            }
-            front_poly.push(Pos2::new(node_rect.max.x, node_rect.max.y));
-            wave_painter.add(egui::Shape::convex_polygon(front_poly, Color32::from_rgba_premultiplied(6, 182, 212, 70), Stroke::NONE));
-
-            // Rising bubbles
-            for bi in 0..3 {
-                let b_seed = bi as f32 * 1.4;
-                let b_y = node_rect.max.y - (((t * (16.0 + bi as f32 * 4.0) + b_seed * 10.0)) % (node_rect.height() * 0.40));
-                let b_x = node_rect.min.x + 22.0 + bi as f32 * 45.0 + (t * 2.0 + b_seed).sin() * 3.0;
-                wave_painter.circle_stroke(Pos2::new(b_x, b_y), 1.5, Stroke::new(0.8, Color32::from_rgba_premultiplied(255, 255, 255, 180)));
-            }
-
-            ui.ctx().request_repaint();
+        let mut water_crest_pts = Vec::with_capacity(strips + 1);
+        for s in 0..=strips {
+            let u = s as f32 / strips as f32;
+            let x = funnel_left + u * (funnel_right - funnel_left);
+            let roof_y = eval_lpf_roof(x);
+            let ripple = (x * 0.08 - t * wave_speed).sin() * wave_amp + (x * 0.16 + t * (wave_speed * 0.7)).cos() * (wave_amp * 0.4);
+            let wy = (y_bot - water_base_h + ripple).clamp(roof_y + 4.0, y_bot - 1.0);
+            water_crest_pts.push(Pos2::new(x, wy));
         }
 
-        // 5. Sluice Gate (Cutoff Sieve Barrier) & Slider Track
-        let slider_track_rect = Rect::from_min_size(
-            Pos2::new(node_rect.min.x + 24.0, node_rect.min.y + 36.0),
-            Vec2::new((node_width - 48.0).max(10.0), 5.0),
+        // Water body translucent polygon fill (soft mint emerald liquid)
+        for s in 0..strips {
+            let p0 = water_crest_pts[s];
+            let p1 = water_crest_pts[s + 1];
+            let w_quad = vec![p0, p1, Pos2::new(p1.x, y_bot), Pos2::new(p0.x, y_bot)];
+            painter.add(egui::Shape::convex_polygon(
+                w_quad,
+                Color32::from_rgba_unmultiplied(5, 150, 105, (22.0 + live_bass * 26.0) as u8),
+                Stroke::NONE,
+            ));
+        }
+
+        // Water surface crest stroke & caustic shimmer
+        painter.add(egui::Shape::line(
+            water_crest_pts,
+            Stroke::new(1.3, Color32::from_rgba_unmultiplied(5, 150, 105, (110.0 + live_bass * 65.0) as u8)),
+        ));
+
+        // Conduit boundary lines
+        painter.add(egui::Shape::line(
+            roof_pts,
+            Stroke::new(if is_selected { 2.6 } else { 2.0 }, accent),
+        ));
+        painter.line_segment(
+            [Pos2::new(funnel_left, y_bot), Pos2::new(funnel_right, y_bot)],
+            Stroke::new(if is_selected { 2.4 } else { 1.8 }, Color32::from_rgb(5, 150, 105)),
         );
-        let fill_ratio = ((active_cutoff / 50.0).ln() / (400.0_f32).ln()).clamp(0.0, 1.0);
-        let thumb_x = slider_track_rect.min.x + slider_track_rect.width() * fill_ratio;
-        let cy = slider_track_rect.center().y;
 
         if !is_bypassed_effect {
-            // Sieve Barrier Line (Glowing laser divider)
-            if is_flowing && self.is_playing {
-                painter.line_segment(
-                    [Pos2::new(thumb_x, node_rect.min.y + 24.0), Pos2::new(thumb_x, node_rect.max.y - 18.0)],
-                    Stroke::new(1.4, Color32::from_rgba_unmultiplied(14, 165, 233, 140)),
-                );
-                // Whirlpool ripple at water surface
-                let wp_r = 3.5 + (t * 4.5).sin().abs() * 2.5;
-                painter.circle_stroke(
-                    Pos2::new(thumb_x, node_rect.min.y + 46.0),
-                    wp_r,
-                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(56, 189, 248, 160)),
-                );
+            // 4. Stratified Spectrum Particles: Continuous Size Gradient + Live Signal Intensity
+            //    - Formula: r = 3.2 - 2.1 * f_rank
+            //      Sub-Bass / Bass: r ≈ 2.8 – 3.3 px, moves calmer & heavier
+            //      Midrange: r ≈ 1.8 – 2.2 px
+            //      Treble / Udara: r ≈ 1.0 – 1.3 px, moves quick & light
+            //    - Intensity (alpha & luminosity, NOT size) scales with live frequency band energy!
+            let total_particles = if is_active_audio { 34usize } else if is_flowing { 12usize } else { 0usize };
+
+            for i in 0..total_particles {
+                let seed = i as f32 * 0.6180339887;
+                let f_rank = (i as f32 + 0.5) / total_particles.max(1) as f32; // 0.0 (bass bottom) .. 1.0 (treble top)
+                let is_air_treble = f_rank > 0.35;
+
+                // Continuous particle radius
+                let p_rad = (3.2 - 2.1 * f_rank).clamp(1.0, 3.3);
+
+                // Speed: calmer & heavier at bottom, fast & light at top
+                let spd = if is_active_audio {
+                    0.22 + f_rank * 0.54 + (seed.fract() * 0.10)
+                } else {
+                    0.06 + f_rank * 0.06
+                };
+                let u = ((i as f32 / total_particles.max(1) as f32) + t * spd).fract();
+
+                // Live energy for this particle's frequency rank
+                let band_energy = if f_rank < 0.33 {
+                    let k = f_rank / 0.33;
+                    live_bass * (1.0 - k) + live_mid * k
+                } else if f_rank < 0.67 {
+                    let k = (f_rank - 0.33) / 0.34;
+                    live_mid * (1.0 - k) + live_treble * k
+                } else {
+                    let k = ((f_rank - 0.67) / 0.33).clamp(0.0, 1.0);
+                    live_treble * (0.8 + 0.2 * k)
+                };
+
+                // Intensity factor (alpha & brightness, NOT radius)
+                let intensity = if is_active_audio {
+                    (0.40 + band_energy * 0.60).clamp(0.25, 1.0)
+                } else if is_flowing {
+                    0.35
+                } else {
+                    0.0
+                };
+
+                // Vertical lane position from bottom (f_rank=0) to top (f_rank=1)
+                let base_y = y_bot - 4.0 - f_rank * (total_h - 8.0);
+                let wave_y = (u * (6.0 + f_rank * 12.0) - t * (4.0 + f_rank * 10.0) + seed * 6.28).sin() * 1.5;
+                let py = (base_y + wave_y).clamp(y_top_wide + 3.0, y_bot - 3.0);
+
+                // Rich jewel-tone colors for high contrast against Mint-White Frosted Glass
+                let p_col = if !is_air_treble {
+                    lerp_rgb(Color32::from_rgb(5, 150, 105), Color32::from_rgb(16, 185, 129), f_rank / 0.35)
+                } else {
+                    lerp_rgb(Color32::from_rgb(13, 148, 136), Color32::from_rgb(2, 132, 199), (f_rank - 0.35) / 0.65)
+                };
+
+                let cutoff_rank = 0.18 + norm_cutoff * 0.78;
+                let rolloff_margin = match stages {
+                    4 => 0.04, // 48dB
+                    2 => 0.12, // 24dB
+                    _ => 0.24, // 12dB
+                };
+
+                if f_rank <= cutoff_rank {
+                    // PASSES CLEANLY TO OUT!
+                    let px = funnel_left + 4.0 + u * (funnel_right - funnel_left - 8.0);
+                    let max_roof_y = eval_lpf_roof(px) + 3.5;
+                    let clamped_y = py.max(max_roof_y);
+                    painter.line_segment(
+                        [Pos2::new((px - (4.0 + f_rank * 4.0)).max(funnel_left), clamped_y), Pos2::new(px, clamped_y)],
+                        Stroke::new(p_rad * 0.85, Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), (115.0 * intensity) as u8)),
+                    );
+                    painter.circle_filled(
+                        Pos2::new(px, clamped_y),
+                        p_rad,
+                        Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), (255.0 * intensity) as u8),
+                    );
+                } else if f_rank <= cutoff_rank + rolloff_margin {
+                    // ROLL-OFF LEAKAGE ZONE
+                    let px = funnel_left + 4.0 + u * (funnel_right - funnel_left - 8.0);
+                    let leak_factor = 1.0 - ((f_rank - cutoff_rank) / rolloff_margin).clamp(0.0, 1.0);
+                    let atten = if px <= gate_x { 1.0 } else { (leak_factor * 0.65).clamp(0.15, 0.75) };
+                    let max_roof_y = eval_lpf_roof(px) + 3.0;
+                    let clamped_y = py.max(max_roof_y);
+                    let col_atten = Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), (220.0 * atten * intensity) as u8);
+                    painter.circle_filled(Pos2::new(px, clamped_y), p_rad, col_atten);
+                } else {
+                    // STOP-BAND (Blocked by curtain blades at gate_x and vented upward)
+                    if u < 0.70 {
+                        let tau = u / 0.70;
+                        let px = funnel_left + 4.0 + tau * (gate_x - funnel_left - 6.0).max(6.0);
+                        painter.circle_filled(
+                            Pos2::new(px, py),
+                            p_rad,
+                            Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), (210.0 * intensity) as u8),
+                        );
+                    } else if is_active_audio {
+                        let tau = (u - 0.70) / 0.30;
+                        let px = gate_x + (tau * 10.0) + (tau * 8.0 + seed * 6.28).sin() * 2.5;
+                        let py_vent = py - tau * 14.0;
+                        let alpha = ((1.0 - tau) * 165.0 * intensity) as u8;
+                        painter.circle_filled(
+                            Pos2::new(px, py_vent),
+                            p_rad * (1.0 - 0.3 * tau),
+                            Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), alpha),
+                        );
+                    }
+                }
             }
 
-            // Hydraulic Slider Track
-            painter.rect_filled(Rect::from_min_size(Pos2::new(slider_track_rect.min.x, cy - 2.0), Vec2::new(slider_track_rect.width(), 4.0)), 2.0, Color32::from_rgb(224, 242, 254));
-            painter.rect_filled(Rect::from_min_size(Pos2::new(slider_track_rect.min.x, cy - 2.0), Vec2::new(thumb_x - slider_track_rect.min.x, 4.0)), 2.0, Color32::from_rgb(14, 165, 233));
+            // 5. Multi-Stage Descending Curtain Blades at gate_x (Bright Silver / Titanium daylight palette!)
+            let blade_spacing = 4.2f32;
+            let start_offset = -((stages as f32 - 1.0) * 0.5) * blade_spacing;
+            for s_idx in 0..stages {
+                let bx = (gate_x + start_offset + s_idx as f32 * blade_spacing).clamp(funnel_left + 8.0, funnel_right - 8.0);
+                let b_top = y_top_wide - 2.0;
+                let stage_frac = (s_idx + 1) as f32 / stages as f32;
+                let b_bot = y_top_wide + (y_curtain_tip - y_top_wide) * (0.65 + 0.35 * stage_frac);
 
-            // Sluice Gate Knob (Hydraulic wheel)
-            painter.circle_filled(Pos2::new(thumb_x, cy + 1.0), 5.5, Color32::from_black_alpha(20));
-            painter.circle_filled(Pos2::new(thumb_x, cy), 5.2, Color32::WHITE);
-            painter.circle_stroke(Pos2::new(thumb_x, cy), 5.2, Stroke::new(1.8, Color32::from_rgb(2, 132, 199)));
-            painter.circle_filled(Pos2::new(thumb_x, cy), 2.0, Color32::from_rgb(14, 165, 233));
+                let b_rect = Rect::from_min_max(Pos2::new(bx - 1.4, b_top), Pos2::new(bx + 1.4, b_bot));
+                // Silver / Titanium daylight blade
+                painter.rect_filled(b_rect, 1.2, Color32::from_rgb(226, 232, 240));
+                painter.rect_stroke(
+                    b_rect,
+                    1.2,
+                    Stroke::new(1.1, if s_idx == 0 { accent } else { Color32::from_rgb(148, 163, 184) }),
+                    egui::StrokeKind::Outside,
+                );
+                // Glowing tip at the bottom of each curtain blade
+                painter.circle_filled(Pos2::new(bx, b_bot), 2.0, accent);
+            }
 
-            // 6. Dual Telemetry Badges at bottom
-            let readout = if active_cutoff >= 1000.0 {
-                format!("Cutoff {:.1}k", active_cutoff / 1000.0)
-            } else {
-                format!("Cutoff {:.0}Hz", active_cutoff)
-            };
-
-            let slope_str = if node.sub2.contains("48dB") { "48dB" } else if node.sub2.contains("24dB") { "24dB" } else { "12dB" };
-            let q_str = if let Some(idx) = node.sub2.find("Q ") {
-                node.sub2[idx + 2..].split_whitespace().next().unwrap_or("0.71")
-            } else {
-                "0.71"
-            };
-
-            let badge_y = node_rect.min.y + 63.0;
-            let badge_w = (node_width - 34.0) * 0.48;
-            let badge_h = 19.0;
-
-            // Left: Cutoff Readout
-            let b_left = Rect::from_center_size(Pos2::new(node_rect.center().x - badge_w * 0.52, badge_y), Vec2::new(badge_w, badge_h));
-            painter.rect_filled(b_left, 3.5, Color32::from_rgb(224, 242, 254));
-            painter.rect_stroke(b_left, 3.5, Stroke::new(1.0, Color32::from_rgb(2, 132, 199)), egui::StrokeKind::Outside);
-            painter.text(b_left.center(), egui::Align2::CENTER_CENTER, readout, egui::FontId::proportional(10.0), Color32::from_rgb(2, 132, 199));
-
-            // Right: Slope & Q Readout
-            let b_right = Rect::from_center_size(Pos2::new(node_rect.center().x + badge_w * 0.52, badge_y), Vec2::new(badge_w, badge_h));
-            painter.rect_filled(b_right, 3.5, Color32::from_rgb(15, 23, 42));
-            painter.rect_stroke(b_right, 3.5, Stroke::new(0.8, Color32::from_rgb(71, 85, 105)), egui::StrokeKind::Outside);
-            painter.text(b_right.center(), egui::Align2::CENTER_CENTER, format!("{} • Q{}", slope_str, q_str), egui::FontId::proportional(9.5), Color32::from_rgb(241, 245, 249));
+            if is_active_audio || is_flowing {
+                ui.ctx().request_repaint();
+            }
         } else {
-            // Dormant / Bypassed State
-            let b_rect = Rect::from_center_size(Pos2::new(node_rect.center().x, node_rect.min.y + 44.0), Vec2::new(154.0, 22.0));
-            painter.rect_filled(b_rect, 4.0, Color32::from_rgb(241, 245, 249));
-            painter.rect_stroke(b_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(203, 213, 225)), egui::StrokeKind::Outside);
-            painter.text(b_rect.center(), egui::Align2::CENTER_CENTER, "DILEWATI (Bit-Perfect)", egui::FontId::proportional(11.0), Color32::from_rgb(100, 116, 139));
-            painter.text(Pos2::new(node_rect.center().x, node_rect.min.y + 66.0), egui::Align2::CENTER_CENTER, "Passthrough 1:1 Stream", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
+            painter.text(
+                Pos2::new(node_rect.center().x, node_rect.center().y + 4.0),
+                egui::Align2::CENTER_CENTER,
+                "⚡ BYPASSED (1:1 DIRECT)",
+                egui::FontId::monospace(9.0),
+                Color32::from_rgb(148, 163, 184),
+            );
         }
+
+        // 6. Bottom Multi-Pole Slope Stage Pill & Resonance Readout (Bright Silver / Titanium)
+        self.draw_bottom_slope_and_spec_console(
+            painter, node_rect, stages, -slope_db, q_val, "LPF",
+            accent, Color32::from_rgb(30, 41, 59), is_flowing,
+        );
     }
 
-    // --- 2. HIGH-PASS FILTER: AERO-PLASMA PRISM ---
-    fn render_hpf_plasma_prism(
+    // =========================================================================
+    // 2. HIGH-PASS FILTER: BOTTOM-BARRIER ACOUSTIC SIEVE (Frosted Daylight Ice-Blue & Wave)
+    // - Daylight Frosted Glass Theme:
+    //   * Ruang Saluran Akustik: Biru-Es Cerah (#F0F9FF) dengan aksen sian tajam (#0284C7).
+    //   * Animasi Air & Udara: Gelombang air cair tertahan di dasar pembatas (weir) & gelombang udara melintas bebas.
+    //   * Gradien Ukuran Partikel Berdasarkan Frekuensi: r = 3.2 - 2.1 * f_rank
+    //     - Sub-Bass / Bass: besar & bulat (r ≈ 2.8 – 3.3 px), tenang & berbobot.
+    //     - Midrange: sedang (r ≈ 1.8 – 2.2 px).
+    //     - Treble / Udara: kecil/mikro (r ≈ 1.0 – 1.3 px), cepat & ringan.
+    //   * Intensitas partikel bergantung energi sinyal bass, mid, treble dari FFT.
+    //   * Bilah slope & I/O terminal: silver/titanium terang daylight.
+    // =========================================================================
+    fn render_hpf_open_splitter_weir(
         &self,
         ui: &mut egui::Ui,
         painter: &egui::Painter,
@@ -5023,8 +5277,9 @@ impl LunulaApp {
         node_rect: Rect,
         node_width: f32,
         param_change: &mut Option<(usize, f32)>,
+        is_selected: bool,
         is_hovered: bool,
-        is_dragging: bool,
+        _is_dragging: bool,
         _hover_anim: f32,
         is_flowing: bool,
         is_bypassed_effect: bool,
@@ -5032,241 +5287,361 @@ impl LunulaApp {
         is_overdriven_victim: bool,
         _theme_color: Color32,
         t: f32,
-        _lerp_rgb: impl Fn(Color32, Color32, f32) -> Color32,
+        lerp_rgb: impl Fn(Color32, Color32, f32) -> Color32,
     ) {
         let cutoff = if node.param_val > 10.0 { node.param_val } else { 80.0 };
         let active_cutoff = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(cutoff);
-
-        // 1. Inverse Wedge Polygon Chassis with 45° cut on bottom-left (Sub Drain)
-        let poly = vec![
-            Pos2::new(node_rect.min.x, node_rect.min.y + 8.0),
-            Pos2::new(node_rect.min.x + 8.0, node_rect.min.y),
-            Pos2::new(node_rect.max.x - 8.0, node_rect.min.y),
-            Pos2::new(node_rect.max.x, node_rect.min.y + 8.0),
-            Pos2::new(node_rect.max.x, node_rect.max.y - 8.0),
-            Pos2::new(node_rect.max.x - 8.0, node_rect.max.y),
-            Pos2::new(node_rect.min.x + 38.0, node_rect.max.y),
-            Pos2::new(node_rect.min.x, node_rect.max.y - 28.0),
-        ];
-
-        let bg = if is_dragging {
-            Color32::from_rgb(241, 245, 249)
-        } else if is_bypassed_effect {
-            Color32::from_rgba_premultiplied(248, 250, 252, 230)
-        } else if !is_flowing {
-            Color32::from_rgb(255, 248, 248)
+        let norm_cutoff = ((active_cutoff / 20.0).ln() / (1000.0_f32).ln()).clamp(0.0, 1.0);
+        let q_val = if let Some(idx) = node.sub2.find("Q ") {
+            node.sub2[idx + 2..].split_whitespace().next().and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.71)
         } else {
-            Color32::WHITE
+            0.71
+        };
+        let (slope_db, stages) = if node.sub2.contains("48dB") {
+            (48, 4usize)
+        } else if node.sub2.contains("24dB") {
+            (24, 2usize)
+        } else {
+            (12, 1usize)
+        };
+        let is_active_audio = is_flowing && self.is_playing && !is_bypassed_effect;
+
+        // Extract live physical band energies from real-time FFT spectrum
+        let live_bass = if self.is_playing {
+            self.spectrum_bars[0..10].iter().cloned().fold(0.0f32, f32::max).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let live_mid = if self.is_playing {
+            self.spectrum_bars[10..28].iter().cloned().fold(0.0f32, f32::max).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let live_treble = if self.is_playing {
+            self.spectrum_bars[28..48].iter().cloned().fold(0.0f32, f32::max).clamp(0.0, 1.0)
+        } else {
+            0.0
         };
 
-        painter.add(egui::Shape::convex_polygon(poly.clone(), bg, Stroke::NONE));
-
-        let border_col = if is_culprit_node {
+        // HPF Accent: Sian Tajam (#0284C7)
+        let accent = if is_culprit_node {
             Color32::from_rgb(239, 68, 68)
         } else if is_overdriven_victim {
             Color32::from_rgb(245, 158, 11)
-        } else if is_bypassed_effect {
-            Color32::from_rgb(203, 213, 225)
-        } else if is_flowing {
-            Color32::from_rgb(56, 189, 248)
         } else {
-            Color32::from_rgb(239, 68, 68)
+            Color32::from_rgb(2, 132, 199) // #0284C7 Sian Tajam
         };
 
-        // Perimeter Stroke & Outer Aura
-        if is_flowing && self.is_playing && !is_bypassed_effect {
-            let aura_alpha = (50.0 + 30.0 * (self.visualizer_anim_phase * 4.0).sin()) as u8;
-            for w in poly.windows(2) {
-                painter.line_segment([w[0], w[1]], Stroke::new(3.0, Color32::from_rgba_unmultiplied(border_col.r(), border_col.g(), border_col.b(), aura_alpha / 2)));
-            }
-            painter.line_segment([poly[poly.len() - 1], poly[0]], Stroke::new(3.0, Color32::from_rgba_unmultiplied(border_col.r(), border_col.g(), border_col.b(), aura_alpha / 2)));
-
-            // Traveling laser beacons on chassis perimeter
-            let mut total_len = 0.0f32;
-            for i in 0..poly.len() {
-                total_len += poly[i].distance(poly[(i + 1) % poly.len()]);
-            }
-            let travel_dist = (self.visualizer_anim_phase * 130.0 + (node.id as f32) * 50.0) % total_len;
-            let eval_poly = |dist: f32| -> Pos2 {
-                let mut acc = 0.0f32;
-                let d = (dist % total_len + total_len) % total_len;
-                for i in 0..poly.len() {
-                    let next_i = (i + 1) % poly.len();
-                    let seg_len = poly[i].distance(poly[next_i]);
-                    if acc + seg_len >= d {
-                        let frac = if seg_len > 0.001 { (d - acc) / seg_len } else { 0.0 };
-                        return poly[i].lerp(poly[next_i], frac);
-                    }
-                    acc += seg_len;
-                }
-                poly[0]
-            };
-            let b1 = eval_poly(travel_dist);
-            let b2 = eval_poly(travel_dist + total_len * 0.5);
-            painter.circle_filled(b1, 3.8, border_col);
-            painter.circle_filled(b1, 1.8, Color32::WHITE);
-            painter.circle_filled(b2, 3.8, Color32::from_rgb(147, 197, 253));
-            painter.circle_filled(b2, 1.8, Color32::WHITE);
-
-            let stroke_w = 1.6 + 0.4 * (self.visualizer_anim_phase * 3.5).sin();
-            for w in poly.windows(2) {
-                painter.line_segment([w[0], w[1]], Stroke::new(stroke_w, border_col));
-            }
-            painter.line_segment([poly[poly.len() - 1], poly[0]], Stroke::new(stroke_w, border_col));
+        let readout = if active_cutoff >= 1000.0 {
+            format!("fc {:.2}kHz", active_cutoff / 1000.0)
         } else {
-            let stroke_w = if is_hovered { 1.8 } else { 1.2 };
-            for w in poly.windows(2) {
-                painter.line_segment([w[0], w[1]], Stroke::new(stroke_w, border_col));
-            }
-            painter.line_segment([poly[poly.len() - 1], poly[0]], Stroke::new(stroke_w, border_col));
-        }
+            format!("fc {:.0}Hz", active_cutoff)
+        };
 
-        // Corner Bolts
-        for &(bx, by) in &[(node_rect.min.x + 6.0, node_rect.min.y + 6.0),
-                          (node_rect.max.x - 6.0, node_rect.min.y + 6.0),
-                          (node_rect.max.x - 6.0, node_rect.max.y - 6.0),
-                          (node_rect.min.x + 40.0, node_rect.max.y - 6.0)] {
-            painter.circle_filled(Pos2::new(bx, by), 1.2, Color32::from_rgb(203, 213, 225));
-        }
-
-        // 2. Header Badge Pill: "🏔️ HPF PRISM"
-        let title_pill = Rect::from_min_size(Pos2::new(node_rect.min.x + 10.0, node_rect.min.y + 4.0), Vec2::new(88.0, 15.0));
-        painter.rect_filled(title_pill, 4.0, Color32::from_rgb(240, 249, 255));
-        painter.rect_stroke(title_pill, 4.0, Stroke::new(0.8, Color32::from_rgb(186, 230, 253)), egui::StrokeKind::Outside);
-        painter.text(
-            Pos2::new(title_pill.min.x + 4.0, title_pill.center().y),
-            egui::Align2::LEFT_CENTER,
-            "🏔️ HPF PRISM",
-            egui::FontId::proportional(8.5),
-            Color32::from_rgb(3, 105, 161),
-        );
-        painter.text(
-            Pos2::new(title_pill.max.x - 4.0, title_pill.center().y),
-            egui::Align2::RIGHT_CENTER,
-            format!("#{}", node.id),
-            egui::FontId::monospace(7.5),
-            Color32::from_rgb(100, 116, 139),
+        // 1. Floating Top Drag Handle Crown (Bright Silver / Titanium daylight pill)
+        self.draw_floating_crown_handle(
+            painter, node_rect, "⚡ HIGH-PASS", node.id, &readout,
+            accent, Color32::from_rgb(248, 250, 252),
+            is_selected, is_hovered, is_flowing,
         );
 
-        // Status LED
-        let led_pos = Pos2::new(node_rect.max.x - 12.0, node_rect.min.y + 11.0);
-        if is_flowing && self.is_playing && !is_bypassed_effect {
-            let led_pulse = (t * 5.0).sin().abs();
-            painter.circle_stroke(led_pos, 4.2, Stroke::new(1.0, Color32::from_rgba_unmultiplied(56, 189, 248, (60.0 + 90.0 * led_pulse) as u8)));
-            painter.circle_filled(led_pos, 2.2, Color32::from_rgb(56, 189, 248));
-            painter.circle_filled(led_pos, 1.0, Color32::WHITE);
-        } else if is_flowing && !is_bypassed_effect {
-            painter.circle_filled(led_pos, 2.0, Color32::from_rgb(56, 189, 248));
-        } else {
-            painter.circle_filled(led_pos, 2.0, Color32::from_rgb(203, 213, 225));
-        }
-
-        // 3. Sub-Rumble Drain Void (Bottom-Left Cutaway Zone)
-        let drain_center = Pos2::new(node_rect.min.x + 18.0, node_rect.max.y - 12.0);
-        painter.circle_filled(drain_center, 8.5, Color32::from_rgb(15, 23, 42));
-        painter.circle_stroke(drain_center, 8.5, Stroke::new(1.0, Color32::from_rgb(51, 65, 85)));
-
-        if is_flowing && self.is_playing && !is_bypassed_effect {
-            // Dark amber/crimson motes spiraling into the drain
-            for pi in 0..4 {
-                let p_tau = (t * 2.2 + pi as f32 * 0.25).fract();
-                let spiral_r = 7.0 * (1.0 - p_tau);
-                let spiral_ang = t * 6.0 + pi as f32 * 1.57;
-                let pt = Pos2::new(drain_center.x + spiral_r * spiral_ang.cos(), drain_center.y + spiral_r * spiral_ang.sin());
-                painter.circle_filled(pt, 1.1, Color32::from_rgb(239, 68, 68));
-            }
-            painter.circle_filled(drain_center, 1.5, Color32::WHITE);
-        } else {
-            painter.circle_filled(drain_center, 1.5, Color32::from_rgb(71, 85, 105));
-        }
-
-        // 4. Plasma Prism Accelerator Spine & Interactive Slider
-        let slider_track_rect = Rect::from_min_size(
-            Pos2::new(node_rect.min.x + 24.0, node_rect.min.y + 36.0),
-            Vec2::new((node_width - 48.0).max(10.0), 5.0),
+        // 2. Left & Right Open I/O Terminal Pods (Bright Silver / Titanium)
+        let (p_in, p_out) = self.draw_open_io_terminals(
+            painter, node_rect,
+            Color32::from_rgb(217, 119, 6),
+            accent,
+            is_selected, is_hovered, is_flowing, t,
         );
-        let fill_ratio = ((active_cutoff / 20.0).ln() / (1000.0_f32).ln()).clamp(0.0, 1.0);
-        let thumb_x = slider_track_rect.min.x + slider_track_rect.width() * fill_ratio;
-        let cy = slider_track_rect.center().y;
+
+        // 3. Sculpted High-Pass Conduit (Flat top air skyway, ascending floor barrier after weir_x!)
+        let track_min_x = node_rect.min.x + 32.0;
+        let track_w = (node_width - 64.0).max(10.0);
+        let weir_x = track_min_x + norm_cutoff * track_w;
+
+        let funnel_left = p_in.x;
+        let funnel_right = p_out.x;
+        let y_top = node_rect.min.y + 26.0;      // Flat upper treble skyway ceiling
+        let y_bot_wide = node_rect.max.y - 22.0; // Full-spectrum floor on left
+        let total_h = (y_bot_wide - y_top).max(36.0);
+
+        let open_top_fraction = 0.88 - 0.60 * norm_cutoff;
+        let y_barrier_crest = y_top + total_h * open_top_fraction;
+        let q_boost = ((q_val - 0.71).max(0.0) / 3.0).clamp(0.0, 1.0);
+
+        let transition_span = match stages {
+            4 => 14.0,
+            2 => 26.0,
+            _ => 42.0,
+        };
+
+        let eval_hpf_floor = |x: f32| -> f32 {
+            if x <= weir_x {
+                let dist = ((weir_x - x) / 20.0).clamp(0.0, 1.0);
+                let q_bump = (1.0 - dist * dist) * q_boost * 6.5;
+                y_bot_wide + q_bump
+            } else {
+                let u = ((x - weir_x) / transition_span).clamp(0.0, 1.0);
+                let s = u * u * (3.0 - 2.0 * u);
+                let start_y = y_bot_wide + q_boost * 6.5;
+                start_y + s * (y_barrier_crest - start_y)
+            }
+        };
+
+        let strips = 30usize;
+        let mut floor_pts = Vec::with_capacity(strips + 1);
+        for s in 0..=strips {
+            let u = s as f32 / strips as f32;
+            let x = funnel_left + u * (funnel_right - funnel_left);
+            floor_pts.push(Pos2::new(x, eval_hpf_floor(x)));
+        }
+
+        // Soft ambient drop shadow under frosted daylight glass
+        for s in 0..strips {
+            let p0 = floor_pts[s];
+            let p1 = floor_pts[s + 1];
+            let quad = vec![
+                Pos2::new(p0.x, y_top + 2.0),
+                Pos2::new(p1.x, y_top + 2.0),
+                Pos2::new(p1.x, p1.y + 2.0),
+                Pos2::new(p0.x, p0.y + 2.0),
+            ];
+            painter.add(egui::Shape::convex_polygon(quad, Color32::from_black_alpha(8), Stroke::NONE));
+        }
+
+        // Daylight Frosted Glass Conduit Fill: Biru-Es Cerah (#F0F9FF / rgb(240, 249, 255))
+        for s in 0..strips {
+            let p0 = floor_pts[s];
+            let p1 = floor_pts[s + 1];
+            let quad = vec![Pos2::new(p0.x, y_top), Pos2::new(p1.x, y_top), p1, p0];
+            painter.add(egui::Shape::convex_polygon(quad, Color32::from_rgb(240, 249, 255), Stroke::NONE));
+        }
+
+        // Subtle horizontal frequency strata lines
+        for frac in [0.33f32, 0.66] {
+            let gy = y_top + total_h * frac;
+            painter.line_segment(
+                [Pos2::new(funnel_left + 2.0, gy), Pos2::new(weir_x, gy)],
+                Stroke::new(0.6, Color32::from_rgba_unmultiplied(2, 132, 199, 45)),
+            );
+        }
+
+        // Animated Water Wave & Airy Breeze Wave (HPF: water blocked at ascending weir, crisp air passes above!)
+        let wave_amp = if is_active_audio { 1.8 + live_bass * 3.0 } else if is_flowing { 1.2 } else { 0.5 };
+        let wave_speed = if is_active_audio { 3.2 } else { 1.2 };
+
+        // 1. Water pool wave: runs along the bottom from funnel_left up to weir_x where it is stopped by the weir!
+        let water_strips = 16usize;
+        let mut hpf_water_pts = Vec::with_capacity(water_strips + 1);
+        for s in 0..=water_strips {
+            let u = s as f32 / water_strips as f32;
+            let x = funnel_left + u * (weir_x - funnel_left).max(2.0);
+            let floor_y = eval_hpf_floor(x);
+            let ripple = (x * 0.10 - t * wave_speed).sin() * wave_amp;
+            let wy = (floor_y - 12.0 + ripple).clamp(y_top + 10.0, floor_y - 1.0);
+            hpf_water_pts.push(Pos2::new(x, wy));
+        }
+        for s in 0..water_strips {
+            let p0 = hpf_water_pts[s];
+            let p1 = hpf_water_pts[s + 1];
+            let floor_p0_y = eval_hpf_floor(p0.x);
+            let floor_p1_y = eval_hpf_floor(p1.x);
+            let w_quad = vec![p0, p1, Pos2::new(p1.x, floor_p1_y), Pos2::new(p0.x, floor_p0_y)];
+            painter.add(egui::Shape::convex_polygon(
+                w_quad,
+                Color32::from_rgba_unmultiplied(2, 132, 199, (24.0 + live_bass * 26.0) as u8),
+                Stroke::NONE,
+            ));
+        }
+        painter.add(egui::Shape::line(
+            hpf_water_pts,
+            Stroke::new(1.3, Color32::from_rgba_unmultiplied(2, 132, 199, (110.0 + live_bass * 65.0) as u8)),
+        ));
+
+        // 2. Air / Breeze Wave (Nyaring Udara): ripples smoothly across the upper skyway all the way to OUT!
+        let air_amp = if is_active_audio { 1.6 + live_treble * 2.8 } else if is_flowing { 1.0 } else { 0.4 };
+        let mut air_pts = Vec::with_capacity(strips + 1);
+        for s in 0..=strips {
+            let u = s as f32 / strips as f32;
+            let x = funnel_left + u * (funnel_right - funnel_left);
+            let air_y = y_top + 9.0 + (x * 0.11 - t * 4.2).sin() * air_amp + (x * 0.22 + t * 2.5).cos() * (air_amp * 0.35);
+            air_pts.push(Pos2::new(x, air_y));
+        }
+        painter.add(egui::Shape::line(
+            air_pts,
+            Stroke::new(1.1, Color32::from_rgba_unmultiplied(2, 132, 199, (80.0 + live_treble * 75.0) as u8)),
+        ));
+
+        // Conduit boundary lines
+        painter.line_segment(
+            [Pos2::new(funnel_left, y_top), Pos2::new(funnel_right, y_top)],
+            Stroke::new(if is_selected { 2.4 } else { 1.8 }, accent),
+        );
+        painter.add(egui::Shape::line(
+            floor_pts,
+            Stroke::new(if is_selected { 2.6 } else { 2.0 }, accent),
+        ));
 
         if !is_bypassed_effect {
-            // Prism Spine Refraction Grid (Above slider)
-            for gi in 0..7 {
-                let gx = node_rect.min.x + 36.0 + gi as f32 * 18.0;
-                painter.line_segment(
-                    [Pos2::new(gx, node_rect.min.y + 22.0), Pos2::new(gx + 4.0, node_rect.min.y + 30.0)],
-                    Stroke::new(0.8, Color32::from_rgb(224, 242, 254)),
-                );
-            }
+            // 4. Stratified Spectrum Particles: Continuous Size Gradient + Live Signal Intensity
+            //    - Formula: r = 3.2 - 2.1 * f_rank
+            //    - Intensity (alpha & luminosity, NOT size) scales with live frequency band energy!
+            let total_particles = if is_active_audio { 34usize } else if is_flowing { 12usize } else { 0usize };
+            let cutoff_rank = 0.14 + norm_cutoff * 0.72;
+            let rolloff_margin = match stages {
+                4 => 0.04,
+                2 => 0.12,
+                _ => 0.24,
+            };
 
-            // Electric plasma arcs along the passband (from thumb_x to output pin)
-            if is_flowing && self.is_playing {
-                let arc_end_x = node_rect.max.x - 4.0;
-                if thumb_x < arc_end_x {
-                    let segs = 6;
-                    let seg_w = (arc_end_x - thumb_x) / segs as f32;
-                    let mut prev_pt = Pos2::new(thumb_x, cy - 8.0);
-                    for s in 1..=segs {
-                        let cur_x = thumb_x + s as f32 * seg_w;
-                        let jitter = ((t * 22.0 + s as f32 * 3.1).sin()) * 2.5;
-                        let cur_pt = Pos2::new(cur_x, cy - 8.0 + jitter);
-                        painter.line_segment([prev_pt, cur_pt], Stroke::new(1.1, Color32::from_rgb(147, 197, 253)));
-                        prev_pt = cur_pt;
+            for i in 0..total_particles {
+                let seed = i as f32 * 0.6180339887;
+                let f_rank = (i as f32 + 0.5) / total_particles.max(1) as f32; // 0.0 = deep bass (bottom), 1.0 = high treble air (top)
+                let is_air_treble = f_rank > 0.45;
+
+                // Continuous particle radius
+                let p_rad = (3.2 - 2.1 * f_rank).clamp(1.0, 3.3);
+
+                // Speed: calmer & heavier at bottom, fast & light at top
+                let spd = if is_active_audio {
+                    0.22 + f_rank * 0.54 + (seed.fract() * 0.10)
+                } else {
+                    0.06 + f_rank * 0.06
+                };
+                let u = ((i as f32 / total_particles.max(1) as f32) + t * spd).fract();
+
+                // Live energy for this particle's frequency rank
+                let band_energy = if f_rank < 0.33 {
+                    let k = f_rank / 0.33;
+                    live_bass * (1.0 - k) + live_mid * k
+                } else if f_rank < 0.67 {
+                    let k = (f_rank - 0.33) / 0.34;
+                    live_mid * (1.0 - k) + live_treble * k
+                } else {
+                    let k = ((f_rank - 0.67) / 0.33).clamp(0.0, 1.0);
+                    live_treble * (0.8 + 0.2 * k)
+                };
+
+                // Intensity factor (alpha & brightness, NOT radius)
+                let intensity = if is_active_audio {
+                    (0.40 + band_energy * 0.60).clamp(0.25, 1.0)
+                } else if is_flowing {
+                    0.35
+                } else {
+                    0.0
+                };
+
+                let base_y = y_bot_wide - 4.0 - f_rank * (total_h - 8.0);
+                let wave_y = (u * (6.0 + f_rank * 12.0) - t * (4.0 + f_rank * 10.0) + seed * 6.28).sin() * 1.5;
+                let py = (base_y + wave_y).clamp(y_top + 3.0, y_bot_wide - 3.0);
+
+                // Saturated jewel tones for Ice-Blue Frosted Glass
+                let p_col = if !is_air_treble {
+                    lerp_rgb(Color32::from_rgb(217, 119, 6), Color32::from_rgb(180, 83, 9), f_rank / 0.45)
+                } else {
+                    lerp_rgb(Color32::from_rgb(2, 132, 199), Color32::from_rgb(37, 99, 235), (f_rank - 0.45) / 0.55)
+                };
+
+                if f_rank >= cutoff_rank {
+                    // PASS-BAND: Flies cleanly over the bottom barrier to OUT!
+                    let px = funnel_left + 4.0 + u * (funnel_right - funnel_left - 8.0);
+                    let min_floor_y = eval_hpf_floor(px) - 3.5;
+                    let clamped_y = py.min(min_floor_y);
+                    painter.line_segment(
+                        [Pos2::new((px - (4.0 + f_rank * 4.0)).max(funnel_left), clamped_y), Pos2::new(px, clamped_y)],
+                        Stroke::new(p_rad * 0.85, Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), (120.0 * intensity) as u8)),
+                    );
+                    painter.circle_filled(
+                        Pos2::new(px, clamped_y),
+                        p_rad,
+                        Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), (255.0 * intensity) as u8),
+                    );
+                } else if f_rank >= cutoff_rank - rolloff_margin {
+                    // ROLL-OFF LEAKAGE ZONE
+                    let px = funnel_left + 4.0 + u * (funnel_right - funnel_left - 8.0);
+                    let leak_factor = 1.0 - ((cutoff_rank - f_rank) / rolloff_margin).clamp(0.0, 1.0);
+                    let atten = if px <= weir_x { 1.0 } else { (leak_factor * 0.65).clamp(0.15, 0.75) };
+                    let min_floor_y = eval_hpf_floor(px) - 3.0;
+                    let clamped_y = py.min(min_floor_y);
+                    let col_atten = Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), (220.0 * atten * intensity) as u8);
+                    painter.circle_filled(Pos2::new(px, clamped_y), p_rad, col_atten);
+                } else {
+                    // STOP-BAND (Hits ascending bottom barrier at weir_x and drains downward)
+                    if u < 0.70 {
+                        let tau = u / 0.70;
+                        let px = funnel_left + 4.0 + tau * (weir_x - funnel_left - 6.0).max(6.0);
+                        painter.circle_filled(
+                            Pos2::new(px, py),
+                            p_rad,
+                            Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), (210.0 * intensity) as u8),
+                        );
+                    } else if is_active_audio {
+                        let tau = (u - 0.70) / 0.30;
+                        let px = weir_x - 2.0 + (tau * 6.0 + seed * 6.28).sin() * 2.0;
+                        let py_drain = py + tau * 15.0;
+                        let alpha = ((1.0 - tau) * 175.0 * intensity) as u8;
+                        painter.circle_filled(
+                            Pos2::new(px, py_drain),
+                            p_rad * (1.0 - 0.35 * tau),
+                            Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), alpha),
+                        );
                     }
                 }
-                ui.ctx().request_repaint();
             }
 
-            // Precision Slider Track
-            painter.rect_filled(Rect::from_min_size(Pos2::new(slider_track_rect.min.x, cy - 2.0), Vec2::new(slider_track_rect.width(), 4.0)), 2.0, Color32::from_rgb(224, 242, 254));
-            painter.rect_filled(Rect::from_min_size(Pos2::new(slider_track_rect.min.x, cy - 2.0), Vec2::new(thumb_x - slider_track_rect.min.x, 4.0)), 2.0, Color32::from_rgb(56, 189, 248));
+            // 5. Multi-Stage Ascending Bottom Barrier Blades at weir_x (Bright Silver / Titanium daylight palette!)
+            let blade_spacing = 4.2f32;
+            let start_offset = -((stages as f32 - 1.0) * 0.5) * blade_spacing;
+            for s_idx in 0..stages {
+                let bx = (weir_x + start_offset + s_idx as f32 * blade_spacing).clamp(funnel_left + 8.0, funnel_right - 8.0);
+                let b_bot = y_bot_wide + 2.0;
+                let stage_frac = (s_idx + 1) as f32 / stages as f32;
+                let b_top = y_bot_wide - (y_bot_wide - y_barrier_crest) * (0.65 + 0.35 * stage_frac);
 
-            // Plasma Needle Thumb
-            painter.circle_filled(Pos2::new(thumb_x, cy + 1.0), 5.5, Color32::from_black_alpha(20));
-            painter.circle_filled(Pos2::new(thumb_x, cy), 5.2, Color32::WHITE);
-            painter.circle_stroke(Pos2::new(thumb_x, cy), 5.2, Stroke::new(1.8, Color32::from_rgb(2, 132, 199)));
-            painter.circle_filled(Pos2::new(thumb_x, cy), 2.0, Color32::from_rgb(56, 189, 248));
+                let b_rect = Rect::from_min_max(Pos2::new(bx - 1.4, b_top), Pos2::new(bx + 1.4, b_bot));
+                // Silver / Titanium daylight blade
+                painter.rect_filled(b_rect, 1.2, Color32::from_rgb(226, 232, 240));
+                painter.rect_stroke(
+                    b_rect,
+                    1.2,
+                    Stroke::new(1.1, if s_idx == 0 { accent } else { Color32::from_rgb(148, 163, 184) }),
+                    egui::StrokeKind::Outside,
+                );
+                // Glowing tip at the top of each ascending barrier blade
+                painter.circle_filled(Pos2::new(bx, b_top), 2.0, accent);
+            }
 
-            // Telemetry Badges
-            let readout = if active_cutoff >= 1000.0 {
-                format!("Cutoff {:.1}k", active_cutoff / 1000.0)
-            } else {
-                format!("Cutoff {:.0}Hz", active_cutoff)
-            };
-
-            let slope_str = if node.sub2.contains("48dB") { "48dB" } else if node.sub2.contains("24dB") { "24dB" } else { "12dB" };
-            let q_str = if let Some(idx) = node.sub2.find("Q ") {
-                node.sub2[idx + 2..].split_whitespace().next().unwrap_or("0.71")
-            } else {
-                "0.71"
-            };
-
-            let badge_y = node_rect.min.y + 63.0;
-            let badge_w = (node_width - 34.0) * 0.48;
-            let badge_h = 19.0;
-
-            // Left: Cutoff
-            let b_left = Rect::from_center_size(Pos2::new(node_rect.center().x - badge_w * 0.52, badge_y), Vec2::new(badge_w, badge_h));
-            painter.rect_filled(b_left, 3.5, Color32::from_rgb(224, 242, 254));
-            painter.rect_stroke(b_left, 3.5, Stroke::new(1.0, Color32::from_rgb(2, 132, 199)), egui::StrokeKind::Outside);
-            painter.text(b_left.center(), egui::Align2::CENTER_CENTER, readout, egui::FontId::proportional(10.0), Color32::from_rgb(2, 132, 199));
-
-            // Right: Slope & Q
-            let b_right = Rect::from_center_size(Pos2::new(node_rect.center().x + badge_w * 0.52, badge_y), Vec2::new(badge_w, badge_h));
-            painter.rect_filled(b_right, 3.5, Color32::from_rgb(15, 23, 42));
-            painter.rect_stroke(b_right, 3.5, Stroke::new(0.8, Color32::from_rgb(71, 85, 105)), egui::StrokeKind::Outside);
-            painter.text(b_right.center(), egui::Align2::CENTER_CENTER, format!("{} • Q{}", slope_str, q_str), egui::FontId::proportional(9.5), Color32::from_rgb(241, 245, 249));
+            if is_active_audio || is_flowing {
+                ui.ctx().request_repaint();
+            }
         } else {
-            let b_rect = Rect::from_center_size(Pos2::new(node_rect.center().x, node_rect.min.y + 44.0), Vec2::new(154.0, 22.0));
-            painter.rect_filled(b_rect, 4.0, Color32::from_rgb(241, 245, 249));
-            painter.rect_stroke(b_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(203, 213, 225)), egui::StrokeKind::Outside);
-            painter.text(b_rect.center(), egui::Align2::CENTER_CENTER, "DILEWATI (Bit-Perfect)", egui::FontId::proportional(11.0), Color32::from_rgb(100, 116, 139));
-            painter.text(Pos2::new(node_rect.center().x, node_rect.min.y + 66.0), egui::Align2::CENTER_CENTER, "Passthrough 1:1 Stream", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
+            painter.text(
+                Pos2::new(node_rect.center().x, node_rect.center().y + 4.0),
+                egui::Align2::CENTER_CENTER,
+                "⚡ BYPASSED (1:1 DIRECT)",
+                egui::FontId::monospace(9.0),
+                Color32::from_rgb(148, 163, 184),
+            );
         }
+
+        // 6. Bottom Multi-Pole Slope Stage Pill & Resonance Readout (Bright Silver / Titanium)
+        self.draw_bottom_slope_and_spec_console(
+            painter, node_rect, stages, slope_db, q_val, "HPF",
+            accent, Color32::from_rgb(30, 41, 59), is_flowing,
+        );
     }
 
-    // --- 3. BAND-PASS FILTER: CENTRIFUGAL CYCLOTRON ---
-    fn render_bpf_cyclotron(
+    // =========================================================================
+    // 3. BAND-PASS FILTER: DUAL-CURTAIN ACOUSTIC COLLIMATOR (Frosted Daylight Ivory-Gold)
+    // - Daylight Frosted Glass Theme:
+    //   * Ruang Saluran Akustik: Gading-Emas Cerah (#FFFBEB) dengan aksen amber kontras (#D97706).
+    //   * Gradien Ukuran Partikel Berdasarkan Frekuensi: r = 3.2 - 2.1 * f_rank
+    //     - Sub-Bass / Bass: besar & bulat (r ≈ 2.8 – 3.3 px), tenang & berbobot.
+    //     - Midrange: sedang (r ≈ 1.8 – 2.2 px).
+    //     - Treble / Udara: kecil/mikro (r ≈ 1.0 – 1.3 px), cepat & ringan.
+    //   * Intensitas partikel bergantung energi sinyal bass, mid, treble dari FFT.
+    //   * Bilah collimator & I/O terminal: silver/titanium terang daylight.
+    // =========================================================================
+    fn render_bpf_open_optical_resonator(
         &self,
         ui: &mut egui::Ui,
         painter: &egui::Painter,
@@ -5274,8 +5649,9 @@ impl LunulaApp {
         node_rect: Rect,
         node_width: f32,
         param_change: &mut Option<(usize, f32)>,
+        is_selected: bool,
         is_hovered: bool,
-        is_dragging: bool,
+        _is_dragging: bool,
         _hover_anim: f32,
         is_flowing: bool,
         is_bypassed_effect: bool,
@@ -5283,220 +5659,277 @@ impl LunulaApp {
         is_overdriven_victim: bool,
         _theme_color: Color32,
         t: f32,
-        _lerp_rgb: impl Fn(Color32, Color32, f32) -> Color32,
+        lerp_rgb: impl Fn(Color32, Color32, f32) -> Color32,
     ) {
-        let freq = if node.param_val > 10.0 { node.param_val } else { 1000.0 };
-        let active_freq = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(freq);
-
-        // 1. Symmetrical Hexagonal / Bell-Prism Polygon Chassis
-        let poly = vec![
-            Pos2::new(node_rect.min.x + 16.0, node_rect.min.y + 5.0),
-            Pos2::new(node_rect.center().x, node_rect.min.y), // Crest of bell curve
-            Pos2::new(node_rect.max.x - 16.0, node_rect.min.y + 5.0),
-            Pos2::new(node_rect.max.x, node_rect.center().y), // Output pin apex
-            Pos2::new(node_rect.max.x - 16.0, node_rect.max.y - 5.0),
-            Pos2::new(node_rect.center().x, node_rect.max.y),
-            Pos2::new(node_rect.min.x + 16.0, node_rect.max.y - 5.0),
-            Pos2::new(node_rect.min.x, node_rect.center().y), // Input pin apex
-        ];
-
-        let bg = if is_dragging {
-            Color32::from_rgb(241, 245, 249)
-        } else if is_bypassed_effect {
-            Color32::from_rgba_premultiplied(248, 250, 252, 230)
-        } else if !is_flowing {
-            Color32::from_rgb(255, 248, 248)
+        let center_freq = if node.param_val > 20.0 { node.param_val } else { 1000.0 };
+        let active_freq = param_change.filter(|(id, _)| *id == node.id).map(|(_, v)| v).unwrap_or(center_freq);
+        let norm_freq = ((active_freq / 20.0).ln() / (1000.0_f32).ln()).clamp(0.0, 1.0);
+        let q_val = if let Some(idx) = node.sub2.find("Q ") {
+            node.sub2[idx + 2..].split_whitespace().next().and_then(|s| s.parse::<f32>().ok()).unwrap_or(1.41)
         } else {
-            Color32::WHITE
+            1.41
+        };
+        let (slope_db, stages) = if node.sub2.contains("48dB") {
+            (48, 4usize)
+        } else if node.sub2.contains("24dB") {
+            (24, 2usize)
+        } else {
+            (12, 1usize)
+        };
+        let is_active_audio = is_flowing && self.is_playing && !is_bypassed_effect;
+
+        // Extract live physical band energies from real-time FFT spectrum
+        let live_bass = if self.is_playing {
+            self.spectrum_bars[0..10].iter().cloned().fold(0.0f32, f32::max).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let live_mid = if self.is_playing {
+            self.spectrum_bars[10..28].iter().cloned().fold(0.0f32, f32::max).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let live_treble = if self.is_playing {
+            self.spectrum_bars[28..48].iter().cloned().fold(0.0f32, f32::max).clamp(0.0, 1.0)
+        } else {
+            0.0
         };
 
-        painter.add(egui::Shape::convex_polygon(poly.clone(), bg, Stroke::NONE));
-
-        let border_col = if is_culprit_node {
+        // BPF Accent: Amber Kontras (#D97706)
+        let accent = if is_culprit_node {
             Color32::from_rgb(239, 68, 68)
         } else if is_overdriven_victim {
             Color32::from_rgb(245, 158, 11)
-        } else if is_bypassed_effect {
-            Color32::from_rgb(203, 213, 225)
-        } else if is_flowing {
-            Color32::from_rgb(245, 158, 11)
         } else {
-            Color32::from_rgb(239, 68, 68)
+            Color32::from_rgb(217, 119, 6) // #D97706 Amber Kontras
         };
 
-        // Perimeter Stroke & Outer Aura
-        if is_flowing && self.is_playing && !is_bypassed_effect {
-            let aura_alpha = (50.0 + 30.0 * (self.visualizer_anim_phase * 4.0).sin()) as u8;
-            for w in poly.windows(2) {
-                painter.line_segment([w[0], w[1]], Stroke::new(3.0, Color32::from_rgba_unmultiplied(border_col.r(), border_col.g(), border_col.b(), aura_alpha / 2)));
-            }
-            painter.line_segment([poly[poly.len() - 1], poly[0]], Stroke::new(3.0, Color32::from_rgba_unmultiplied(border_col.r(), border_col.g(), border_col.b(), aura_alpha / 2)));
-
-            // Traveling laser beacons on chassis perimeter
-            let mut total_len = 0.0f32;
-            for i in 0..poly.len() {
-                total_len += poly[i].distance(poly[(i + 1) % poly.len()]);
-            }
-            let travel_dist = (self.visualizer_anim_phase * 130.0 + (node.id as f32) * 50.0) % total_len;
-            let eval_poly = |dist: f32| -> Pos2 {
-                let mut acc = 0.0f32;
-                let d = (dist % total_len + total_len) % total_len;
-                for i in 0..poly.len() {
-                    let next_i = (i + 1) % poly.len();
-                    let seg_len = poly[i].distance(poly[next_i]);
-                    if acc + seg_len >= d {
-                        let frac = if seg_len > 0.001 { (d - acc) / seg_len } else { 0.0 };
-                        return poly[i].lerp(poly[next_i], frac);
-                    }
-                    acc += seg_len;
-                }
-                poly[0]
-            };
-            let b1 = eval_poly(travel_dist);
-            let b2 = eval_poly(travel_dist + total_len * 0.5);
-            painter.circle_filled(b1, 3.8, border_col);
-            painter.circle_filled(b1, 1.8, Color32::WHITE);
-            painter.circle_filled(b2, 3.8, Color32::from_rgb(251, 191, 36));
-            painter.circle_filled(b2, 1.8, Color32::WHITE);
-
-            let stroke_w = 1.6 + 0.4 * (self.visualizer_anim_phase * 3.5).sin();
-            for w in poly.windows(2) {
-                painter.line_segment([w[0], w[1]], Stroke::new(stroke_w, border_col));
-            }
-            painter.line_segment([poly[poly.len() - 1], poly[0]], Stroke::new(stroke_w, border_col));
+        let readout = if active_freq >= 1000.0 {
+            format!("f0 {:.2}kHz", active_freq / 1000.0)
         } else {
-            let stroke_w = if is_hovered { 1.8 } else { 1.2 };
-            for w in poly.windows(2) {
-                painter.line_segment([w[0], w[1]], Stroke::new(stroke_w, border_col));
-            }
-            painter.line_segment([poly[poly.len() - 1], poly[0]], Stroke::new(stroke_w, border_col));
-        }
+            format!("f0 {:.0}Hz", active_freq)
+        };
 
-        // Corner Bolts
-        for &(bx, by) in &[(node_rect.min.x + 18.0, node_rect.min.y + 8.0),
-                          (node_rect.max.x - 18.0, node_rect.min.y + 8.0),
-                          (node_rect.max.x - 18.0, node_rect.max.y - 8.0),
-                          (node_rect.min.x + 18.0, node_rect.max.y - 8.0)] {
-            painter.circle_filled(Pos2::new(bx, by), 1.2, Color32::from_rgb(203, 213, 225));
-        }
-
-        // 2. Header Badge Pill: "🎯 BPF CYCLO"
-        let title_pill = Rect::from_min_size(Pos2::new(node_rect.min.x + 18.0, node_rect.min.y + 5.0), Vec2::new(88.0, 14.0));
-        painter.rect_filled(title_pill, 4.0, Color32::from_rgb(254, 243, 199));
-        painter.rect_stroke(title_pill, 4.0, Stroke::new(0.8, Color32::from_rgb(253, 224, 71)), egui::StrokeKind::Outside);
-        painter.text(
-            Pos2::new(title_pill.min.x + 4.0, title_pill.center().y),
-            egui::Align2::LEFT_CENTER,
-            "🎯 BPF CYCLO",
-            egui::FontId::proportional(8.5),
-            Color32::from_rgb(180, 83, 9),
-        );
-        painter.text(
-            Pos2::new(title_pill.max.x - 4.0, title_pill.center().y),
-            egui::Align2::RIGHT_CENTER,
-            format!("#{}", node.id),
-            egui::FontId::monospace(7.5),
-            Color32::from_rgb(100, 116, 139),
+        // 1. Floating Top Drag Handle Crown (Bright Silver / Titanium daylight pill)
+        self.draw_floating_crown_handle(
+            painter, node_rect, "🎯 BAND-PASS", node.id, &readout,
+            accent, Color32::from_rgb(248, 250, 252),
+            is_selected, is_hovered, is_flowing,
         );
 
-        // Status LED
-        let led_pos = Pos2::new(node_rect.max.x - 22.0, node_rect.min.y + 11.0);
-        if is_flowing && self.is_playing && !is_bypassed_effect {
-            let led_pulse = (t * 5.0).sin().abs();
-            painter.circle_stroke(led_pos, 4.2, Stroke::new(1.0, Color32::from_rgba_unmultiplied(245, 158, 11, (60.0 + 90.0 * led_pulse) as u8)));
-            painter.circle_filled(led_pos, 2.2, Color32::from_rgb(245, 158, 11));
-            painter.circle_filled(led_pos, 1.0, Color32::WHITE);
-        } else if is_flowing && !is_bypassed_effect {
-            painter.circle_filled(led_pos, 2.0, Color32::from_rgb(245, 158, 11));
-        } else {
-            painter.circle_filled(led_pos, 2.0, Color32::from_rgb(203, 213, 225));
-        }
-
-        // 3. Dual Ejection Exhaust Vents (Top-Left and Bottom-Left Flanks)
-        for vi in 0..2 {
-            let vx = node_rect.min.x + 24.0 + vi as f32 * 8.0;
-            painter.line_segment([Pos2::new(vx, node_rect.min.y + 20.0), Pos2::new(vx + 4.0, node_rect.min.y + 25.0)], Stroke::new(1.0, Color32::from_rgb(203, 213, 225)));
-            painter.line_segment([Pos2::new(vx, node_rect.max.y - 20.0), Pos2::new(vx + 4.0, node_rect.max.y - 25.0)], Stroke::new(1.0, Color32::from_rgb(203, 213, 225)));
-        }
-
-        // 4. Centrifugal Cyclotron Core & Interactive Slider
-        let slider_track_rect = Rect::from_min_size(
-            Pos2::new(node_rect.min.x + 24.0, node_rect.min.y + 36.0),
-            Vec2::new((node_width - 48.0).max(10.0), 5.0),
+        // 2. Left & Right Open I/O Terminal Pods (Bright Silver / Titanium)
+        let (p_in, p_out) = self.draw_open_io_terminals(
+            painter, node_rect,
+            Color32::from_rgb(147, 51, 234),
+            accent,
+            is_selected, is_hovered, is_flowing, t,
         );
-        let fill_ratio = ((active_freq / 20.0).ln() / (1000.0_f32).ln()).clamp(0.0, 1.0);
-        let thumb_x = slider_track_rect.min.x + slider_track_rect.width() * fill_ratio;
-        let cy = slider_track_rect.center().y;
+
+        // 3. Sculpted Symmetrical Band-Pass Venturi Conduit (Steepness of pinch depends on `stages`!)
+        let track_min_x = node_rect.min.x + 34.0;
+        let track_w = (node_width - 68.0).max(10.0);
+        let focus_x = track_min_x + norm_freq * track_w;
+
+        let funnel_left = p_in.x;
+        let funnel_right = p_out.x;
+        let cy = node_rect.center().y;
+        let q_norm = ((q_val - 0.2) / 9.8).clamp(0.0, 1.0);
+        let slit_half_gap = (18.0 - q_norm * 12.5).clamp(5.0, 18.0);
+        let max_half_h = 29.0f32;
+
+        let pinch_span = match stages {
+            4 => 18.0,
+            2 => 30.0,
+            _ => 46.0,
+        };
+
+        let eval_bpf_half_h = |x: f32| -> f32 {
+            let dist = ((x - focus_x) / pinch_span).abs().clamp(0.0, 1.0);
+            let s = dist * dist * (3.0 - 2.0 * dist);
+            slit_half_gap + s * (max_half_h - slit_half_gap)
+        };
+
+        let strips = 30usize;
+        let mut top_pts = Vec::with_capacity(strips + 1);
+        let mut bot_pts = Vec::with_capacity(strips + 1);
+        for s in 0..=strips {
+            let u = s as f32 / strips as f32;
+            let x = funnel_left + u * (funnel_right - funnel_left);
+            let hh = eval_bpf_half_h(x);
+            top_pts.push(Pos2::new(x, cy - hh));
+            bot_pts.push(Pos2::new(x, cy + hh));
+        }
+
+        // Soft ambient drop shadow under frosted daylight glass
+        for s in 0..strips {
+            let quad = vec![
+                Pos2::new(top_pts[s].x, top_pts[s].y + 2.0),
+                Pos2::new(top_pts[s + 1].x, top_pts[s + 1].y + 2.0),
+                Pos2::new(bot_pts[s + 1].x, bot_pts[s + 1].y + 2.0),
+                Pos2::new(bot_pts[s].x, bot_pts[s].y + 2.0),
+            ];
+            painter.add(egui::Shape::convex_polygon(quad, Color32::from_black_alpha(8), Stroke::NONE));
+        }
+
+        // Daylight Frosted Glass Conduit Fill: Gading-Emas Cerah (#FFFBEB / rgb(255, 251, 235))
+        for s in 0..strips {
+            let quad = vec![top_pts[s], top_pts[s + 1], bot_pts[s + 1], bot_pts[s]];
+            painter.add(egui::Shape::convex_polygon(quad, Color32::from_rgb(255, 251, 235), Stroke::NONE));
+        }
+
+        // Conduit boundary lines
+        painter.add(egui::Shape::line(
+            top_pts,
+            Stroke::new(if is_selected { 2.5 } else { 1.9 }, accent),
+        ));
+        painter.add(egui::Shape::line(
+            bot_pts,
+            Stroke::new(if is_selected { 2.5 } else { 1.9 }, accent),
+        ));
 
         if !is_bypassed_effect {
-            // Cyclotron Magnetic Ring Core at thumb_x
-            let core_center = Pos2::new(thumb_x, cy);
-            painter.circle_filled(core_center, 9.5, Color32::from_rgb(15, 23, 42));
-            painter.circle_stroke(core_center, 9.5, Stroke::new(1.2, Color32::from_rgb(245, 158, 11)));
+            // 4. Stratified Spectrum Particles: Continuous Size Gradient + Live Signal Intensity
+            //    - Formula: r = 3.2 - 2.1 * f_rank
+            //    - Intensity (alpha & luminosity, NOT size) scales with live frequency band energy!
+            let total_particles = if is_active_audio { 34usize } else if is_flowing { 12usize } else { 0usize };
+            let bw_half = (0.32 * (1.0 - q_norm * 0.72)).clamp(0.08, 0.32);
+            let rolloff_margin = match stages {
+                4 => 0.05,
+                2 => 0.12,
+                _ => 0.22,
+            };
 
-            if is_flowing && self.is_playing {
-                // Dual counter-rotating plasma orbits
-                let r_orb = 5.2;
-                let ang1 = t * 5.2;
-                let ang2 = -t * 3.8;
-                let orb1 = Pos2::new(core_center.x + ang1.cos() * r_orb, core_center.y + ang1.sin() * r_orb);
-                let orb2 = Pos2::new(core_center.x + ang2.cos() * r_orb, core_center.y + ang2.sin() * r_orb);
+            for i in 0..total_particles {
+                let seed = i as f32 * 0.6180339887;
+                let f_rank = (i as f32 + 0.5) / total_particles.max(1) as f32;
+                let dist_from_center = (f_rank - norm_freq).abs();
 
-                painter.circle_filled(orb1, 1.8, Color32::from_rgb(251, 191, 36));
-                painter.circle_filled(orb2, 1.8, Color32::from_rgb(245, 158, 11));
+                // Continuous particle radius
+                let p_rad = (3.2 - 2.1 * f_rank).clamp(1.0, 3.3);
 
-                // Pulsing central focus spark
-                let spark_pulse = (t * 6.0).sin().abs();
-                painter.circle_filled(core_center, 1.6 + spark_pulse * 0.8, Color32::WHITE);
+                // Speed: calmer & heavier at bottom, fast & light at top
+                let spd = if is_active_audio {
+                    0.22 + f_rank * 0.54 + (seed.fract() * 0.10)
+                } else {
+                    0.07
+                };
+                let u = ((i as f32 / total_particles.max(1) as f32) + t * spd).fract();
 
-                ui.ctx().request_repaint();
-            } else {
-                painter.circle_filled(core_center, 1.8, Color32::from_rgb(245, 158, 11));
+                // Live energy for this particle's frequency rank
+                let band_energy = if f_rank < 0.33 {
+                    let k = f_rank / 0.33;
+                    live_bass * (1.0 - k) + live_mid * k
+                } else if f_rank < 0.67 {
+                    let k = (f_rank - 0.33) / 0.34;
+                    live_mid * (1.0 - k) + live_treble * k
+                } else {
+                    let k = ((f_rank - 0.67) / 0.33).clamp(0.0, 1.0);
+                    live_treble * (0.8 + 0.2 * k)
+                };
+
+                // Intensity factor (alpha & brightness, NOT radius)
+                let intensity = if is_active_audio {
+                    (0.40 + band_energy * 0.60).clamp(0.25, 1.0)
+                } else if is_flowing {
+                    0.35
+                } else {
+                    0.0
+                };
+
+                // Map particle frequency rank to vertical offset relative to passband center
+                let rel_offset = ((f_rank - norm_freq) / bw_half.max(0.08)).clamp(-2.2, 2.2);
+
+                // Saturated jewel tones for Gading-Emas (Ivory-Gold) Frosted Glass
+                let p_col = if f_rank < 0.35 {
+                    Color32::from_rgb(126, 34, 206) // Low Bass (Amethyst)
+                } else if f_rank > 0.68 {
+                    Color32::from_rgb(2, 132, 199) // High Air (Deep Cyan)
+                } else {
+                    lerp_rgb(Color32::from_rgb(217, 119, 6), Color32::from_rgb(180, 83, 9), 1.0 - dist_from_center.min(1.0))
+                };
+
+                if dist_from_center <= bw_half {
+                    // IN-BAND: Passes cleanly through the central collimator aperture to OUT!
+                    let px = funnel_left + 4.0 + u * (funnel_right - funnel_left - 8.0);
+                    let hh = eval_bpf_half_h(px) - 3.0;
+                    let py = cy - rel_offset * (slit_half_gap * 0.75) + (u * 12.0 - t * 8.0 + seed * 6.28).sin() * 1.1;
+                    let clamped_y = py.clamp(cy - hh, cy + hh);
+                    painter.line_segment(
+                        [Pos2::new((px - (4.0 + f_rank * 4.0)).max(funnel_left), clamped_y), Pos2::new(px, clamped_y)],
+                        Stroke::new(p_rad * 0.85, Color32::from_rgba_unmultiplied(217, 119, 6, (120.0 * intensity) as u8)),
+                    );
+                    painter.circle_filled(
+                        Pos2::new(px, clamped_y),
+                        p_rad,
+                        Color32::from_rgba_unmultiplied(217, 119, 6, (255.0 * intensity) as u8),
+                    );
+                } else if dist_from_center <= bw_half + rolloff_margin {
+                    // ROLL-OFF SKIRT LEAKAGE: Leaks through jaws with attenuated opacity according to Slope!
+                    let px = funnel_left + 4.0 + u * (funnel_right - funnel_left - 8.0);
+                    let leak = 1.0 - ((dist_from_center - bw_half) / rolloff_margin).clamp(0.0, 1.0);
+                    let atten = if px <= focus_x { 1.0 } else { (leak * 0.65).clamp(0.15, 0.70) };
+                    let hh = eval_bpf_half_h(px) - 2.5;
+                    let sign = if f_rank > norm_freq { -1.0 } else { 1.0 };
+                    let py = (cy + sign * (slit_half_gap * 0.85)).clamp(cy - hh, cy + hh);
+                    let c_leak = Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), (210.0 * atten * intensity) as u8);
+                    painter.circle_filled(Pos2::new(px, py), p_rad, c_leak);
+                } else {
+                    // STOP-BAND (Rejected High Air or Low Bass): Blocked by Top or Bottom Collimator Jaws at focus_x!
+                    let sign = if f_rank > norm_freq { -1.0 } else { 1.0 };
+                    if u < 0.70 {
+                        let tau = u / 0.70;
+                        let px = funnel_left + 4.0 + tau * (focus_x - funnel_left - 6.0).max(6.0);
+                        let py = cy + sign * (slit_half_gap + 4.0 + (1.0 - tau) * 7.0);
+                        painter.circle_filled(
+                            Pos2::new(px, py),
+                            p_rad,
+                            Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), (210.0 * intensity) as u8),
+                        );
+                    } else if is_active_audio {
+                        let tau = (u - 0.70) / 0.30;
+                        let px = focus_x + tau * 9.0;
+                        let py = cy + sign * (slit_half_gap + 4.0 + tau * 13.0);
+                        let alpha = ((1.0 - tau) * 165.0 * intensity) as u8;
+                        painter.circle_filled(Pos2::new(px, py), p_rad * (1.0 - 0.3 * tau), Color32::from_rgba_unmultiplied(p_col.r(), p_col.g(), p_col.b(), alpha));
+                    }
+                }
             }
 
-            // Amber Slider Track
-            painter.rect_filled(Rect::from_min_size(Pos2::new(slider_track_rect.min.x, cy - 2.0), Vec2::new(slider_track_rect.width(), 4.0)), 2.0, Color32::from_rgb(254, 243, 199));
-            painter.rect_filled(Rect::from_min_size(Pos2::new(slider_track_rect.min.x, cy - 2.0), Vec2::new(thumb_x - slider_track_rect.min.x, 4.0)), 2.0, Color32::from_rgb(245, 158, 11));
+            // 5. Multi-Stage Dual Collimator Jaws at focus_x (Bright Silver / Titanium daylight palette!)
+            let blade_spacing = 4.2f32;
+            let start_offset = -((stages as f32 - 1.0) * 0.5) * blade_spacing;
+            for s_idx in 0..stages {
+                let bx = (focus_x + start_offset + s_idx as f32 * blade_spacing).clamp(funnel_left + 8.0, funnel_right - 8.0);
+                let top_jaw = Rect::from_min_max(Pos2::new(bx - 1.3, cy - max_half_h - 2.0), Pos2::new(bx + 1.3, cy - slit_half_gap));
+                let bot_jaw = Rect::from_min_max(Pos2::new(bx - 1.3, cy + slit_half_gap), Pos2::new(bx + 1.3, cy + max_half_h + 2.0));
+                let stroke_c = if s_idx == 0 { accent } else { Color32::from_rgb(148, 163, 184) };
 
-            // Outer dial ring around cyclotron
-            painter.circle_stroke(core_center, 11.0, Stroke::new(1.0, Color32::from_rgba_unmultiplied(245, 158, 11, 140)));
+                for j_rect in [top_jaw, bot_jaw] {
+                    // Silver / Titanium daylight jaw
+                    painter.rect_filled(j_rect, 1.0, Color32::from_rgb(226, 232, 240));
+                    painter.rect_stroke(j_rect, 1.0, Stroke::new(1.0, stroke_c), egui::StrokeKind::Outside);
+                }
+                painter.circle_filled(Pos2::new(bx, cy - slit_half_gap), 1.8, accent);
+                painter.circle_filled(Pos2::new(bx, cy + slit_half_gap), 1.8, accent);
+            }
 
-            // Telemetry Badges
-            let readout = if active_freq >= 1000.0 {
-                format!("Center {:.1}k", active_freq / 1000.0)
-            } else {
-                format!("Center {:.0}Hz", active_freq)
-            };
-
-            let slope_str = if node.sub2.contains("48dB") { "48dB" } else if node.sub2.contains("24dB") { "24dB" } else { "12dB" };
-            let q_str = if let Some(idx) = node.sub2.find("Q ") {
-                node.sub2[idx + 2..].split_whitespace().next().unwrap_or("1.41")
-            } else {
-                "1.41"
-            };
-
-            let badge_y = node_rect.min.y + 63.0;
-            let badge_w = (node_width - 34.0) * 0.48;
-            let badge_h = 19.0;
-
-            // Left: Center Readout
-            let b_left = Rect::from_center_size(Pos2::new(node_rect.center().x - badge_w * 0.52, badge_y), Vec2::new(badge_w, badge_h));
-            painter.rect_filled(b_left, 3.5, Color32::from_rgb(254, 243, 199));
-            painter.rect_stroke(b_left, 3.5, Stroke::new(1.0, Color32::from_rgb(217, 119, 6)), egui::StrokeKind::Outside);
-            painter.text(b_left.center(), egui::Align2::CENTER_CENTER, readout, egui::FontId::proportional(10.0), Color32::from_rgb(217, 119, 6));
-
-            // Right: Bandwidth & Q
-            let b_right = Rect::from_center_size(Pos2::new(node_rect.center().x + badge_w * 0.52, badge_y), Vec2::new(badge_w, badge_h));
-            painter.rect_filled(b_right, 3.5, Color32::from_rgb(15, 23, 42));
-            painter.rect_stroke(b_right, 3.5, Stroke::new(0.8, Color32::from_rgb(71, 85, 105)), egui::StrokeKind::Outside);
-            painter.text(b_right.center(), egui::Align2::CENTER_CENTER, format!("{} • Q{}", slope_str, q_str), egui::FontId::proportional(9.5), Color32::from_rgb(241, 245, 249));
+            if is_active_audio || is_flowing {
+                ui.ctx().request_repaint();
+            }
         } else {
-            let b_rect = Rect::from_center_size(Pos2::new(node_rect.center().x, node_rect.min.y + 44.0), Vec2::new(154.0, 22.0));
-            painter.rect_filled(b_rect, 4.0, Color32::from_rgb(241, 245, 249));
-            painter.rect_stroke(b_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(203, 213, 225)), egui::StrokeKind::Outside);
-            painter.text(b_rect.center(), egui::Align2::CENTER_CENTER, "DILEWATI (Bit-Perfect)", egui::FontId::proportional(11.0), Color32::from_rgb(100, 116, 139));
-            painter.text(Pos2::new(node_rect.center().x, node_rect.min.y + 66.0), egui::Align2::CENTER_CENTER, "Passthrough 1:1 Stream", egui::FontId::proportional(10.0), Color32::from_rgb(148, 163, 184));
+            painter.text(
+                Pos2::new(node_rect.center().x, cy),
+                egui::Align2::CENTER_CENTER,
+                "⚡ BYPASSED (1:1 DIRECT)",
+                egui::FontId::monospace(9.0),
+                Color32::from_rgb(148, 163, 184),
+            );
         }
-    }
 
+        // 6. Bottom Multi-Pole Slope Stage Pill & Resonance Readout (Bright Silver / Titanium)
+        self.draw_bottom_slope_and_spec_console(
+            painter, node_rect, stages, slope_db, q_val, "BPF",
+            accent, Color32::from_rgb(30, 41, 59), is_flowing,
+        );
+    }
 }

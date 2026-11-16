@@ -1500,7 +1500,7 @@ impl LunulaApp {
 
         let Some(node) = self.nodes.iter().find(|n| n.id == node_id).cloned() else { return; };
         let current_center = if node.param_val > 20.0 { node.param_val } else { 1000.0 };
-        let current_slope = if node.sub2.contains("24dB") { 24 } else { 12 };
+        let current_slope = if node.sub2.contains("48dB") { 48 } else if node.sub2.contains("24dB") { 24 } else { 12 };
         let current_fringe = if let Some(idx) = node.sub2.find("Q ") {
             node.sub2[idx + 2..].split_whitespace().next().and_then(|s| s.parse::<f32>().ok()).unwrap_or(1.414)
         } else {
@@ -1509,7 +1509,7 @@ impl LunulaApp {
 
         let accent_col = Color32::from_rgb(245, 158, 11);
         let sample_rate = self.signal_path_report.as_ref().map_or(48000.0, |r| r.device_rate as f64);
-        let stages = if current_slope == 24 { 2 } else { 1 };
+        let stages = match current_slope { 48 => 4, 24 => 2, _ => 1 };
         let biquad = crate::audio::dsp::BiquadCoeffs::band_pass(current_center as f64, sample_rate, current_fringe as f64);
 
         painter.rect_filled(c1_rect, 6.0, Color32::from_rgb(12, 17, 29));
@@ -1631,7 +1631,7 @@ impl LunulaApp {
         child_ui.add_space(5.0);
         child_ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new("Slope:").strong().size(10.5).color(Color32::from_rgb(241, 245, 249)));
-            for &sl in &[12, 24] {
+            for &sl in &[12, 24, 48] {
                 let lbl = format!("±{} dB/oct", sl);
                 let is_sel = new_slope == sl;
                 let bg = if is_sel { accent_col } else { Color32::from_rgb(30, 41, 59) };

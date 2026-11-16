@@ -49,6 +49,9 @@ pub fn get_node_size(node_type: &NodeType) -> Vec2 {
         NodeType::TubeWarmer => Vec2::new(228.0, 102.0),
         NodeType::Splitter => Vec2::new(140.0, 78.0),
         NodeType::Mixer => Vec2::new(140.0, 78.0),
+        NodeType::LowPassFilter => Vec2::new(216.0, 112.0),
+        NodeType::HighPassFilter => Vec2::new(216.0, 112.0),
+        NodeType::BandPassFilter => Vec2::new(216.0, 116.0),
         _ => Vec2::new(198.0, 84.0),
     }
 }
@@ -56,25 +59,28 @@ pub fn get_node_size(node_type: &NodeType) -> Vec2 {
 pub fn get_interactive_slider_bounds_and_val(node_type: &NodeType, world_rect: Rect, node_width: f32, pos_x: f32) -> Option<(Rect, f32)> {
     match node_type {
         NodeType::LowPassFilter => {
-            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 20.0, world_rect.min.y + 24.0), Vec2::new(node_width - 40.0, 24.0));
-            let track_min_x = world_rect.min.x + 24.0;
-            let track_w = (node_width - 48.0).max(10.0);
+            // Interactive Open-Frame Low-Pass Apparatus area (below floating crown pill)
+            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 22.0, world_rect.min.y + 24.0), Vec2::new(node_width - 44.0, 68.0));
+            let track_min_x = world_rect.min.x + 32.0;
+            let track_w = (node_width - 64.0).max(10.0);
             let norm = ((pos_x - track_min_x) / track_w).clamp(0.0, 1.0);
             let val = (50.0 * (400.0_f32).powf(norm)).clamp(50.0, 20000.0);
             Some((hit, val))
         }
         NodeType::HighPassFilter => {
-            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 20.0, world_rect.min.y + 24.0), Vec2::new(node_width - 40.0, 24.0));
-            let track_min_x = world_rect.min.x + 24.0;
-            let track_w = (node_width - 48.0).max(10.0);
+            // Interactive Open-Frame High-Pass Apparatus area (below floating crown pill)
+            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 22.0, world_rect.min.y + 24.0), Vec2::new(node_width - 44.0, 68.0));
+            let track_min_x = world_rect.min.x + 32.0;
+            let track_w = (node_width - 64.0).max(10.0);
             let norm = ((pos_x - track_min_x) / track_w).clamp(0.0, 1.0);
             let val = (20.0 * (1000.0_f32).powf(norm)).clamp(20.0, 20000.0);
             Some((hit, val))
         }
         NodeType::BandPassFilter => {
-            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 20.0, world_rect.min.y + 24.0), Vec2::new(node_width - 40.0, 24.0));
-            let track_min_x = world_rect.min.x + 24.0;
-            let track_w = (node_width - 48.0).max(10.0);
+            // Interactive Open-Frame Band-Pass Optical Lens Apparatus area
+            let hit = Rect::from_min_size(Pos2::new(world_rect.min.x + 22.0, world_rect.min.y + 24.0), Vec2::new(node_width - 44.0, 72.0));
+            let track_min_x = world_rect.min.x + 34.0;
+            let track_w = (node_width - 68.0).max(10.0);
             let norm = ((pos_x - track_min_x) / track_w).clamp(0.0, 1.0);
             let val = (20.0 * (1000.0_f32).powf(norm)).clamp(20.0, 20000.0);
             Some((hit, val))
